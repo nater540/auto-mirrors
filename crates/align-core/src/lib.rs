@@ -6,6 +6,7 @@
 
 pub mod axis;
 pub mod config;
+pub mod measurement;
 pub mod quadrant;
 pub mod units;
 
