@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 5f8b4247d475399340fe5abd6ff6bf38e7513432b913b5bcb66b2cc726e09f0f # shrinks to jacobian = [[0.00028, 0.0, 0.00028, 0.0], [0.0, 0.00028, 0.0, 0.00028], [0.0, 0.0, 0.00028, 0.0], [0.0, 0.0, 0.0, 0.00028]], measurement = [0.0, 0.0, 0.0, 0.0], alpha = 0.05
