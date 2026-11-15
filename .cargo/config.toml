@@ -1,0 +1,15 @@
+# No `[build] target` here on purpose: a plain `cargo build` or `cargo test` at the root builds the host crates
+# (the workspace `default-members`). Firmware is built by naming the packages and the target; see the justfile.
+#
+# Differences from the esp-generate 2.0.0 template, which assumes a firmware-only repository:
+# - no `[unstable] build-std`: riscv32imac-unknown-none-elf ships prebuilt for stable Rust;
+# - no `runner`: nothing is flashed until a board exists, and every flashing recipe must state what the image
+#   does to motors and I/O (docs/HANDOFF.md section 7).
+[target.riscv32imac-unknown-none-elf]
+rustflags = [
+  # Needed for esp-backtrace to walk the stack after a panic.
+  "-C", "force-frame-pointers",
+]
+
+[env]
+ESP_LOG = "info"

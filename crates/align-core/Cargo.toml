@@ -1,0 +1,20 @@
+[package]
+name = "align-core"
+description = "Host-testable alignment logic: config, optics and sensor math, measurement vector, and the solver"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+# Fixed-size matrices only. Without `std` and without `alloc`; `libm` supplies the float functions `core` lacks.
+nalgebra.workspace = true
+libm.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

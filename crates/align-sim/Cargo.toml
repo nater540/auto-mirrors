@@ -1,0 +1,11 @@
+[package]
+name = "align-sim"
+description = "Optics and mount simulator for closed-loop tests of the alignment solver"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

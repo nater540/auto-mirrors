@@ -1,0 +1,11 @@
+[package]
+name = "stepper"
+description = "28BYJ-48 full-step driver over embedded-hal output pins"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

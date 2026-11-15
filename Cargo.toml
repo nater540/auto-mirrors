@@ -1,0 +1,71 @@
+[workspace]
+resolver = "3"
+members = [
+  "crates/align-core",
+  "crates/align-proto",
+  "crates/align-sim",
+  "crates/stepper",
+  "firmware/node",
+  "firmware/coordinator",
+]
+# The firmware crates build only for riscv32imac-unknown-none-elf. Leaving them out of `default-members` lets a
+# plain `cargo build`, `cargo test`, or `cargo clippy` at the root work on the host crates alone. `--workspace`
+# overrides this and will fail on the host; use the justfile recipes.
+default-members = ["crates/align-core", "crates/align-proto", "crates/align-sim", "crates/stepper"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.96"
+authors = ["Nate Strandberg"]
+publish = false
+
+[workspace.dependencies]
+align-core = { path = "crates/align-core" }
+
+nalgebra = { version = "=0.35.0", default-features = false, features = ["libm"] }
+libm = "0.2.16"
+thiserror = { version = "2.0.21", default-features = false }
+proptest = { version = "1.12", default-features = false, features = ["std"] }
+
+# Firmware only. Exact pins: these crates change API between minor releases and must move together. The reasons
+# and the upgrade procedure are in docs/VERSIONS.md.
+esp-hal = { version = "=1.2.2", features = ["esp32c6", "log-04", "unstable"] }
+esp-rtos = { version = "=0.4.0", features = ["embassy", "esp32c6", "log-04"] }
+esp-bootloader-esp-idf = { version = "=0.6.0", features = ["esp32c6", "log-04"] }
+esp-backtrace = { version = "=0.20.0", features = ["esp32c6", "panic-handler", "println"] }
+esp-println = { version = "=0.18.0", features = ["esp32c6", "log-04"] }
+embassy-executor = { version = "=0.10.0", features = ["log"] }
+embassy-time = { version = "=0.5.1", features = ["log"] }
+log = "0.4.27"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+indexing_slicing = "deny"
+unwrap_in_result = "deny"
+missing_errors_doc = "warn"
+missing_panics_doc = "deny"
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+
+# Firmware is always built with `--release` (see the justfile): an unoptimized esp-hal image is too large and too
+# slow. These settings follow the esp-generate 2.0.0 template. They also apply to host release builds, which is
+# harmless.
+[profile.release]
+codegen-units = 1
+debug = 2
+lto = "fat"
+opt-level = "s"

@@ -1,0 +1,27 @@
+[package]
+name = "align-coordinator"
+description = "ESP32-C6 coordinator: orchestrator, Ruida I/O, interlock relay, USB serial console"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "align-coordinator"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+esp-hal.workspace = true
+esp-rtos.workspace = true
+esp-bootloader-esp-idf.workspace = true
+esp-backtrace.workspace = true
+esp-println.workspace = true
+embassy-executor.workspace = true
+embassy-time.workspace = true
+log.workspace = true
+
+[lints]
+workspace = true

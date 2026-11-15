@@ -1,0 +1,6 @@
+# Pinned stable. The floor is 1.95.0 (esp-hal 1.2, esp-rtos 0.4); see docs/VERSIONS.md before changing it.
+# The ESP32-C6 is riscv32imac, a prebuilt target: no espup, no Xtensa fork, no build-std.
+[toolchain]
+channel = "1.96.0"
+components = ["rustfmt", "clippy", "rust-src"]
+targets = ["riscv32imac-unknown-none-elf"]
