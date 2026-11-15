@@ -1,0 +1,42 @@
+# Cargo build output, at any depth (workspace root, fuzz crates, tools).
+# Cargo.lock is committed on purpose: do not add it here.
+target/
+
+# Backup files written by rustfmt
+**/*.rs.bk
+
+# Debug information from MSVC builds of rustc
+*.pdb
+
+# cargo-mutants working data
+**/mutants.out*/
+
+# cargo-fuzz findings and coverage (proptest-regressions/ is committed, not ignored)
+fuzz/artifacts/
+fuzz/coverage/
+
+# Profiling and coverage output
+*.profraw
+*.profdata
+flamegraph.svg
+perf.data*
+
+# Secrets and per-machine environment. Commit a `.env.example` instead.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Editors and IDEs
+.idea/
+.vscode/
+*.swp
+*~
+
+# Claude Code per-machine settings (the shared settings.json, agents and commands belong in git)
+.claude/settings.local.json
+CLAUDE.local.md
+
+# macOS
+.DS_Store
