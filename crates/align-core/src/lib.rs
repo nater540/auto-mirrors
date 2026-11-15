@@ -6,6 +6,7 @@
 
 pub mod axis;
 pub mod config;
+pub mod units;
 
 #[cfg(test)]
 mod test_support {
