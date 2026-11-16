@@ -1,6 +1,12 @@
 # Sensor node firmware: plan
 
-Status: PLAN, revision 3, 2026-11-15. The protocol (section 3) is approved and built (S0, protocol version 2).
+Status: PLAN, revision 4, 2026-11-15. The protocol (section 3) is approved and built (S0, protocol version 2).
+
+**Current scope (owner, 2026-11-15):** the detector is likely a pyroelectric quad, but no detector processing is to
+be built yet. The sensor node reads five buttons and reports their position as the reading, so that the protocol,
+the coordinator (M5), and the closed loop can be built and tested against it. Section 6 (thermal integration) and
+section 7.4 (the thermal model) are deferred, not dropped: a pyroelectric detector is AC-coupled, so section 6 does
+not apply to it as written, and its method is planned when the detector is known. Section 7.5 is what is built now.
 Revision 3 answers an adversarial review of revision 2; section 15 maps each finding to its resolution.
 The owner decided that the sensor firmware belongs in this repository, written here; that the CAN protocol may change
 as needed; and that five push buttons stand in for the detector until it exists.
@@ -273,8 +279,10 @@ All UNVERIFIED unless marked; most follow the calibration rather than being fixe
 
 ### 7.2 Buttons
 
-Momentary, normally open, to ground, internal pull-ups, active low. Debounce 20 ms; a chord is every button pressed
-within 50 ms of the first. Positions, as a fraction `corner_offset` of the beam radius:
+Momentary, normally open, to 3V3, internal pull-downs, active high.
+Revision 4 changed this from pull-ups: a broken wire reads as not pressed, and a ULN2003 input sharing the pin is
+held off, not pulled on. Debounce 20 ms; a chord is every button pressed within 50 ms of the first.
+Positions, as a fraction `corner_offset` of the beam radius:
 
 | Pressed | Beam at |
 |---|---|
@@ -290,12 +298,13 @@ The debounce, chord, and position logic is a pure function of sampled levels and
 
 The motor node's board uses GPIO 0, 2, 3, 6, 7, 10, 11, 18 to 22 and reserves 23 (TWAI receive), 12 and 13 (USB),
 and 16 and 17 (UART0). Strapping pins 4, 5, 8, 9, and 15 can change the boot if a button is held at reset (GPIO 9 low
-enters download mode). **Recommendation: a second ESP32-C6 development board for the sensor**, with the buttons on
-GPIO 18 to 21 and 23 and TWAI on GPIO 22 as on the motor node. Two boards also allow a real two-node bus: both
-controllers in no-transceiver mode with their TWAI pins wired together, open drain, which is what esp-hal's
-`new_no_transceiver` is for. On one board, the fallback is GPIO 1, 16, 17, 23, and 4, with UART0 and the TWAI receive
-reservation given up and a warning not to hold the GPIO 4 button at reset; that board then cannot run the motor node
-and the sensor at once.
+enters download mode).
+**Recommendation: a second ESP32-C6 development board for the sensor**, with the buttons on GPIO 18 to 21 and 10,
+and TWAI on GPIO 22 and 23 as on the motor node (built in revision 4).
+Two boards also allow a real two-node bus: both controllers in no-transceiver mode with their TWAI pins wired
+together, open drain, which is what esp-hal's `new_no_transceiver` is for. On one board, the fallback is GPIO 1, 16,
+17, 23, and 4, with UART0 and the TWAI receive reservation given up and a warning not to hold the GPIO 4 button at
+reset; that board then cannot run the motor node and the sensor at once.
 
 ### 7.4 Thermal model
 
@@ -313,6 +322,24 @@ and the sensor at once.
   without a coordinator), `sim burst 300` (two shots 300 ms apart, both with SHOT: both Valid when the tail model
   works, Overlap when `tau` is set wrong on purpose).
 - Gaps: no detector gap, no non-Gaussian mode, no crosstalk. It tests the firmware, not the optics.
+
+Deferred with section 6 (revision 4): a thermal model fits a thermopile, not the pyroelectric quad now expected.
+
+### 7.5 Button readings: the first `ShotMethod` (built now)
+
+No signal path: the buttons are the reading.
+
+- **Position:** the table of 7.2, in normalized units directly, with `corner_norm` 0.4 (inside the solver range of
+  0.6). Nothing held at a SHOT: centered. A rejected chord: logged, and the shot reports NoShot.
+- **Result and sum:** Valid with `sum_q` = `SUM_Q_ONE`, calibrated bit clear (there is no calibration), unless the
+  console injects another result for the next shot (`sim next <result>`) or another sum (`sim sum <ratio>`).
+- **Delay:** the reply comes `reply_delay_ms` after the SHOT (200 by default, settable with `sim delay`), so that the
+  coordinator's waiting is exercised; a real detector takes much longer.
+- **Without wired buttons:** console `press <set>` and `hold <set>` / `release` act as the buttons do, and
+  `shot [point] [age_10us]` injects a SHOT through the same receive path, so the whole node can be tested over USB.
+- Everything else of the node is as planned: dedup, SENSOR_RESEND from the last eight results, the protocol
+  version check, heartbeats, bench mode, SENSOR_CMD (Bench works; Noise, Tau, SRef, Save, and Report answer Refused
+  until a detector exists). Nothing is written to flash.
 
 ## 8. Calibration record
 
@@ -385,12 +412,13 @@ They do not block M5: the coordinator can be built against the simulated sensor.
 
 | Milestone | Contents | Accepted when | Needs from the owner |
 |---|---|---|---|
-| S0 | Protocol (section 3), the motor node updated to ignore the new classes, `proto_version` | Round trips, boundaries, mutation testing clean; both images rebuilt | Sign-off on section 3 |
-| S1 | `sensor-logic`: ring, queue, placement, baseline, superposition, checks, state machine, SENSOR_CMD | Section 11 units, properties, and edge cases | Sign-off on the detector assumption |
-| S2 | `sensor-logic::sim` and the buttons; the `align-sim` sensor scenario | Closed-loop tests pass through the full signal path | Nothing |
-| S3 | `firmware/sensor`: board, partition table, FLASH_NOTICE, justfile recipes, workspace entries | Section 11 board checks | A second board (recommended) and five buttons |
-| S4 | The real front end and, if the detector is not thermal, its `ShotMethod` | Swaps in below the two traits | Open item 6 |
-| S5 | Commissioning on the machine through the coordinator console | Calibration saved; canned-job spacing checked | The sensor mounted; the Mod5 scope check |
+| S0 | Protocol (section 3), the motor node updated, `proto_version` | Round trips, boundaries, mutation testing clean; both images rebuilt | Done 2026-11-15 |
+| S1 | `sensor-logic` with button readings (7.5): buttons, positions, the node state machine, console | Host tests and mutation testing clean | Done 2026-11-15 |
+| S2 | `firmware/sensor` with five buttons; board, FLASH_NOTICE, justfile recipes, workspace entries | Every console command and fault on the board; SENSOR frames on the bus | Done 2026-11-15 over the console; physical buttons and a real bus pending |
+| S3 | The detector's method (likely pyroelectric) behind `ShotMethod`, and its front end | Planned and reviewed before it is built | Open item 6 |
+| S4 | Commissioning on the machine through the coordinator console | Calibration saved; canned-job spacing checked | The sensor mounted; the Mod5 scope check |
+
+Revision 3's S1 and S2 (thermal processing and the thermal model) wait for S3's detector decision.
 
 ## 13. Changes this plan proposes elsewhere (owner sign-off)
 

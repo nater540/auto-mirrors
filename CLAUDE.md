@@ -36,8 +36,9 @@ Stop at the end of each milestone and report to the owner (hand-off section 6).
 - M4 stepper and node firmware: code done and running on the development board with PROVISIONAL pins. The motor
   bench test (a 28BYJ-48 on a ULN2003, wired as the node's `FLASH_NOTICE.txt` says) is pending.
 - M5 coordinator firmware, M6 bring-up tools, M7 Ruida UDP (optional, read-only): not started.
-- Sensor track (`docs/SENSOR_PLAN.md`): S0 protocol done. S1 (`sensor-logic`) is next, pending the owner's word on
-  the DC-coupled thermal detector assumption.
+- Sensor track (`docs/SENSOR_PLAN.md`): S0 protocol, S1 `sensor-logic`, and S2 `firmware/sensor` done, with five
+  buttons instead of a detector (owner, 2026-11-15). S3, the detector's method, waits for the detector, which is
+  likely a pyroelectric quad; do not build detector processing before then.
 
 ## Things that must not be done
 
@@ -137,6 +138,19 @@ Reference 5.4 and addendum A.8 leave these open; `align-proto` decides them, and
 - **On the development board, TWAI runs on GPIO 22 alone** in self-test mode (TX and RX looped back through the
   pin), so frames go out without a transceiver or a second node.
 
+## What the sensor settled (S1, S2)
+
+- **Five buttons are the reading until the detector exists** (owner, 2026-11-15). No detector processing is built;
+  the detector is likely a pyroelectric quad, and its method is planned and reviewed before it is built (S3).
+- **Buttons connect to 3V3 with internal pull-downs** (active high), on GPIO 18 to 21 (A to D) and 10 (center);
+  TWAI keeps GPIO 22 and 23. A broken wire reads as not pressed.
+- **The position is taken when the SHOT arrives**; nothing held is centered; a rejected chord (opposite corners,
+  three buttons or more) reports NoShot. Readings go out `reply_delay_ms` (200) after the SHOT, in shot order.
+- **Bench mode** (console or SENSOR_CMD Bench) makes a chord fire a bench shot and ignores SHOT frames; outside it,
+  a reading always needs a SHOT. Calibration commands answer Refused until a detector exists.
+- **The console can do everything the bus and the buttons can** (`hold`, `press`, `shot`, `sim next`, `sim sum`,
+  `sim delay`), so the sensor is testable over USB alone. The motor node's tests use the same approach.
+
 ## Workspace layout
 
 One Cargo workspace, edition 2024, Rust 1.96.0 pinned. Dependencies and lints are declared once in the root
@@ -157,10 +171,15 @@ One Cargo workspace, edition 2024, Rust 1.96.0 pinned. Dependencies and lints ar
   record layout (`record`), and the bench console commands (`console`). All host-tested.
 - `firmware/node` (`align-node`): wires `node-logic` to TWAI, the steppers, the arm pulse, the permit and rail
   inputs, flash, and the USB console. Every pin is in `src/board.rs`, PROVISIONAL for a bare development board.
+- `crates/sensor-logic`: `no_std`. The sensor node as a state machine (`node`, behind `SensorIo`, readings through
+  the `ShotMethod` trait), the five bench buttons (`buttons`: debounce, chords, positions), and its console.
+- `firmware/sensor` (`align-sensor`): wires `sensor-logic` to TWAI, five button inputs, and the USB console. Drives
+  no output pin and writes no flash. Pins in `src/board.rs`, PROVISIONAL for a development board of its own.
 - `firmware/coordinator` (`align-coordinator`): scaffold only. It boots, logs its notice, and touches no pin.
 
-Dependency direction: firmware and `align-sim` depend on `align-core`, `align-proto`, `stepper`, and `node-logic`;
-`node-logic` depends on the first three; `align-core` depends on none of them.
+Dependency direction: firmware and `align-sim` depend on `align-core`, `align-proto`, `stepper`, `node-logic`, and
+`sensor-logic`; `node-logic` depends on the first three, `sensor-logic` on the first two; `align-core` depends on
+none of them.
 HAL types never enter the `crates/` libraries.
 
 The firmware crates are workspace members but not `default-members`: a plain `cargo build`, `cargo test`, or
@@ -183,6 +202,7 @@ just image node            # write the flashable image to target/images/ and pri
 just ports                 # serial ports, the Espressif ones apart from the rest
 just flash node            # print the notice, need it acknowledged, flash, then monitor or check the boot log
 just boot-log coordinator  # reset the board and check that its boot log holds the coordinator's whole notice
+just flash sensor          # the sensor image: five buttons instead of a detector; drives no output
 just sim --seed 7          # one simulated alignment, every move and measurement
 just sweep --runs 5000     # convergence against conditioning (the Y span)
 just sweep-margins         # how much stick-slip, noise, backlash, and step loss the thresholds tolerate
