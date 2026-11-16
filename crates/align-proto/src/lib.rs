@@ -5,14 +5,17 @@
 //!
 //! - [`frame`]: the raw frame, the 11-bit identifier layout, node addresses, and channels.
 //! - [`message`]: the ten messages and their encoding and decoding, through [`Envelope`].
+//! - [`dedup`]: the node-side check that runs a resent MOVE_REL only once.
 //!
 //! The crate is `no_std` without `alloc` and knows no HAL: the firmware converts between [`Frame`] and its TWAI
 //! frame type.
 #![no_std]
 
+pub mod dedup;
 pub mod frame;
 pub mod message;
 
+pub use dedup::{MoveDecision, MoveRefused, MoveRelTracker};
 pub use frame::{Channel, Class, Frame, FrameError, NodeId};
 pub use message::{
   ConfigKey, DecodeError, Envelope, FaultCode, Message, MoveDone, MoveRel, MoveResult, SensorReading, Status,
