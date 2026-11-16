@@ -326,6 +326,7 @@ dependencies = [
  "align-core",
  "align-proto",
  "proptest",
+ "thiserror",
 ]
 
 [[package]]

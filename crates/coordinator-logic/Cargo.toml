@@ -10,6 +10,7 @@ publish.workspace = true
 [dependencies]
 align-core.workspace = true
 align-proto.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

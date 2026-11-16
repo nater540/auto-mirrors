@@ -191,6 +191,9 @@ Reference 5.4 and addendum A.8 leave these open; `align-proto` decides them, and
   `coordinator_logic::readings::Readings::begin` when a job starts and send `ReadingsComplete` only from it, so a
   completion always belongs to the running job. `reading_timeout_ms` counts from the Status low, not from the last
   SHOT as `docs/SENSOR_PLAN.md` section 13 says: the more lenient of the two.
+- **The aligner plans the standard approach; the node runs exactly what it is sent.** Every leg is one MOVE_REL with
+  `finish_plus` clear (`coordinator_logic::moves`), so the overshoot never runs twice. A refusal FAULT (codes 0x20
+  to 0x2D and 0x34, the move's sequence number as detail) ends the move as `MoveFault::Refused`.
 - Time going backward, a move past `move_timeout_ms` (a backstop to the nodes' own), and a failed self-test in
   Idle each stop everything. `Coordinator::motion_allowed` gives the level for repeating INHIBIT to the nodes.
 
@@ -240,7 +243,9 @@ One Cargo workspace, edition 2024, Rust 1.96.0 pinned. Dependencies and lints ar
 - `crates/coordinator-logic`: `no_std`. The coordinator's bus side, turning traffic into the state machine's events:
   so far the watch over the nodes (`nodes`: present, lost, restarted, or another protocol version, judged from
   heartbeats the way the nodes judge the coordinator), and the sensor's readings paired with a job's shots
-  (`readings`: by sequence number, late ones asked for again with SENSOR_RESEND, the node's rejections as faults).
+  (`readings`: by sequence number, late ones asked for again with SENSOR_RESEND, the node's rejections as faults),
+  and one move in flight (`moves`: MOVE_REL with `finish_plus` clear, MOVE_DONE or a refusal FAULT back, resent
+  while late, per-node sequence numbers).
 - `firmware/coordinator` (`align-coordinator`): scaffold only. It boots, logs its notice, and touches no pin.
 
 Dependency direction: firmware and `align-sim` depend on `align-core`, `align-proto`, `stepper`, `node-logic`,

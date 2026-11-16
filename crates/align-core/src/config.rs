@@ -301,7 +301,10 @@ pub struct CoordinatorTiming {
   pub burst_gap_ms: u32,
   /// UNVERIFIED: a reading still missing this long after its shot, or after it was last asked for, is asked for
   /// again (SENSOR_RESEND). The button sensor answers 200 ms after a shot; a detector's integration may be longer.
-  pub resend_after_ms: u32
+  pub resend_after_ms: u32,
+  /// FIRM: a MOVE_REL is sent at most this many times while its MOVE_DONE is missing. The node runs it once (its
+  /// duplicate tracker) and answers a repeat of a finished move with the same MOVE_DONE.
+  pub move_tries: u8
 }
 
 impl CoordinatorTiming {
@@ -314,7 +317,8 @@ impl CoordinatorTiming {
     start_pulse_ms: 200,
     move_timeout_ms: 120_000,
     burst_gap_ms: 5,
-    resend_after_ms: 1_000
+    resend_after_ms: 1_000,
+    move_tries: 3
   };
 }
 
