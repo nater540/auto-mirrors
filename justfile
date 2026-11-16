@@ -153,19 +153,19 @@ image crate: (_firmware-crate crate)
 
 # --- board (each of these talks to hardware) --------------------------------
 #
-# With no port named, each recipe uses the only Espressif USB serial port attached, and stops when there are none
-# or several. Other boards are often attached to this machine, so a port is never guessed. scripts/board.sh holds
-# the logic.
+# With no port named, espflash chooses: ESPFLASH_PORT, then the USB devices saved in its espflash_ports.toml, then a
+# prompt. Other boards are often attached to this machine; espflash never guesses among several. scripts/board.sh
+# holds the flash gate and the boot log check.
 
-# Serial ports, the Espressif ones (which the recipes pick automatically) apart from the rest
+# Serial ports espflash recognizes
 [group('board')]
 ports:
-    {{ board }} ports
+    espflash list-ports
 
 # Chip type, revision, flash size, and MAC address of the connected board
 [group('board')]
 board-info port="":
-    espflash board-info --chip {{ chip }} --port "$({{ board }} port "{{ port }}")"
+    espflash board-info --chip {{ chip }} {{ if port == "" { "" } else { "--port " + port } }}
 
 # Flash `node` or `coordinator` after its notice is acknowledged; without a terminal, check the boot log after
 [group('board')]
@@ -182,14 +182,15 @@ boot-log crate="node" port="" secs="10":
 monitor crate="node" port="": (_firmware-crate crate)
     #!/usr/bin/env bash
     set -euo pipefail
-    args=(--chip {{ chip }} --port "$({{ board }} port "{{ port }}")")
+    args=(--chip {{ chip }})
+    if [ -n "{{ port }}" ]; then args+=(--port "{{ port }}"); fi
     if [ -f "{{ release_dir }}/align-{{ crate }}" ]; then args+=(--elf "{{ release_dir }}/align-{{ crate }}"); fi
     espflash monitor "${args[@]}"
 
 # Reset the connected board over its serial line. The image restarts from boot: read its flash notice first
 [group('board')]
 reset port="":
-    espflash reset --chip {{ chip }} --port "$({{ board }} port "{{ port }}")"
+    espflash reset --chip {{ chip }} {{ if port == "" { "" } else { "--port " + port } }}
 
 # Fail with a clear message unless the argument is a firmware crate
 [private]

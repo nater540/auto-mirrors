@@ -164,8 +164,8 @@ and compare the tables, run `just test-stress` once, and run `just mutants`. A s
 states the boundary; it is excluded in `.cargo/mutants.toml` only if it cannot change behavior, with the reason.
 Before handing a branch over, run `just check-commits <base>`: every commit must pass, not only the last.
 
-**The board recipes talk to hardware: `flash`, `boot-log`, `monitor`, `reset`, `board-info`, `ports`.** Their
-logic is in `scripts/board.sh`.
+**The board recipes talk to hardware: `flash`, `boot-log`, `monitor`, `reset`, `board-info`, `ports`.** The flash
+gate and the boot log check are in `scripts/board.sh`.
 
 - `just flash node` (or `coordinator`) is the only way to flash. It prints the crate's `FLASH_NOTICE.txt` and needs
   it acknowledged: the crate name typed at a terminal, or `ALIGN_FLASH_ACK=<crate>:<hash>` without one. The hash is
@@ -176,9 +176,10 @@ logic is in `scripts/board.sh`.
 - Without a terminal, `flash` ends by reading the boot log and failing unless every line of the notice appears
   and nothing panicked: that proves which image is running. `just boot-log <crate>` does the same check without
   flashing. The logs land in `target/boot-logs/`.
-- With no port named, the board recipes use the only Espressif USB port (vendor 303A) and stop when there are none
-  or several. The LG monitor on this machine also shows up as two `usbmodem` ports: never pick a port by name
-  pattern.
+- With no port named, espflash chooses the port by its own rules: `ESPFLASH_PORT`, then the USB devices saved in
+  its `espflash_ports.toml` (on this machine, the Espressif USB-Serial-JTAG, 303a:1001), then a prompt, which fails
+  without a terminal rather than guessing. The two LG monitor ports on this machine do not get in the way. Do not
+  write port selection in the scripts: the boot log check asks espflash which port it chose and reuses it.
 - **`firmware/<crate>/FLASH_NOTICE.txt` states what the image does to motors and I/O.** The image logs it at boot.
   Change it in the same commit as any change to what the firmware drives; a stale notice is a safety defect.
 - Do not run `monitor`, `reset`, or `board-info` on a port without knowing what is on it. Other boards are often

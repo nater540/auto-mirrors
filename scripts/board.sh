@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# Board actions behind the justfile `board` recipes: finding the port, the flash gate, flashing, and the boot log.
+# Board actions behind the justfile `board` recipes: the flash gate, flashing, and the boot log check.
 #
 # Usage (the justfile is the interface; this is its back end):
-#   board.sh port <port-or-empty>                     print the port to use, or fail
-#   board.sh ports                                    list serial ports, Espressif ones first
-#   board.sh flash <crate> <port> <secs>              gate, build, flash, then monitor or check the boot log
-#   board.sh boot-log <crate> <port> <secs>           reset the board and check its boot log against the notice
+#   board.sh flash <crate> <port> <secs>     gate, build, flash, then monitor or check the boot log
+#   board.sh boot-log <crate> <port> <secs>  reset the board and check its boot log against the notice
+#
+# An empty <port> lets espflash choose, by its own rules: ESPFLASH_PORT, then its saved configuration
+# (espflash_ports.toml, whose [[usb_device]] entries it matches by USB ID), and a prompt when that leaves several.
 #
 # The flash gate (docs/HANDOFF.md section 7): nothing is flashed until the crate's FLASH_NOTICE.txt has been
 # printed and acknowledged. At a terminal the acknowledgement is typing the crate name. Without a terminal it is
@@ -22,8 +23,6 @@ readonly target="riscv32imac-unknown-none-elf"
 readonly chip="esp32c6"
 readonly release_dir="target/$target/release"
 readonly log_dir="target/boot-logs"
-# The USB vendor ID of Espressif. The built-in USB-Serial-JTAG of the ESP32-C6 enumerates with it.
-readonly espressif_vid="303A"
 # How long to keep reading after every notice line has appeared, to catch a panic right after it.
 readonly grace_s="1.5"
 
@@ -53,44 +52,24 @@ notice_hash() {
   shasum -a 256 "$(notice_path "$1")" | cut -c 1-12
 }
 
-# The Espressif USB serial ports, one per line. On macOS each device appears twice, as /dev/cu.* and /dev/tty.*;
-# only the cu device is kept, because opening the tty device waits for a carrier that never comes.
-espressif_ports() {
-  espflash list-ports 2>/dev/null \
-    | awk -v vid="$espressif_vid" 'toupper($2) ~ (":" vid "$") && $1 !~ /^\/dev\/tty\./ { print $1 }'
-}
-
-# The port to use: the one named, or else the only Espressif port attached. Other boards are often attached to
-# this machine, so a port is never guessed among several, and a non-Espressif port is never picked automatically.
-resolve_port() {
+# The port to read a boot log from without a terminal. The monitor then needs `--non-interactive`, which turns off
+# espflash's own port choice, so espflash chooses first (board-info runs the same selection and needs no terminal)
+# and the port it used is passed on. When its rules leave several ports, it would prompt, and without a terminal
+# that fails: a port is never guessed.
+capture_port() {
   local named="$1"
   if [ -n "$named" ]; then
-    [ -e "$named" ] || die "no such port: $named"
     echo "$named"
     return
   fi
-  local ports count
-  ports="$(espressif_ports)"
-  count="$(printf '%s' "$ports" | grep -c . || true)"
-  case "$count" in
-    1) echo "$ports" ;;
-    0) die "no Espressif USB serial port is attached. \`just ports\` lists what is." ;;
-    *)
-      echo "several Espressif ports are attached; name one (\`just ports\` lists them):" >&2
-      printf '  %s\n' $ports >&2
-      exit 1
-      ;;
-  esac
-}
-
-cmd_ports() {
-  local espressif
-  espressif="$(espressif_ports)"
-  echo "Espressif USB serial ports (picked automatically when there is exactly one):"
-  if [ -n "$espressif" ]; then printf '  %s\n' $espressif; else echo "  none"; fi
-  echo
-  echo "Everything espflash sees, other boards included (never picked automatically):"
-  espflash list-ports --list-all-ports 2>/dev/null | sed 's/^/  /' || true
+  local out port
+  if ! out="$(espflash board-info --chip "$chip" </dev/null 2>&1)"; then
+    printf '%s\n' "$out" | tail -n 8 | sed 's/^/    /' >&2
+    die "espflash did not choose a port by itself. Name one: \`just ports\` lists them."
+  fi
+  port="$(sed -n "s/.*Serial port: '\(.*\)'.*/\1/p" <<<"$out" | head -n 1)"
+  [ -n "$port" ] || die "espflash reached the board but did not say which port it used:"$'\n'"$out"
+  echo "$port"
 }
 
 # Print the notice and require an acknowledgement of it. Returns only when flashing may go ahead.
@@ -194,18 +173,17 @@ cmd_flash() {
   check_crate "$crate"
   gate "$crate"
 
-  local port
-  port="$(resolve_port "$named_port")"
   cargo build -p "align-$crate" --target "$target" --release
 
   local elf="$release_dir/align-$crate"
-  local args=(flash --chip "$chip" --port "$port" --monitor)
-
-  echo "Port: $port"
+  local args=(flash --chip "$chip" --monitor)
   if [ -t 0 ] && [ -t 1 ]; then
+    if [ -n "$named_port" ]; then args+=(--port "$named_port"); fi
     espflash "${args[@]}" "$elf"
   else
-    capture_and_check "$crate" "$secs" espflash "${args[@]}" --non-interactive "$elf"
+    local port
+    port="$(capture_port "$named_port")"
+    capture_and_check "$crate" "$secs" espflash "${args[@]}" --port "$port" --non-interactive "$elf"
   fi
 }
 
@@ -213,7 +191,7 @@ cmd_boot_log() {
   local crate="$1" named_port="$2" secs="$3"
   check_crate "$crate"
   local port elf="$release_dir/align-$1"
-  port="$(resolve_port "$named_port")"
+  port="$(capture_port "$named_port")"
   local args=(monitor --chip "$chip" --port "$port" --non-interactive)
   if [ -f "$elf" ]; then args+=(--elf "$elf"); fi
   echo "Resetting the board on $port and reading its boot log (the image restarts from boot)."
@@ -224,11 +202,9 @@ main() {
   local cmd="${1:-}"
   shift || true
   case "$cmd" in
-    port) resolve_port "${1:-}" ;;
-    ports) cmd_ports ;;
     flash) cmd_flash "$1" "${2:-}" "${3:-15}" ;;
     boot-log) cmd_boot_log "$1" "${2:-}" "${3:-10}" ;;
-    *) die "usage: board.sh port|ports|flash|boot-log ... (see the header of this file)" ;;
+    *) die "usage: board.sh flash|boot-log ... (see the header of this file)" ;;
   esac
 }
 
