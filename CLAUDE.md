@@ -190,7 +190,8 @@ gate and the boot log check are in `scripts/board.sh`.
 - **Two-space indentation, exclusively.** Rust, TOML, YAML, Markdown, shell: everything except the `justfile`
   (four spaces). Never let rustfmt or an editor reformat to four.
 - **Aim for ~120-character lines**, comments and Markdown included. Break where the text has a natural pause; do
-  not pad lines out to the limit.
+  not pad lines out to the limit. Never leave a last line of a few words ("as suspect.") under a full one:
+  end lines at sentence or clause boundaries instead, one sentence per line when sentences run long.
 - **No em-dashes or en-dashes, anywhere**: code, comments, string literals, docs, commit messages. Use a colon, a
   comma, parentheses, a plain hyphen, or two sentences.
 - **No contractions** in docs, comments, commit messages, or messages to the owner ("do not", never the short form).
