@@ -18,6 +18,7 @@ motors, relay, or bus attached) runs the M0 scaffold images; the owner allowed C
 | `docs/ADDENDUM_A_28BYJ48.md` | Stepper actuator, Series E mount geometry, constants |
 | `docs/REFERENCE.md` | Optics and sensor math, solver, esp-hal notes, Ruida protocol and I/O, safety logic |
 | `docs/VERSIONS.md` | Pinned crate versions, why, and what contradicted the reference |
+| `docs/SENSOR_PLAN.md` | DRAFT plan for the sensor node firmware (milestones S0 to S4), awaiting the owner's sign-off |
 
 **Precedence when they disagree: the hand-off, then the addendum, then the reference.** The hand-off also wins over
 the house style below.
