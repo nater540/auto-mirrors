@@ -30,6 +30,10 @@ thiserror = { version = "2.0.21", default-features = false }
 # it). Its last release is from 2022: it is a stable trait crate maintained in the active embedded-hal repository.
 embedded-can = "0.4.1"
 bitflags = { version = "2.13.2", default-features = false }
+# The pin and delay traits the stepper driver is written against: esp-hal pins and embassy-time's Delay implement
+# them, and the host tests fake them.
+embedded-hal = "1.0.0"
+embedded-hal-async = "1.0.0"
 proptest = { version = "1.12", default-features = false, features = ["std"] }
 
 # Simulator only (host). `rand` draws the sensor noise and the skipped steps from a seed, so that a run repeats.
