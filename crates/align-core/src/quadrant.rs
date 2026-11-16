@@ -116,18 +116,26 @@ impl Quadrants {
 }
 
 impl Reading {
-  /// Checks one reading on its own: finite, enough signal, and not at the edge.
+  /// Checks one reading on its own: finite, a positive sum, enough signal, and not at the edge.
   ///
-  /// `sum_ref` is the commissioning reference sum for the power in use.
+  /// `sum_ref` is the commissioning reference sum for the power in use. The comparison with it is written so that
+  /// a NaN threshold rejects every reading instead of passing every one.
   ///
   /// # Errors
   ///
-  /// [`ReadingFault::NotFinite`], [`ReadingFault::SumLow`], or [`ReadingFault::AtEdge`].
+  /// [`ReadingFault::NotFinite`], [`ReadingFault::NoSignal`], [`ReadingFault::SumLow`], or [`ReadingFault::AtEdge`].
   pub fn check(&self, sum_ref: f32, limits: &SensorLimits) -> Result<(), ReadingFault> {
     if !(self.h_norm.is_finite() && self.v_norm.is_finite() && self.sum.is_finite()) {
       return Err(ReadingFault::NotFinite);
     }
-    if self.sum < limits.sum_min_frac * sum_ref {
+    if self.sum <= 0.0 {
+      return Err(ReadingFault::NoSignal);
+    }
+    let enough = matches!(
+      self.sum.partial_cmp(&(limits.sum_min_frac * sum_ref)),
+      Some(core::cmp::Ordering::Greater | core::cmp::Ordering::Equal)
+    );
+    if !enough {
       return Err(ReadingFault::SumLow);
     }
     if self.h_norm.abs() > limits.edge_max_norm || self.v_norm.abs() > limits.edge_max_norm {
@@ -307,8 +315,36 @@ mod tests {
   }
 
   #[test]
+  fn a_sum_that_is_not_positive_is_no_signal_whatever_the_reference() {
+    for sum_ref in [100.0, 0.0, -1.0] {
+      assert_eq!(
+        reading(0.0, 0.0, 0.0).check(sum_ref, &LIMITS),
+        Err(ReadingFault::NoSignal)
+      );
+      assert_eq!(
+        reading(0.0, 0.0, -5.0).check(sum_ref, &LIMITS),
+        Err(ReadingFault::NoSignal)
+      );
+    }
+    assert_eq!(reading(0.0, 0.0, f32::MIN_POSITIVE).check(0.0, &LIMITS), Ok(()));
+  }
+
+  #[test]
+  fn a_reference_sum_that_is_not_a_number_rejects_every_reading() {
+    assert_eq!(
+      reading(0.0, 0.0, 100.0).check(f32::NAN, &LIMITS),
+      Err(ReadingFault::SumLow)
+    );
+  }
+
+  #[test]
   fn a_position_beyond_nine_tenths_is_at_the_edge() {
     assert_eq!(reading(0.89, -0.89, 100.0).check(100.0, &LIMITS), Ok(()));
+    assert_eq!(
+      reading(0.9, -0.9, 100.0).check(100.0, &LIMITS),
+      Ok(()),
+      "the edge itself is inside"
+    );
     assert_eq!(
       reading(0.91, 0.0, 100.0).check(100.0, &LIMITS),
       Err(ReadingFault::AtEdge)

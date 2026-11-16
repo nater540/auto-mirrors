@@ -44,8 +44,12 @@ fn true_residual(rig: &Rig) -> f32 {
   rig.world().true_shots().measurement().amax()
 }
 
+#[expect(
+  clippy::unwrap_used,
+  reason = "a test helper; a configuration the aligner refuses fails the test"
+)]
 fn align(rig: &Rig, config: &Config) -> (Result<AlignReport, AlignFault>, Aligner<Rig, Rig>) {
-  let mut aligner = rig.aligner(*config);
+  let mut aligner = rig.aligner(*config).unwrap();
   let outcome = block_on(aligner.align());
   (outcome, aligner)
 }
@@ -65,7 +69,7 @@ fn an_aligned_ideal_machine_converges_without_a_solver_step() {
 #[test]
 fn calibrating_an_ideal_machine_recovers_the_model_jacobian() {
   let rig = Rig::new(Scenario::IDEAL);
-  let mut aligner = rig.aligner(Config::default());
+  let mut aligner = rig.aligner(Config::default()).unwrap();
   let calibration = block_on(aligner.calibrate()).unwrap();
   let truth = rig.world().true_jacobian();
   let relative_error = (calibration.jacobian - truth).norm() / truth.norm();
@@ -193,7 +197,10 @@ fn alignment_converges_with_a_jacobian_that_is_thirty_percent_wrong() {
     let (scenario, mut draw) = seeded(index, 3);
     let rig = Rig::new(scenario);
     let scale = core::array::from_fn(|_| if draw.random_bool(0.5) { 1.3 } else { 0.7 });
-    let mut aligner = rig.aligner(config).with_calibration(rig.stored_calibration(scale));
+    let mut aligner = rig
+      .aligner(config)
+      .unwrap()
+      .with_calibration(rig.stored_calibration(scale));
     let outcome = block_on(aligner.align());
     tally.count(&rig, &outcome.unwrap(), &config);
   }
@@ -208,7 +215,10 @@ fn a_jacobian_that_is_uniformly_thirty_percent_too_large_or_too_small_still_conv
     let mut tally = Tally::default();
     for index in 0..200 {
       let rig = Rig::new(seeded(index, 3).0);
-      let mut aligner = rig.aligner(config).with_calibration(rig.stored_calibration(scale));
+      let mut aligner = rig
+        .aligner(config)
+        .unwrap()
+        .with_calibration(rig.stored_calibration(scale));
       let outcome = block_on(aligner.align());
       tally.count(&rig, &outcome.unwrap(), &config);
     }
@@ -261,6 +271,7 @@ fn a_dead_axis_is_marked_suspect_and_then_reported_as_not_responding() {
     let rig = Rig::new(scenario);
     let mut aligner = rig
       .aligner(Config::default())
+      .unwrap()
       .with_calibration(rig.stored_calibration([1.0; 4]));
     let outcome = block_on(aligner.align());
     assert_eq!(outcome, Err(AlignFault::AxisNotResponding { axis: dead }));
@@ -324,6 +335,7 @@ fn a_two_position_absolute_target_fails_where_the_three_position_difference_succ
   let rejected = block_on(
     Rig::new(scenario)
       .aligner(Config::default())
+      .unwrap()
       .with_target(absolute_target)
       .align()
   );
@@ -340,7 +352,7 @@ fn a_two_position_absolute_target_fails_where_the_three_position_difference_succ
   permissive.solver.max_iterations = 12;
   permissive.solver.converge_tol_norm = 0.005;
   let absolute_rig = Rig::new(scenario);
-  let mut aligner = absolute_rig.aligner(permissive).with_target(absolute_target);
+  let mut aligner = absolute_rig.aligner(permissive).unwrap().with_target(absolute_target);
   block_on(aligner.align()).unwrap();
   let shots = absolute_rig.world().true_shots();
   let absolute_angles = absolute_rig.world().angle_errors().largest_urad();

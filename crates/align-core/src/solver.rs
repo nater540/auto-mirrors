@@ -91,13 +91,17 @@ impl Conditioning {
     })
   }
 
-  /// Rejects a Jacobian whose condition number is above the configured limit.
+  /// Rejects a Jacobian whose condition number is above the configured limit. A NaN limit rejects every one.
   ///
   /// # Errors
   ///
   /// [`SolveFault::IllConditioned`] with the condition number and the limit.
   pub fn check(&self, config: &Solver) -> Result<(), SolveFault> {
-    if self.cond > config.cond_max {
+    let inside = matches!(
+      self.cond.partial_cmp(&config.cond_max),
+      Some(core::cmp::Ordering::Less | core::cmp::Ordering::Equal)
+    );
+    if !inside {
       return Err(SolveFault::IllConditioned {
         cond: self.cond,
         limit: config.cond_max
@@ -332,6 +336,19 @@ mod tests {
       Conditioning::of(&model_jacobian(0.0, 800.0, 1.0)),
       Err(SolveFault::Singular)
     );
+  }
+
+  #[test]
+  fn a_limit_that_is_not_a_number_rejects_every_jacobian() {
+    let acceptable = Conditioning::of(&model_jacobian(50.0, 800.0, 1.0)).unwrap();
+    let config = Solver {
+      cond_max: f32::NAN,
+      ..CONFIG
+    };
+    assert!(matches!(
+      acceptable.check(&config),
+      Err(SolveFault::IllConditioned { .. })
+    ));
   }
 
   #[test]

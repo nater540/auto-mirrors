@@ -174,8 +174,15 @@ impl<A: Actuator, S: BeamSensor> Aligner<A, S> {
   /// An aligner with no stored calibration, every axis at position zero with an unknown last direction.
   ///
   /// `sum_ref` is the sensor's reference sum for the power in use, from commissioning.
-  pub fn new(actuator: A, sensor: S, config: Config, sum_ref: f32) -> Self {
-    Self {
+  ///
+  /// # Errors
+  ///
+  /// [`AlignFault::Config`] naming the first value that makes the procedure unsafe or impossible: a NaN, a
+  /// reference sum that is not positive, a fraction outside its range. Every comparison with a NaN is false, so
+  /// an unchecked NaN threshold silently turns its check off (a NaN `sum_ref` passes a beam that is off the sensor).
+  pub fn new(actuator: A, sensor: S, config: Config, sum_ref: f32) -> Result<Self, AlignFault> {
+    check_config(&config, sum_ref)?;
+    Ok(Self {
       actuator,
       sensor,
       config,
@@ -183,7 +190,7 @@ impl<A: Actuator, S: BeamSensor> Aligner<A, S> {
       axes: PerAxis::splat(AxisState::default()),
       calibration: None,
       target: Shots::measurement
-    }
+    })
   }
 
   /// Restores a stored calibration.
@@ -260,9 +267,6 @@ impl<A: Actuator, S: BeamSensor> Aligner<A, S> {
   /// singular or ill-conditioned result, and any fault of a move or a measurement.
   pub async fn calibrate(&mut self) -> Result<Calibration, AlignFault> {
     let poke_steps = self.config.motion.poke_steps;
-    if poke_steps <= 0 {
-      return Err(AlignFault::Config("poke_steps must be positive"));
-    }
     for axis in Axis::ALL {
       if self.axes.get(axis).last_dir != LastDir::Plus {
         self.approach(axis, 0).await?;
@@ -536,3 +540,99 @@ impl<A: Actuator, S: BeamSensor> Aligner<A, S> {
     }
   }
 }
+
+/// Whether `value` is a number in `[low, high]`. False for a NaN.
+fn within(value: f32, low: f32, high: f32) -> bool {
+  low <= value && value <= high
+}
+
+/// Whether `value` is a finite number above zero.
+fn positive(value: f32) -> bool {
+  within(value, f32::MIN_POSITIVE, f32::MAX)
+}
+
+/// The first configuration value the procedure cannot run with, if any. Only the values the aligner reads.
+fn check_config(config: &Config, sum_ref: f32) -> Result<(), AlignFault> {
+  let (motion, sensor, solver) = (&config.motion, &config.sensor, &config.solver);
+  let limits_ordered = Axis::ALL
+    .into_iter()
+    .all(|axis| motion.soft_min_steps.get(axis) <= motion.soft_max_steps.get(axis));
+  let checks = [
+    (positive(sum_ref), "the reference sum must be a positive number"),
+    (motion.poke_steps > 0, "poke_steps must be positive"),
+    (motion.overshoot_steps > 0, "overshoot_steps must be positive"),
+    (motion.max_move_steps > 0, "max_move_steps must be positive"),
+    (limits_ordered, "soft_min_steps must not be above soft_max_steps"),
+    (
+      within(motion.soft_limit_margin_frac, 0.0, 1.0),
+      "soft_limit_margin_frac must be in [0, 1]"
+    ),
+    (
+      within(sensor.sum_min_frac, f32::MIN_POSITIVE, 1.0),
+      "sum_min_frac must be in (0, 1]"
+    ),
+    (
+      within(sensor.edge_max_norm, f32::MIN_POSITIVE, 1.0),
+      "edge_max_norm must be in (0, 1]"
+    ),
+    (
+      within(sensor.solver_max_norm, f32::MIN_POSITIVE, sensor.edge_max_norm),
+      "solver_max_norm must be in (0, edge_max_norm]"
+    ),
+    (
+      within(sensor.offset_warn_frac, 0.0, 1.0),
+      "offset_warn_frac must be in [0, 1]"
+    ),
+    (
+      positive(sensor.noise_sigma_norm),
+      "noise_sigma_norm must be a positive number"
+    ),
+    (within(solver.alpha, f32::MIN_POSITIVE, 1.0), "alpha must be in (0, 1]"),
+    (within(solver.lambda_frac, 0.0, 1.0), "lambda_frac must be in [0, 1]"),
+    (
+      positive(solver.converge_tol_norm),
+      "converge_tol_norm must be a positive number"
+    ),
+    (solver.max_iterations > 0, "max_iterations must be positive"),
+    (
+      within(solver.cond_max, 1.0, f32::MAX),
+      "cond_max must be a number of at least 1"
+    ),
+    (
+      positive(solver.step_clamp_pokes),
+      "step_clamp_pokes must be a positive number"
+    ),
+    (
+      within(solver.prediction_mismatch_frac, f32::MIN_POSITIVE, 1.0),
+      "prediction_mismatch_frac must be in (0, 1]"
+    ),
+    (
+      within(solver.broyden_min_step_norm_steps, 0.0, f32::MAX),
+      "broyden_min_step_norm_steps must be a number of at least 0"
+    ),
+    (
+      within(solver.lambda_adjust_factor, 1.0, f32::MAX),
+      "lambda_adjust_factor must be a number of at least 1"
+    ),
+    (
+      within(solver.min_residual_reduction_frac, 0.0, 1.0),
+      "min_residual_reduction_frac must be in [0, 1]"
+    ),
+    (
+      solver.poor_steps_before_recalibration > 0,
+      "poor_steps_before_recalibration must be positive"
+    ),
+    (
+      positive(solver.min_column_sigmas),
+      "min_column_sigmas must be a positive number"
+    ),
+    (solver.suspect_fault_streak > 0, "suspect_fault_streak must be positive")
+  ];
+  match checks.into_iter().find(|(ok, _)| !ok) {
+    Some((_, what)) => Err(AlignFault::Config(what)),
+    None => Ok(())
+  }
+}
+
+#[cfg(test)]
+mod tests;

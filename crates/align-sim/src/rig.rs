@@ -6,7 +6,7 @@
 use std::cell::{Ref, RefCell, RefMut};
 use std::rc::Rc;
 
-use align_core::aligner::Aligner;
+use align_core::aligner::{AlignFault, Aligner};
 use align_core::axis::Axis;
 use align_core::calibration::Calibration;
 use align_core::config::Config;
@@ -45,7 +45,11 @@ impl Rig {
   }
 
   /// An aligner that drives this machine, configured with the machine's own mechanics and reference sum.
-  pub fn aligner(&self, mut config: Config) -> Aligner<Rig, Rig> {
+  ///
+  /// # Errors
+  ///
+  /// [`AlignFault::Config`] for a configuration the aligner refuses.
+  pub fn aligner(&self, mut config: Config) -> Result<Aligner<Rig, Rig>, AlignFault> {
     let (mechanics, sum_ref) = {
       let world = self.world();
       (world.scenario().mechanics, world.scenario().beam.sum_ref)

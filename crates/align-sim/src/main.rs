@@ -171,7 +171,7 @@ fn run(args: &RunArgs, out: &mut impl Write) -> anyhow::Result<()> {
     rig.world().true_shots().measurement().amax()
   )?;
 
-  let mut aligner = rig.aligner(config);
+  let mut aligner = rig.aligner(config)?;
   let outcome = block_on(aligner.align());
 
   for record in rig.world().log() {
@@ -272,7 +272,7 @@ fn sweep(args: &SweepArgs, out: &mut impl Write) -> anyhow::Result<()> {
       if let Ok(conditioning) = Conditioning::of(&rig.world().true_jacobian()) {
         model_cond = conditioning.cond;
       }
-      let mut aligner = rig.aligner(config);
+      let mut aligner = rig.aligner(config)?;
       if let Some(error) = args.jacobian_error {
         let scale = core::array::from_fn(|_| {
           if misalignments.random_bool(0.5) {
