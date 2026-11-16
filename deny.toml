@@ -33,8 +33,8 @@ allow = [
 confidence-threshold = 0.9
 
 [licenses.private]
-# The workspace crates carry no license yet and are not published. They are the thing being built, not a
-# third-party obligation.
+# The workspace crates carry no license yet and are not published. They are the thing
+# being built, not a third-party obligation.
 ignore = true
 
 [bans]

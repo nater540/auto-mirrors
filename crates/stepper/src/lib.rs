@@ -173,9 +173,9 @@ impl<P: OutputPin> Stepper<P> {
   ///
   /// # Errors
   ///
-  /// [`PinFault`] if a coil output failed. The coils were released as far as the pins allowed, and the motor may
-  /// have moved by up to the steps issued before the fault, which the error does not report: treat the position
-  /// as suspect.
+  /// [`PinFault`] if a coil output failed. The coils were released as far as the pins allowed.
+  /// The motor may have moved by the steps issued before the fault, which the error does not report:
+  /// treat the position as suspect.
   pub async fn run<D: DelayNs>(
     &mut self,
     steps: i32,

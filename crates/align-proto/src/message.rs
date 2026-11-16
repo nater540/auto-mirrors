@@ -69,8 +69,8 @@ pub struct MoveDone {
   pub channel: Channel,
   /// How the move ended.
   pub result: MoveResult,
-  /// The commanded position after the move, in full steps. Without position feedback this is the count of steps
-  /// issued, not a measurement.
+  /// The commanded position after the move, in full steps. Without position feedback this is
+  /// the count of steps issued, not a measurement.
   pub pos_steps: i32,
 }
 

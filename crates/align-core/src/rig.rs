@@ -1,5 +1,5 @@
-//! The two seams between the alignment logic and the machine: something that turns a screw, and something that
-//! reads the beam.
+//! The two seams between the alignment logic and the machine: something that turns a screw,
+//! and something that reads the beam.
 //!
 //! The simulator implements both against a model. The coordinator firmware implements them over CAN and the
 //! Ruida I/O: a move is a `MOVE_REL` answered by a `MOVE_DONE`, and a measurement is one canned job of three

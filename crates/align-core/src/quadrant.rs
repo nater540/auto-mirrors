@@ -75,8 +75,8 @@ impl Quadrants {
   ///
   /// # Errors
   ///
-  /// [`ReadingFault::NotFinite`] if a quadrant is NaN or infinite, and [`ReadingFault::NoSignal`] if the sum is
-  /// not positive.
+  /// [`ReadingFault::NotFinite`] if a quadrant is NaN or infinite,
+  /// and [`ReadingFault::NoSignal`] if the sum is not positive.
   pub fn normalize(&self) -> Result<Reading, ReadingFault> {
     let sum = self.sum();
     if !sum.is_finite() {
@@ -94,8 +94,8 @@ impl Quadrants {
 
   /// Checks the raw quadrants: none saturated, none negative beyond noise.
   ///
-  /// `full_scale` is the largest signal a quadrant can report and `sigma_noise` its noise, both in the sensor's
-  /// own units.
+  /// `full_scale` is the largest signal a quadrant can report and `sigma_noise` its noise,
+  /// both in the sensor's own units.
   ///
   /// # Errors
   ///

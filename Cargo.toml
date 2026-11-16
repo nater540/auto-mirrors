@@ -77,9 +77,8 @@ must_use_candidate = "allow"
 # The pairs this domain is made of differ by one letter by nature: h and v, x and y, near and far legs.
 similar_names = "allow"
 
-# Firmware is always built with `--release` (see the justfile): an unoptimized esp-hal image is too large and too
-# slow. These settings follow the esp-generate 2.0.0 template. They also apply to host release builds, which is
-# harmless.
+# Firmware is always built with `--release` (see the justfile): an unoptimized esp-hal image is too large and too slow.
+# These settings follow the esp-generate 2.0.0 template. They also apply to host release builds, which is harmless.
 [profile.release]
 codegen-units = 1
 debug = 2

@@ -29,9 +29,8 @@ pub fn jacobian_from_pokes(baseline: &Vector4<f32>, poked: &[Vector4<f32>; 4], p
   Jacobian::from_columns(&poked.map(|after| (after - baseline) / poke_steps))
 }
 
-/// The smallest change of the measurement vector that counts as signal: `min_column_sigmas` sigmas of one
-/// component. A component is a difference of two readings, so its sigma is `sqrt(2)` times the sigma of one
-/// normalized coordinate.
+/// The smallest change of the measurement vector that counts as signal: `min_column_sigmas` sigmas of one component.
+/// A component is a difference of two readings, so its sigma is `sqrt(2)` times the sigma of one normalized coordinate.
 ///
 /// The reference states this floor for calibration columns (3.1). The aligner applies the same floor before it
 /// learns from, or passes judgment on, a solver step.

@@ -1,13 +1,14 @@
 //! Coordinator firmware for the ESP32-C6: scaffold only (milestone M0).
 //!
-//! What this image does to hardware: nothing. It configures no GPIO, so every pin stays in its reset state, and it
-//! starts no bus. It boots, starts the Embassy time driver, logs its flash notice over USB-Serial-JTAG, and idles.
+//! What this image does to hardware: nothing. It configures no GPIO, so every pin stays in its reset state.
+//! It starts no bus. It boots, starts the Embassy time driver, logs its flash notice over USB-Serial-JTAG, and idles.
 //!
-//! `FLASH_NOTICE.txt`, beside this crate's `Cargo.toml`, states what the image does to motors and I/O. `just flash`
-//! prints it and asks before flashing, and the image logs it at boot. Change it in the same commit as any change
-//! to what this firmware drives.
-//! The orchestrator, the Ruida I/O, the interlock relay, and the console arrive in milestone M5, with every pin in
-//! `board.rs`.
+//! `FLASH_NOTICE.txt`, beside this crate's `Cargo.toml`, states what the image does to motors and I/O.
+//! `just flash` prints it and asks before flashing, and the image logs it at boot.
+//! Change it in the same commit as any change to what this firmware drives.
+//!
+//! The orchestrator, the Ruida I/O, the interlock relay, and the console arrive in milestone M5,
+//! with every pin in `board.rs`.
 #![no_std]
 #![no_main]
 #![deny(

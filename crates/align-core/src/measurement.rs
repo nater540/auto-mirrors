@@ -10,8 +10,8 @@
 //!
 //! `m = [hB - hA, vB - vA, hC - hB, vC - vB]`, and the target is zero. Moving along one leg changes only that
 //! leg's lever arm, so each difference depends on a beam angle alone and a constant offset at the head cancels.
-//! The absolute reading at A is kept as a health metric and is never a control target: four tilt actuators cannot
-//! remove a constant offset.
+//! The absolute reading at A is kept as a health metric and is never a control target:
+//! four tilt actuators cannot remove a constant offset.
 
 use nalgebra::Vector4;
 

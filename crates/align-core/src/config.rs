@@ -41,11 +41,11 @@ pub struct Mechanics {
   /// VERIFIED for the common 28BYJ-48 variant (gear tooth count: 32 x 63.68395). Confirm on each unit with the
   /// identification test in addendum A.6; other ratios are sold under the same name.
   pub steps_per_rev: f32,
-  /// AS MODELED: M6 x 0.5 adjuster, pitch read from the CAD helices (addendum A.12). Confirm with the 10-turn
-  /// caliper test.
+  /// AS MODELED: M6 x 0.5 adjuster, pitch read from the CAD helices (addendum A.12).
+  /// Confirm with the 10-turn caliper test.
   pub screw_lead_um: f32,
-  /// AS MODELED for mirror 2 (35.0 mm arms, addendum A.12). UNVERIFIED for mirror 1, whose mount was never checked
-  /// against a model.
+  /// AS MODELED for mirror 2 (35.0 mm arms, addendum A.12). UNVERIFIED for mirror 1,
+  /// whose mount was never checked against a model.
   pub lever_arm_um: PerAxis<f32>,
   /// ASSUMED: beam angle per unit of mirror tilt. `2` for the screw that tilts about a vertical axis (in-plane),
   /// `sqrt(2)` for the other at 45 degree incidence (reference 1.2). Which screw is which is verified by poking.
@@ -84,8 +84,8 @@ pub struct Motion {
   pub hold_before_release_ms: u32,
   /// UNVERIFIED: wait after the coils release before a shot.
   pub settle_ms: u32,
-  /// UNVERIFIED guess, about 21 degrees of screw. Becomes `max(2 x backlash_steps, 60)` once backlash is measured
-  /// with the beam (addendum A.5).
+  /// UNVERIFIED guess, about 21 degrees of screw.
+  /// Becomes `max(2 x backlash_steps, 60)` once backlash is measured with the beam (addendum A.5).
   pub overshoot_steps: i32,
   /// CALCULATED for a 4 mm beam radius at 1 m with the lever arm above (addendum A.3); see
   /// [`crate::units::poke_steps`].
@@ -145,13 +145,12 @@ pub struct SensorLimits {
   pub repeat_sigma: f32,
   /// UNVERIFIED: the sum may differ from the previous shot at the same power by this fraction.
   pub energy_tolerance_frac: f32,
-  /// UNVERIFIED: a head offset above this fraction of the solver range means mechanical centering is required
-  /// (reference 1.4).
+  /// UNVERIFIED: a head offset above this fraction of the solver range means mechanical
+  /// centering is required (reference 1.4).
   pub offset_warn_frac: f32,
   /// UNVERIFIED placeholder: noise of one normalized coordinate, one sigma. The sensor has not been characterized
-  /// (hand-off open item 6). The placeholder is the largest noise at which the convergence tolerance can still be
-  /// seen: a component of the measurement vector is a difference of two readings, and `3 * sqrt(2) * 0.005` is
-  /// about `0.02`.
+  /// (hand-off open item 6). The placeholder is the largest noise at which the convergence tolerance can still be seen:
+  /// a component of the measurement vector is a difference of two readings, and `3 * sqrt(2) * 0.005` is about `0.02`.
   pub noise_sigma_norm: f32,
   /// FIRM starting value: invalid shots in a row before a fault (reference 7.3).
   pub max_invalid_shots: u8,
@@ -194,22 +193,21 @@ pub struct Solver {
   /// reference asks for twice the minimum reliable move, which has not been measured for the stepper; `1.0`
   /// reproduces the reference sketch (any whole-step move updates).
   pub broyden_min_step_norm_steps: f32,
-  /// FIRM starting value: the damping is multiplied by this after a poor step and divided by it after a good one
-  /// (reference 3.2).
+  /// FIRM starting value: the damping is multiplied by this after a poor step and divided
+  /// by it after a good one (reference 3.2).
   pub lambda_adjust_factor: f32,
-  /// FIRM starting value: a step that reduces the residual norm by less than this fraction is a poor step
-  /// (reference 3.2).
+  /// FIRM starting value: a step that reduces the residual norm by less than this
+  /// fraction is a poor step (reference 3.2).
   pub min_residual_reduction_frac: f32,
-  /// FIRM starting value: poor steps in a row before a recalibration (reference 3.2: raise the damping, retry
-  /// once, then recalibrate).
+  /// FIRM starting value: poor steps in a row before a recalibration (reference 3.2:
+  /// raise the damping, retry once, then recalibrate).
   pub poor_steps_before_recalibration: u8,
   /// FIRM starting value: recalibrations in one alignment before a fault (hand-off 3.2).
   pub max_recalibrations: u8,
   /// FIRM starting value: a calibration is rejected when a poke changed the measurement by less than this many
   /// sigmas of a measurement component (reference 3.1).
   pub min_column_sigmas: f32,
-  /// FIRM starting value: suspect steps in a row on one axis before the "axis not responding" fault (addendum
-  /// A.5).
+  /// FIRM starting value: suspect steps in a row on one axis before the "axis not responding" fault (addendum A.5).
   pub suspect_fault_streak: u8,
 }
 

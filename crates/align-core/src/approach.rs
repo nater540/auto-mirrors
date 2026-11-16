@@ -79,8 +79,7 @@ pub struct SoftLimits {
 }
 
 impl SoftLimits {
-  /// The limits of one axis, widened on both sides by `soft_limit_margin_frac` of the configured travel
-  /// (addendum A.5).
+  /// The limits of one axis, widened on both sides by `soft_limit_margin_frac` of the configured travel (addendum A.5).
   pub fn for_axis(motion: &Motion, axis: Axis) -> Self {
     let min = f64::from(motion.soft_min_steps.get(axis));
     let max = f64::from(motion.soft_max_steps.get(axis));

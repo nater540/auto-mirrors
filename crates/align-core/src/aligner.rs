@@ -111,8 +111,8 @@ pub enum AlignFault {
   /// The solver could not produce a step.
   #[error("solver: {0}")]
   Solve(SolveFault),
-  /// The beam did not respond to an axis on consecutive steps: skipping, a coupler that slid off, or a screw at
-  /// the end of its travel.
+  /// The beam did not respond to an axis on consecutive steps: skipping, a coupler that slid off,
+  /// or a screw at the end of its travel.
   #[error("axis {axis:?} is not responding")]
   AxisNotResponding {
     /// The axis.
@@ -251,8 +251,8 @@ impl<A: Actuator, S: BeamSensor> Aligner<A, S> {
 
   /// Measures the Jacobian by poking each axis, and stores it.
   ///
-  /// The axes are first brought to the standard direction. Each poke is a plus move, measured, and then undone
-  /// with the overshoot and return.
+  /// The axes are first brought to the standard direction. Each poke is a plus move, measured,
+  /// and then undone with the overshoot and return.
   ///
   /// # Errors
   ///
@@ -292,8 +292,8 @@ impl<A: Actuator, S: BeamSensor> Aligner<A, S> {
     Ok(calibration)
   }
 
-  /// Aligns the beam: calibrates if there is no stored Jacobian, then iterates until the measurement vector is
-  /// inside the tolerance.
+  /// Aligns the beam: calibrates if there is no stored Jacobian, then iterates until the
+  /// measurement vector is inside the tolerance.
   ///
   /// An attempt is at most `max_iterations` solver steps. When an attempt ends without convergence, or the
   /// Jacobian stops being trusted, the Jacobian is measured again and another attempt runs, at most

@@ -16,8 +16,8 @@ use crate::axis::Axis;
 use crate::config::Mechanics;
 
 /// Slope of the normalized quadrant signal at the center for a Gaussian beam, times the beam radius:
-/// `dX/dx0 = 2 * sqrt(2 / pi) / w` (CALCULATED, reference 2.2). A real multimode beam differs; the measured
-/// Jacobian absorbs that.
+/// `dX/dx0 = 2 * sqrt(2 / pi) / w` (CALCULATED, reference 2.2).
+/// A real multimode beam differs; the measured Jacobian absorbs that.
 pub const GAUSSIAN_CENTER_SLOPE: f32 = 1.595_769;
 
 /// Screw travel for a move, in micrometers.

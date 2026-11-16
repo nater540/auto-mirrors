@@ -184,8 +184,7 @@ fn a_seat_that_sticks_for_three_steps_costs_at_most_the_one_allowed_recalibratio
 
 /// Hand-off M2, test 2: every column of the stored Jacobian is wrong by 30%, up or down. Every run converges.
 /// Not every run does so within the cap: starting from a Jacobian that is too large, four damped steps can fall
-/// just short, and the recalibration finishes the job (52 of 20000 at three steps of stick-slip, 11 of 20000 at
-/// none).
+/// just short, and the recalibration finishes the job (52 of 20000 at three steps of stick-slip, 11 at none).
 #[test]
 fn alignment_converges_with_a_jacobian_that_is_thirty_percent_wrong() {
   let config = Config::default();

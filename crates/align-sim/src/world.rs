@@ -8,9 +8,9 @@
 //! e2 = angle after mirror 2 (moved by both mirrors: mirror 1 changes the angle into mirror 2)
 //! ```
 //!
-//! `Ly` is the path from mirror 1 to mirror 2, `Lx` from mirror 2 to the head, and `s0` a constant offset that no
-//! tilt removes. A screw `j` sits at `seat_j` steps and the beam is aligned when every `seat_j` equals minus the
-//! scenario's misalignment.
+//! `Ly` is the path from mirror 1 to mirror 2, `Lx` from mirror 2 to the head, and `s0` a constant
+//! offset that no tilt removes. A screw `j` sits at `seat_j` steps and the beam is aligned when every
+//! `seat_j` equals minus the scenario's misalignment.
 //!
 //! Each screw is a chain of three positions, all in steps:
 //!
@@ -47,8 +47,8 @@ pub struct Geometry {
 }
 
 impl Geometry {
-  /// UNVERIFIED placeholder (hand-off open item 5): spans of 500 mm in Y and 600 mm in X, inside the 0.1 to 1.5 m
-  /// range the reference assumes.
+  /// UNVERIFIED placeholder (hand-off open item 5): spans of 500 mm in Y and 600 mm in X,
+  /// inside the 0.1 to 1.5 m range the reference assumes.
   pub const PLACEHOLDER: Self = Self {
     ly_near_mm: 100.0,
     ly_far_mm: 600.0,
@@ -80,8 +80,8 @@ pub struct Beam {
 }
 
 impl Beam {
-  /// UNVERIFIED placeholder (hand-off open item 6): the 4 mm radius of the reference's worked example on a 20 mm
-  /// detector, without noise.
+  /// UNVERIFIED placeholder (hand-off open item 6): the 4 mm radius of the reference's worked
+  /// example on a 20 mm detector, without noise.
   pub const PLACEHOLDER: Self = Self {
     radius_um: 4_000.0,
     aperture_half_um: 10_000.0,
@@ -247,8 +247,7 @@ pub struct World {
 }
 
 impl World {
-  /// A machine in the scenario's starting state: every screw at commanded position zero, engaged on the plus
-  /// side.
+  /// A machine in the scenario's starting state: every screw at commanded position zero, engaged on the plus side.
   pub fn new(scenario: Scenario) -> Self {
     Self {
       scenario,

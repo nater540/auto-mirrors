@@ -81,8 +81,8 @@ struct SweepArgs {
   /// Seed for the misalignments
   #[arg(long, default_value_t = 1)]
   seed: u64,
-  /// Start from a stored Jacobian whose every column is wrong by this fraction, up or down at random, instead of
-  /// calibrating first
+  /// Start from a stored Jacobian whose every column is wrong by this fraction,
+  /// up or down at random, instead of calibrating first
   #[arg(long)]
   jacobian_error: Option<f32>,
   #[command(flatten)]

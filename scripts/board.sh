@@ -8,11 +8,11 @@
 # An empty <port> lets espflash choose, by its own rules: ESPFLASH_PORT, then its saved configuration
 # (espflash_ports.toml, whose [[usb_device]] entries it matches by USB ID), and a prompt when that leaves several.
 #
-# The flash gate (docs/HANDOFF.md section 7): nothing is flashed until the crate's FLASH_NOTICE.txt has been
-# printed and acknowledged. At a terminal the acknowledgement is typing the crate name. Without a terminal it is
-# ALIGN_FLASH_ACK=<crate>:<hash>, where <hash> is the start of the SHA-256 of the notice. The hash ties the
-# acknowledgement to the notice as it was read: change what the firmware drives, change the notice, and every old
-# acknowledgement stops working.
+# The flash gate (docs/HANDOFF.md section 7): nothing is flashed until the crate's FLASH_NOTICE.txt
+# has been printed and acknowledged. At a terminal the acknowledgement is typing the crate name.
+# Without a terminal it is ALIGN_FLASH_ACK=<crate>:<hash>, where <hash> is the start of the SHA-256 of the notice.
+# The hash ties the acknowledgement to the notice as it was read: change what the firmware drives, change the notice,
+# and every old acknowledgement stops working.
 #
 # Without a terminal, a flash ends by capturing the boot log and checking that every line of the notice appears in
 # it and that nothing panicked. That proves the image now running is the one whose notice was acknowledged.

@@ -253,8 +253,8 @@ pub fn converged(measurement: &Vector4<f32>, config: &Solver) -> bool {
     .all(|component| component.abs() <= config.converge_tol_norm)
 }
 
-/// Rounds a fractional step vector to whole full steps, in the fixed axis order. A value outside the `i32` range
-/// saturates.
+/// Rounds a fractional step vector to whole full steps, in the fixed axis order.
+/// A value outside the `i32` range saturates.
 pub fn round_to_steps(dq: &Vector4<f32>) -> [i32; 4] {
   #[expect(
     clippy::cast_possible_truncation,
