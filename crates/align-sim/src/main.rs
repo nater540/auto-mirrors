@@ -63,7 +63,11 @@ struct Optics {
   /// (reference 3.1, clamped to three times the backlash as addendum A.3 says), and a sweep scales its random
   /// misalignments and offsets by the radius over the 4 mm placeholder, so that they stay inside the linear range.
   #[arg(long)]
-  beam_radius: Option<f64>
+  beam_radius: Option<f64>,
+  /// Far-field half-angle divergence of the beam, in microradians: B and C see a larger beam than A, and a head
+  /// offset no longer cancels in the difference vector
+  #[arg(long, default_value_t = 0.0)]
+  divergence_urad: f64
 }
 
 #[derive(Args)]
@@ -120,6 +124,7 @@ fn scenario(imperfections: Imperfections, optics: Optics, y_span_mm: f64, seed: 
   let placeholder = Geometry::PLACEHOLDER;
   let beam = Beam {
     radius_um: optics.beam_radius.unwrap_or(Beam::PLACEHOLDER.radius_um),
+    divergence_urad: optics.divergence_urad,
     ..Beam::PLACEHOLDER
   };
   Scenario {
@@ -365,7 +370,8 @@ mod tests {
 
   const NO_BEAM: Optics = Optics {
     x_span: 600.0,
-    beam_radius: None
+    beam_radius: None,
+    divergence_urad: 0.0
   };
 
   #[test]
@@ -381,7 +387,8 @@ mod tests {
     // 0.25 / ((1.596 / 1000) * 14.0) is about 11.2 steps, under 3 x 20.
     let optics = Optics {
       x_span: 800.0,
-      beam_radius: Some(1_000.0)
+      beam_radius: Some(1_000.0),
+      divergence_urad: 0.0
     };
     let (config, formula) = config_for(optics, 20);
     let formula = formula.unwrap();
@@ -395,7 +402,8 @@ mod tests {
     // Twice the 4 mm placeholder radius: 0.25 / ((1.596 / 8000) * 14.0), about 89.4 steps, above the clamp.
     let optics = Optics {
       x_span: 800.0,
-      beam_radius: Some(8_000.0)
+      beam_radius: Some(8_000.0),
+      divergence_urad: 0.0
     };
     let (config, formula) = config_for(optics, 20);
     assert!((formula.unwrap() - 89.4).abs() < 0.1);
@@ -406,7 +414,8 @@ mod tests {
   fn the_scenario_uses_the_x_span_and_the_beam_radius() {
     let optics = Optics {
       x_span: 800.0,
-      beam_radius: Some(1_500.0)
+      beam_radius: Some(1_500.0),
+      divergence_urad: 0.0
     };
     let imperfections = Imperfections {
       backlash: 20,

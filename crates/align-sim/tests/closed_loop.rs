@@ -497,6 +497,46 @@ fn a_two_position_absolute_target_fails_where_the_three_position_difference_succ
   assert!(absolute_angles > 5.0 * difference_angles);
 }
 
+/// A known limit of the difference vector, not a requirement: it cancels a head offset only while the beam has
+/// the same size at A, B, and C. With divergence `theta`, the aligner makes the normalized readings equal, so the
+/// beam position grows with the radius, and `m = 0` lies at a tilt of about `theta * offset / radius`: 172 urad for
+/// 1.5 mrad, a 460 um offset, and a 4 mm radius, as the review of 2026-11-15 estimated. The tolerance is tightened
+/// here to show where that target is; at the 0.02 tolerance the aligner stops on the way, and with these numbers
+/// `m` at the true alignment is only about 0.028, so it ends near half the tilt. Every input is UNVERIFIED. The
+/// tilt shrinks with the offset, which is the case for mechanical centering.
+#[test]
+fn a_diverging_beam_turns_a_head_offset_into_a_tilt_of_divergence_times_offset_over_radius() {
+  let tilt_after_alignment = |divergence_urad: f64, offset_um: f64| {
+    let scenario = Scenario {
+      beam: Beam {
+        divergence_urad,
+        ..Beam::PLACEHOLDER
+      },
+      head_offset_um: [offset_um, 0.0],
+      ..Scenario::IDEAL
+    };
+    let rig = Rig::new(scenario);
+    let stored = rig.stored_calibration([1.0; 4]);
+    let mut config = characterized();
+    config.solver.converge_tol_norm = 0.001;
+    let mut aligner = rig.aligner(config).unwrap().with_calibration(stored);
+    block_on(aligner.align()).unwrap();
+    let angles = rig.world().angle_errors();
+    (angles.leg1_h_urad, angles.leg2_h_urad)
+  };
+  let (leg1, leg2) = tilt_after_alignment(1_500.0, 460.0);
+  let expected = 1_500.0 * 460.0 / 4_000.0;
+  assert!(
+    (leg1 - expected).abs() < 0.15 * expected,
+    "leg 1: {leg1} urad, about {expected} expected"
+  );
+  assert!((leg2 - expected).abs() < 0.15 * expected, "leg 2: {leg2} urad");
+  let (leg1, leg2) = tilt_after_alignment(1_500.0, 0.0);
+  assert!(leg1.abs() < 10.0 && leg2.abs() < 10.0, "centered: {leg1}, {leg2}");
+  let (leg1, leg2) = tilt_after_alignment(0.0, 460.0);
+  assert!(leg1.abs() < 10.0 && leg2.abs() < 10.0, "no divergence: {leg1}, {leg2}");
+}
+
 // --- the imperfections, one at a time ---------------------------------------------------------------------------
 
 #[test]

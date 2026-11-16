@@ -69,8 +69,11 @@ impl Geometry {
 /// The beam and the detector.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Beam {
-  /// Gaussian 1/e^2 radius at the head.
+  /// Gaussian 1/e^2 radius at the head, at point A.
   pub radius_um: f64,
+  /// UNVERIFIED: far-field half-angle divergence, in microradians. The radius grows by this much per meter of path
+  /// beyond point A, so that B and C see a larger beam. Zero in the placeholder.
+  pub divergence_urad: f64,
   /// Half the side of the square detector.
   pub aperture_half_um: f64,
   /// Sum of the four quadrants for a centered beam.
@@ -84,6 +87,7 @@ impl Beam {
   /// example on a 20 mm detector, without noise.
   pub const PLACEHOLDER: Self = Self {
     radius_um: 4_000.0,
+    divergence_urad: 0.0,
     aperture_half_um: 10_000.0,
     sum_ref: 1_000.0,
     quadrant_noise_sigma: 0.0
@@ -350,6 +354,7 @@ impl World {
 
   /// The Jacobian of the three-position difference vector at the center of the sensor, from the model's own
   /// parameters. The alignment code never sees this; tests use it as the truth to compare with and to corrupt.
+  /// It takes the beam radius at A everywhere, so with divergence it is an approximation.
   pub fn true_jacobian(&self) -> Jacobian {
     let geometry = self.scenario.geometry;
     let slope_per_um = f64::from(units::GAUSSIAN_CENTER_SLOPE) / self.scenario.beam.radius_um;
@@ -401,12 +406,22 @@ impl World {
     f64::from(mechanics.deflect_k.get(axis) * units::mirror_tilt_urad(mechanics, axis, 1.0))
   }
 
+  /// The beam radius at the given path lengths: `radius_um` at point A, growing with the divergence beyond it.
+  pub fn radius_um(&self, ly_mm: f64, lx_mm: f64) -> f64 {
+    let beam = self.scenario.beam;
+    let geometry = self.scenario.geometry;
+    let beyond_a_mm = (ly_mm + lx_mm) - (geometry.ly_near_mm + geometry.lx_near_mm);
+    // Microradians times millimeters is nanometers.
+    beam.radius_um + beam.divergence_urad * beyond_a_mm * 1.0e-3
+  }
+
   /// What the sensor node reports for a beam at the given path lengths, with the given noise on its quadrants.
   fn reading(&self, ly_mm: f64, lx_mm: f64, noise: [f64; 4]) -> Reading {
     let beam = self.scenario.beam;
     let [x_um, y_um] = self.beam_um(ly_mm, lx_mm);
-    let (left, right) = halves(x_um, &beam);
-    let (bottom, top) = halves(y_um, &beam);
+    let radius_um = self.radius_um(ly_mm, lx_mm);
+    let (left, right) = halves(x_um, radius_um, beam.aperture_half_um);
+    let (bottom, top) = halves(y_um, radius_um, beam.aperture_half_um);
     let [noise_a, noise_b, noise_c, noise_d] = noise;
     #[expect(clippy::cast_possible_truncation, reason = "the sensor node reports f32")]
     let signal = |fraction: f64, noise: f64| (beam.sum_ref * fraction + noise) as f32;
@@ -425,13 +440,13 @@ impl World {
   }
 }
 
-/// The fractions of a Gaussian beam centered at `center_um` that fall on the negative and the positive half of
-/// the detector along one direction.
-fn halves(center_um: f64, beam: &Beam) -> (f64, f64) {
-  let scale = core::f64::consts::SQRT_2 / beam.radius_um;
+/// The fractions of a Gaussian beam of 1/e^2 radius `radius_um`, centered at `center_um`, that fall on the
+/// negative and the positive half of a detector of half side `aperture_half_um` along one direction.
+fn halves(center_um: f64, radius_um: f64, aperture_half_um: f64) -> (f64, f64) {
+  let scale = core::f64::consts::SQRT_2 / radius_um;
   let at_center = libm::erf(scale * center_um);
-  let positive = 0.5 * (libm::erf(scale * (beam.aperture_half_um - center_um)) + at_center);
-  let negative = 0.5 * (libm::erf(scale * (beam.aperture_half_um + center_um)) - at_center);
+  let positive = 0.5 * (libm::erf(scale * (aperture_half_um - center_um)) + at_center);
+  let negative = 0.5 * (libm::erf(scale * (aperture_half_um + center_um)) - at_center);
   (negative, positive)
 }
 
