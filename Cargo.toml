@@ -8,6 +8,7 @@ members = [
   "crates/node-logic",
   "crates/sensor-logic",
   "firmware/node",
+  "firmware/sensor",
   "firmware/coordinator"
 ]
 # The firmware crates build only for riscv32imac-unknown-none-elf. Leaving them out of `default-members` lets a

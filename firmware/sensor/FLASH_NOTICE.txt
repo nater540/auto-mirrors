@@ -1,0 +1,11 @@
+align-sensor: sensor node (plan revision 4), five bench buttons instead of a detector, PROVISIONAL pins
+
+Motors:      none. This image drives no output pin at all.
+Laser:       never fired; the sensor has no fire output.
+Inputs:      five buttons on GPIO 18 (A), 19 (B), 20 (C), 21 (D), and 10 (center), pulled down, active high:
+             wire each button between its pin and 3V3. Meant for a board of its own, not the motor node's.
+Bus:         TWAI on GPIO 22 alone (TX and RX looped back, open drain, pull-up), 250 kbit/s, self-test mode,
+             no transceiver. It sends a heartbeat every 100 ms, and a SENSOR reading 200 ms after each SHOT
+             (or each button chord in bench mode). GPIO 23 stays in its reset state.
+Other I/O:   none. Every other GPIO stays in its reset state.
+Flash:       nothing is written after boot.

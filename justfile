@@ -14,7 +14,7 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 # The ESP32-C6 target, and the crates that are built for it.
 target := "riscv32imac-unknown-none-elf"
 chip := "esp32c6"
-firmware_crates := "-p align-node -p align-coordinator"
+firmware_crates := "-p align-node -p align-sensor -p align-coordinator"
 no_std_crates := "-p align-core -p align-proto -p stepper -p node-logic -p sensor-logic"
 release_dir := "target" / target / "release"
 
@@ -143,7 +143,7 @@ firmware:
 firmware-clippy:
     cargo clippy {{ firmware_crates }} --target {{ target }} --release -- -D warnings
 
-# Write the flashable image of `node` or `coordinator` to target/images/ and print its size (touches no board)
+# Write the flashable image of `node`, `sensor`, or `coordinator` to target/images/ and print its size (touches no board)
 [group('firmware')]
 image crate: (_firmware-crate crate)
     cargo build -p align-{{ crate }} --target {{ target }} --release
@@ -167,7 +167,7 @@ ports:
 board-info port="":
     espflash board-info --chip {{ chip }} {{ if port == "" { "" } else { "--port " + port } }}
 
-# Flash `node` or `coordinator` after its notice is acknowledged; without a terminal, check the boot log after
+# Flash `node`, `sensor`, or `coordinator` after its notice is acknowledged; without a terminal, check the boot log after
 [group('board')]
 flash crate port="" secs="15":
     {{ board }} flash {{ crate }} "{{ port }}" {{ secs }}
@@ -197,9 +197,9 @@ reset port="":
 _firmware-crate crate:
     #!/usr/bin/env bash
     case "{{ crate }}" in
-      node | coordinator) ;;
+      node | sensor | coordinator) ;;
       *)
-        echo "the firmware crate must be 'node' or 'coordinator' (got '{{ crate }}')" >&2
+        echo "the firmware crate must be 'node', 'sensor', or 'coordinator' (got '{{ crate }}')" >&2
         exit 1
         ;;
     esac

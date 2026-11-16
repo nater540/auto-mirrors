@@ -72,6 +72,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "align-sensor"
+version = "0.1.0"
+dependencies = [
+ "align-core",
+ "align-proto",
+ "embassy-executor",
+ "embassy-futures",
+ "embassy-sync 0.8.0",
+ "embassy-time",
+ "embedded-can",
+ "embedded-io-async 0.7.0",
+ "esp-backtrace",
+ "esp-bootloader-esp-idf",
+ "esp-hal",
+ "esp-println",
+ "esp-rtos",
+ "log",
+ "sensor-logic",
+ "static_cell",
+]
+
+[[package]]
 name = "align-sim"
 version = "0.1.0"
 dependencies = [

@@ -1,0 +1,35 @@
+[package]
+name = "align-sensor"
+description = "ESP32-C6 sensor node: SHOT handling and readings, from five bench buttons until the detector exists"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "align-sensor"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+esp-hal.workspace = true
+esp-rtos.workspace = true
+esp-bootloader-esp-idf.workspace = true
+esp-backtrace.workspace = true
+esp-println.workspace = true
+embassy-executor.workspace = true
+embassy-time.workspace = true
+log.workspace = true
+align-core.workspace = true
+align-proto.workspace = true
+sensor-logic.workspace = true
+embassy-sync.workspace = true
+embassy-futures.workspace = true
+embedded-io-async.workspace = true
+embedded-can.workspace = true
+static_cell.workspace = true
+
+[lints]
+workspace = true

@@ -35,8 +35,8 @@ die() {
 
 check_crate() {
   case "$1" in
-    node | coordinator) ;;
-    *) die "the firmware crate must be 'node' or 'coordinator' (got '$1')" ;;
+    node | sensor | coordinator) ;;
+    *) die "the firmware crate must be 'node', 'sensor', or 'coordinator' (got '$1')" ;;
   esac
 }
 
