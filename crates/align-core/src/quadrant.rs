@@ -62,7 +62,19 @@ pub enum ReadingFault {
   NotRepeatable,
   /// The sum changed too much from the previous shot: misfire or upstream clipping.
   #[error("sensor sum changed from the previous shot")]
-  EnergyChanged
+  EnergyChanged,
+  /// The sensor node found the previous shot's tail overlapping this one.
+  #[error("the sensor node found the previous shot overlapping this one")]
+  Overlap,
+  /// The sensor node could not fit a flat baseline before the shot.
+  #[error("the sensor node found the baseline before the shot unstable")]
+  BaselineUnstable,
+  /// The sensor node's integration of the shot did not end within its cap.
+  #[error("the sensor node's integration of the shot did not end in time")]
+  DecayNotEnded,
+  /// The sensor node's front end failed during the shot.
+  #[error("the sensor node's front end failed during the shot")]
+  FrontEndFault
 }
 
 impl Quadrants {

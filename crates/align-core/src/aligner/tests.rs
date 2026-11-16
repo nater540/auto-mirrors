@@ -275,6 +275,8 @@ struct Script {
   noise: Vec<[f32; 4]>,
   /// A shift of all three readings, by measurement: a head offset, which changes no component of `m`.
   offset: Vec<f32>,
+  /// The sensor node's own rejection of a measurement, by measurement; none once the list is used up.
+  rejections: Vec<Option<ReadingFault>>,
   /// Where each axis really is, in steps.
   q: Vector4<f32>,
   /// What the node counts: the sum of the steps it ran.
@@ -295,6 +297,7 @@ impl Machine {
       response: vec![[1.0; 4]],
       noise: Vec::new(),
       offset: Vec::new(),
+      rejections: Vec::new(),
       q: Vector4::zeros(),
       commanded: [0; 4],
       answers: Vec::new(),
@@ -396,6 +399,7 @@ impl BeamSensor for Machine {
     let index = measured_before(&script);
     let noise = Vector4::from(script.noise.get(index).copied().unwrap_or([0.0; 4]));
     let offset = script.offset.get(index).copied().unwrap_or(0.0);
+    let rejection = script.rejections.get(index).copied().flatten();
     let m = script.m0 + script.jacobian * script.q + noise;
     let reading = |h_norm, v_norm| Reading {
       h_norm,
@@ -406,7 +410,10 @@ impl BeamSensor for Machine {
     let b = reading(a.h_norm + m.x, a.v_norm + m.y);
     let c = reading(b.h_norm + m.z, b.v_norm + m.w);
     script.log.push(Event::Measure);
-    Ok(Shots { a, b, c })
+    match rejection {
+      Some(fault) => Err(SensorFault::Rejected(fault)),
+      None => Ok(Shots { a, b, c })
+    }
   }
 }
 
@@ -745,6 +752,34 @@ fn the_position_the_node_reports_is_adopted_and_a_disagreement_makes_the_axis_su
     (203, true)
   );
 }
+// --- a measurement the sensor node rejects ----------------------------------------------------------------------
+
+#[test]
+fn a_measurement_the_sensor_node_rejects_is_taken_again() {
+  let saturated = Some(ReadingFault::Saturated);
+  let machine = Machine::new([0.0; 4]).with(|script| script.rejections = vec![saturated, saturated]);
+  let report = run(on(&machine, &quiet()).align()).unwrap();
+  assert_eq!(report.iterations, 0);
+  assert_eq!(
+    machine.measure_runs(),
+    [4],
+    "two rejected, then a success and its confirmation"
+  );
+}
+
+#[test]
+fn as_many_rejections_in_a_row_as_invalid_shots_allowed_are_a_reading_fault() {
+  let config = quiet();
+  let overlap = Some(ReadingFault::Overlap);
+  let machine = Machine::new([0.0; 4]).with(|script| script.rejections = vec![overlap; 3]);
+  assert_eq!(config.sensor.max_invalid_shots, 3);
+  assert_eq!(
+    run(on(&machine, &config).align()),
+    Err(AlignFault::Reading(ReadingFault::Overlap))
+  );
+  assert_eq!(machine.measure_runs(), [3]);
+}
+
 // --- confirming a success --------------------------------------------------------------------------------------
 
 #[test]

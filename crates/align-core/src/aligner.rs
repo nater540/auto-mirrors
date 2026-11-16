@@ -634,7 +634,15 @@ impl<A: Actuator, S: BeamSensor> Aligner<A, S> {
     let sensor_limits = self.config.sensor;
     let mut rejected = ReadingFault::NoSignal;
     for _ in 0..sensor_limits.max_invalid_shots.max(1) {
-      let shots = self.sensor.measure().await.map_err(AlignFault::Sensor)?;
+      let shots = match self.sensor.measure().await {
+        Ok(shots) => shots,
+        // The node's own rejection is an invalid shot, taken again like one that fails the checks below.
+        Err(SensorFault::Rejected(fault)) => {
+          rejected = fault;
+          continue;
+        }
+        Err(fault) => return Err(AlignFault::Sensor(fault))
+      };
       let readings = [shots.a, shots.b, shots.c];
       match readings
         .iter()

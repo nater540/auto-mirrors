@@ -10,6 +10,7 @@
 
 use crate::axis::Axis;
 use crate::measurement::Shots;
+use crate::quadrant::ReadingFault;
 
 /// Why a move did not complete.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
@@ -34,12 +35,16 @@ pub enum MoveFault {
   NoAnswer
 }
 
-/// Why a measurement produced no readings.
+/// Why a measurement produced no usable readings.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum SensorFault {
   /// No reading arrived: the job did not run, no fire was seen, or the sensor node was silent.
   #[error("no reading arrived from the sensor")]
-  NoReading
+  NoReading,
+  /// The readings arrived, and the sensor node rejected one itself (saturated, overlapping, or no shot seen).
+  /// The measurement is invalid like one that fails the coordinator's own checks, and is taken again.
+  #[error("the sensor node rejected a reading: {0}")]
+  Rejected(ReadingFault)
 }
 
 /// Turns one adjuster screw.
@@ -73,7 +78,7 @@ pub trait BeamSensor {
   ///
   /// # Errors
   ///
-  /// A [`SensorFault`] if no readings arrived. A reading that arrived but is unusable is not an error here; the
-  /// validity checks on [`Shots`] judge it.
+  /// A [`SensorFault`] if no readings arrived, or if the sensor node rejected one. A reading the node passed but
+  /// that is unusable is not an error here; the validity checks on [`Shots`] judge it.
   async fn measure(&mut self) -> Result<Shots, SensorFault>;
 }
