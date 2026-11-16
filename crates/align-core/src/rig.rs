@@ -30,6 +30,13 @@ pub enum MoveFault {
   /// The node refused the move at its own soft limit. Nothing moved.
   #[error("node refused the move at its soft limit")]
   SoftLimit,
+  /// The node refused the move before running it, and nothing moved:
+  /// inhibited, busy, not configured, no permit, and the like.
+  #[error("node refused the move (fault code {code:#04x})")]
+  Refused {
+    /// The node's fault code (`align_proto::FaultCode`).
+    code: u8
+  },
   /// The node did not answer, so whether and how far the motor moved is unknown.
   #[error("no answer from the node")]
   NoAnswer

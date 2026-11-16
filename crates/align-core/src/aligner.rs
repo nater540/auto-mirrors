@@ -683,7 +683,7 @@ impl<A: Actuator, S: BeamSensor> Aligner<A, S> {
         state.last_dir = LastDir::Unknown;
         match fault {
           MoveFault::Stopped { pos_steps } | MoveFault::RailLost { pos_steps } => state.pos_steps = pos_steps,
-          MoveFault::SoftLimit => {}
+          MoveFault::SoftLimit | MoveFault::Refused { .. } => {}
           // Addendum A.5 asks not to trust the position for the soft limits after a lost move; with no answer
           // there is no position at all to trust, so the axis waits for one from its node.
           MoveFault::NoAnswer => state.lost = true
