@@ -385,12 +385,6 @@ pub enum DecodeError {
     /// The key received.
     key: u8
   },
-  /// A SHOT names a point other than A, B, C, or 0xFF.
-  #[error("Shot names point {value}, which is not defined (0, 1, 2, and 0xFF are)")]
-  UnknownShotPoint {
-    /// The byte received.
-    value: u8
-  },
   /// A SENSOR carries a result code that is not defined. The coordinator cannot judge such a reading.
   #[error("Sensor carries result code {code}, which is not defined (0 to 4, 6, 7, and 9 are)")]
   UnknownSensorResult {
@@ -550,7 +544,9 @@ impl Envelope {
       expected: class.data_len(),
       got: data.len()
     };
-    if data.len() != usize::from(class.data_len()) {
+    // A heartbeat's length is judged by `decode_heartbeat`: a version 1 heartbeat is a byte shorter, and is read
+    // as version 1 so that the version check reports the mismatch instead of the frame being dropped as malformed.
+    if class != Class::Heartbeat && data.len() != usize::from(class.data_len()) {
       return Err(wrong_length);
     }
     // Checks the payload's axis byte against the identifier and returns the channel.
@@ -605,12 +601,7 @@ impl Envelope {
         pos_steps: i32::from_le_bytes([p0, p1, p2, p3]),
         current_ma: u16::from_le_bytes([c0, c1])
       }),
-      (Class::Heartbeat, &[u0, u1, u2, u3, state, fw_version, proto_version]) => Message::Heartbeat {
-        uptime_ms: u32::from_le_bytes([u0, u1, u2, u3]),
-        state,
-        fw_version,
-        proto_version
-      },
+      (Class::Heartbeat, _) => decode_heartbeat(data).ok_or(wrong_length)?,
       (Class::Config, &[key, axis, _pad0, _pad1, v0, v1, v2, v3]) => Message::Config {
         key: ConfigKey::from_byte(key).ok_or(DecodeError::UnknownConfigKey { key })?,
         channel: channel(axis)?,
@@ -636,6 +627,21 @@ impl Envelope {
   }
 }
 
+/// A heartbeat payload: seven bytes, or six from a version 1 sender, which is then read as version 1.
+fn decode_heartbeat(data: &[u8]) -> Option<Message> {
+  let (uptime, state, fw_version, proto_version) = match *data {
+    [u0, u1, u2, u3, state, fw_version] => ([u0, u1, u2, u3], state, fw_version, 1),
+    [u0, u1, u2, u3, state, fw_version, version] => ([u0, u1, u2, u3], state, fw_version, version),
+    _ => return None
+  };
+  Some(Message::Heartbeat {
+    uptime_ms: u32::from_le_bytes(uptime),
+    state,
+    fw_version,
+    proto_version
+  })
+}
+
 /// The sensor classes' payloads (`docs/SENSOR_PLAN.md` section 3). `Ok(None)` for a class or length that is not one
 /// of them, which the caller has already ruled out.
 fn decode_sensor(class: Class, data: &[u8]) -> Result<Option<Message>, DecodeError> {
@@ -651,7 +657,8 @@ fn decode_sensor(class: Class, data: &[u8]) -> Result<Option<Message>, DecodeErr
       let age = u16::from_le_bytes([a0, a1]);
       Message::Shot(Shot {
         seq,
-        point: ShotPoint::from_byte(point).ok_or(DecodeError::UnknownShotPoint { value: point })?,
+        // The point is only logged: an unknown one is carried as Other rather than losing the fire.
+        point: ShotPoint::from_byte(point).unwrap_or(ShotPoint::Other),
         edge_age_10us: (age != EDGE_AGE_UNKNOWN).then_some(age)
       })
     }
@@ -931,10 +938,17 @@ mod tests {
   }
 
   #[test]
-  fn undefined_shot_points_sensor_ops_and_command_statuses_are_rejected() {
+  fn undefined_sensor_ops_and_command_statuses_are_rejected_and_an_unknown_point_is_carried() {
+    let unknown_point = decode(0xA << 7, &[4, 3, 0, 0]).unwrap();
+    let expected = Shot {
+      seq: 4,
+      point: ShotPoint::Other,
+      edge_age_10us: Some(0)
+    };
     assert_eq!(
-      decode(0xA << 7, &[0, 3, 0, 0]),
-      Err(DecodeError::UnknownShotPoint { value: 3 })
+      unknown_point.message,
+      Message::Shot(expected),
+      "an unknown point is carried as Other"
     );
     let sensor = 3 << 3;
     assert_eq!(
@@ -968,13 +982,21 @@ mod tests {
       message: heartbeat
     });
     assert_eq!(encoded.data(), &[1, 2, 3, 4, 1, 9, 2]);
-    // A version-1 heartbeat, six bytes long, is now a wrong length rather than a misread.
-    let six = DecodeError::WrongLength {
+    // A version 1 heartbeat, six bytes long, reads as version 1, so that the version check can report it.
+    let legacy = decode(0x8 << 7, &[1, 0, 0, 0, 2, 3]).unwrap();
+    let expected = Message::Heartbeat {
+      uptime_ms: 1,
+      state: 2,
+      fw_version: 3,
+      proto_version: 1
+    };
+    assert_eq!(legacy.message, expected);
+    let five = DecodeError::WrongLength {
       class: Class::Heartbeat,
       expected: 7,
-      got: 6
+      got: 5
     };
-    assert_eq!(decode(0x8 << 7, &[0; 6]), Err(six));
+    assert_eq!(decode(0x8 << 7, &[0; 5]), Err(five));
   }
 
   #[test]
@@ -1347,7 +1369,11 @@ mod tests {
       if let Ok(envelope) = Envelope::decode(&received) {
         let sent = encode(envelope);
         prop_assert_eq!(sent.raw_id(), received.raw_id());
-        prop_assert_eq!(sent.data().len(), received.data().len());
+        // A version 1 heartbeat is re-encoded in the current, one byte longer layout.
+        let legacy = matches!(envelope.message, Message::Heartbeat { proto_version: 1, .. }) && received.data().len() == 6;
+        if !legacy {
+          prop_assert_eq!(sent.data().len(), received.data().len());
+        }
         prop_assert_eq!(Envelope::decode(&sent), Ok(envelope));
       }
     }
