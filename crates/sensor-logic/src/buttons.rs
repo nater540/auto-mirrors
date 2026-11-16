@@ -48,23 +48,27 @@ impl ButtonBench {
   };
 }
 
-/// Debounces the five levels together: a change counts once the raw levels have held it for `debounce_ms`.
+/// Debounces each of the five buttons on its own timer: a button's change counts once its raw level has held for
+/// `debounce_ms`, whatever the other buttons do (a chattering one cannot hold the others back).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Debouncer {
   stable: ButtonSet,
   candidate: ButtonSet,
-  candidate_since_ms: u64
+  since_ms: [u64; 5]
 }
 
 impl Debouncer {
   /// Takes one sample of the raw levels and returns the stable set.
   pub fn sample(&mut self, raw: ButtonSet, now_ms: u64, debounce_ms: u32) -> ButtonSet {
-    if raw != self.candidate {
-      self.candidate = raw;
-      self.candidate_since_ms = now_ms;
-    }
-    if now_ms.saturating_sub(self.candidate_since_ms) >= u64::from(debounce_ms) {
-      self.stable = self.candidate;
+    for (bit, since_ms) in self.since_ms.iter_mut().enumerate() {
+      let button = ButtonSet::from_bits_truncate(1 << bit);
+      if raw.contains(button) != self.candidate.contains(button) {
+        self.candidate.set(button, raw.contains(button));
+        *since_ms = now_ms;
+      }
+      if now_ms.saturating_sub(*since_ms) >= u64::from(debounce_ms) {
+        self.stable.set(button, self.candidate.contains(button));
+      }
     }
     self.stable
   }
@@ -219,6 +223,41 @@ mod tests {
     debouncer.sample(ButtonSet::A, 15, 20);
     assert_eq!(debouncer.sample(ButtonSet::A, 30, 20), ButtonSet::empty());
     assert_eq!(debouncer.sample(ButtonSet::A, 35, 20), ButtonSet::A);
+  }
+
+  #[test]
+  fn every_button_debounces_on_its_own() {
+    for button in [
+      ButtonSet::A,
+      ButtonSet::B,
+      ButtonSet::C,
+      ButtonSet::D,
+      ButtonSet::CENTER
+    ] {
+      let mut debouncer = Debouncer::default();
+      debouncer.sample(button, 0, 20);
+      assert_eq!(debouncer.sample(button, 20, 20), button, "{button:?}");
+    }
+  }
+
+  #[test]
+  fn a_chattering_button_does_not_freeze_the_others() {
+    let mut debouncer = Debouncer::default();
+    let mut stable = ButtonSet::empty();
+    for now in (0..2_000).step_by(5) {
+      let a = if (0..30).contains(&now) {
+        ButtonSet::A
+      } else {
+        ButtonSet::empty()
+      };
+      let d = if (now / 10) % 2 == 0 {
+        ButtonSet::D
+      } else {
+        ButtonSet::empty()
+      };
+      stable = debouncer.sample(a | d, now, 20);
+    }
+    assert!(!stable.contains(ButtonSet::A), "A was released long ago");
   }
 
   /// Runs stable levels through the chord logic at 5 ms steps and collects the chords.

@@ -121,6 +121,8 @@ struct Pending {
   seq: u8,
   bench: bool,
   due_ms: u64,
+  /// The order shots arrived in: readings go out in this order (a reading is never overtaken).
+  arrival: u32,
   reading: Reading
 }
 
@@ -135,6 +137,8 @@ struct Seen {
 pub struct SensorNode {
   setup: SensorSetup,
   method: ButtonMethod,
+  physical_held: ButtonSet,
+  console_held: ButtonSet,
   bench_mode: bool,
   protocol_mismatch: bool,
   coordinator_uptime_ms: Option<u32>,
@@ -144,6 +148,7 @@ pub struct SensorNode {
   pending: [Option<Pending>; MAX_PENDING],
   injection: Injection,
   bench_seq: u8,
+  arrivals: u32,
   next_heartbeat_ms: u64,
   write_cursor: usize
 }
@@ -157,6 +162,8 @@ impl SensorNode {
         bench: setup.bench,
         held: ButtonSet::empty()
       },
+      physical_held: ButtonSet::empty(),
+      console_held: ButtonSet::empty(),
       bench_mode: false,
       protocol_mismatch: false,
       coordinator_uptime_ms: None,
@@ -166,6 +173,7 @@ impl SensorNode {
       pending: [None; MAX_PENDING],
       injection: Injection::default(),
       bench_seq: 0,
+      arrivals: 0,
       next_heartbeat_ms: 0,
       write_cursor: 0
     }
@@ -187,12 +195,20 @@ impl SensorNode {
     self.bench_mode
   }
 
-  /// The buttons held now, debounced.
-  pub const fn set_held(&mut self, held: ButtonSet) {
-    self.method.held = held;
+  /// The physical buttons held now, debounced.
+  pub fn set_held(&mut self, held: ButtonSet) {
+    self.physical_held = held;
+    self.method.held = self.physical_held | self.console_held;
   }
 
-  /// The buttons held now.
+  /// The buttons the console holds, added to the physical ones. Takes effect at once, so that a console `hold`
+  /// followed straight away by a `shot` reads the new position.
+  pub fn set_console_held(&mut self, held: ButtonSet) {
+    self.console_held = held;
+    self.method.held = self.physical_held | self.console_held;
+  }
+
+  /// The buttons held now, physical and console together.
   pub const fn held(&self) -> ButtonSet {
     self.method.held
   }
@@ -217,11 +233,11 @@ impl SensorNode {
     self.bench_mode = on;
   }
 
-  /// The last result sent for `seq`, if it is among the last eight.
+  /// The newest bus reading sent for `seq`, if it is among the last eight. Bench readings are never kept here:
+  /// SENSOR_RESEND serves the coordinator's shots only.
   pub fn result(&self, seq: u8) -> Option<SensorReading> {
-    self
-      .results
-      .iter()
+    (1..=KEPT)
+      .filter_map(|back| self.results.get((self.write_cursor + KEPT - back) % KEPT))
       .flatten()
       .find(|reading| reading.seq == seq)
       .copied()
@@ -261,6 +277,16 @@ impl SensorNode {
       held: chord
     }
     .read();
+    let seq = self.bench_seq;
+    self.bench_seq = self.bench_seq.wrapping_add(1);
+    self.schedule(now_ms, seq, true, reading, io);
+  }
+
+  /// A shot from the console, at the held position: reported with the bench bit and the bench counter, never as an
+  /// answer to the coordinator, so that it can neither block nor impersonate a real shot. The console's injection
+  /// applies to it.
+  pub fn console_shot(&mut self, now_ms: u64, io: &mut impl SensorIo) {
+    let reading = self.method.read();
     let seq = self.bench_seq;
     self.bench_seq = self.bench_seq.wrapping_add(1);
     self.schedule(now_ms, seq, true, reading, io);
@@ -311,8 +337,14 @@ impl SensorNode {
     if mismatch {
       return;
     }
-    if self.coordinator_uptime_ms.is_some_and(|previous| uptime_ms < previous) {
-      self.forget_bus_shots();
+    // A reboot is a coordinator uptime that disagrees with the local clock by more than the loss window. Comparing
+    // with wrapping arithmetic keeps the 49.7-day wrap of the u32 uptime from looking like one.
+    if let (Some(previous), Some(seen_ms)) = (self.coordinator_uptime_ms, self.last_heartbeat_ms) {
+      let remote = i64::from(uptime_ms.wrapping_sub(previous));
+      let local = i64::try_from(now_ms.saturating_sub(seen_ms)).unwrap_or(i64::MAX);
+      if remote.abs_diff(local) > u64::from(self.setup.sensor_timing.coordinator_loss_ms) {
+        self.forget_bus_shots();
+      }
     }
     self.coordinator_uptime_ms = Some(uptime_ms);
     self.last_heartbeat_ms = Some(now_ms);
@@ -368,16 +400,29 @@ impl SensorNode {
   /// the coordinator then knows it, rather than waiting for its own timeout.
   fn schedule(&mut self, now_ms: u64, seq: u8, bench: bool, mut reading: Reading, io: &mut impl SensorIo) {
     if let Some(result) = self.injection.next_result.take() {
+      // A result that carries a position, over a reading that had none, reads as a centered full beam rather than
+      // a "valid" reading with no signal.
+      if result.has_position() && !reading.result.has_position() {
+        reading = Reading {
+          result,
+          h_q15: 0,
+          v_q15: 0,
+          sum_q: SUM_Q_ONE
+        };
+      }
       reading.result = result;
     }
     if let Some(sum_q) = self.injection.sum_q {
       reading.sum_q = sum_q;
     }
     let due_ms = now_ms.saturating_add(u64::from(self.method.bench.reply_delay_ms));
+    let arrival = self.arrivals;
+    self.arrivals = self.arrivals.wrapping_add(1);
     let pending = Pending {
       seq,
       bench,
       due_ms,
+      arrival,
       reading
     };
     if let Some(slot) = self.pending.iter_mut().find(|slot| slot.is_none()) {
@@ -388,8 +433,8 @@ impl SensorNode {
       .pending
       .iter()
       .enumerate()
-      .filter_map(|(index, slot)| slot.map(|waiting| (index, waiting.due_ms)))
-      .min_by_key(|(_, due_ms)| *due_ms)
+      .filter_map(|(index, slot)| slot.map(|waiting| (index, waiting.arrival.wrapping_sub(arrival))))
+      .min_by_key(|(_, age)| *age)
       .map(|(index, _)| index);
     if let Some(slot) = oldest.and_then(|index| self.pending.get_mut(index))
       && let Some(mut given_way) = slot.replace(pending)
@@ -404,13 +449,16 @@ impl SensorNode {
     }
   }
 
-  /// Removes and returns the earliest shot that is due, if any.
+  /// Removes and returns the oldest pending shot if it is due. A later shot waits behind an earlier one, so that
+  /// readings go out in shot order whatever their delays.
   fn take_due(&mut self, now_ms: u64) -> Option<Pending> {
+    let next = self.arrivals;
     self
       .pending
       .iter_mut()
+      .filter(|slot| slot.is_some())
+      .min_by_key(|slot| slot.map_or(u32::MAX, |pending| pending.arrival.wrapping_sub(next)))
       .filter(|slot| slot.is_some_and(|pending| pending.due_ms <= now_ms))
-      .min_by_key(|slot| slot.map_or(u64::MAX, |pending| pending.due_ms))
       .and_then(Option::take)
   }
 
@@ -432,15 +480,18 @@ impl SensorNode {
       v_q15: if has_position { reading.v_q15 } else { 0 },
       sum_q
     };
-    if let Some(slot) = self.results.get_mut(self.write_cursor) {
-      *slot = Some(message);
+    if !pending.bench {
+      if let Some(slot) = self.results.get_mut(self.write_cursor) {
+        *slot = Some(message);
+      }
+      self.write_cursor = (self.write_cursor + 1) % KEPT;
     }
-    self.write_cursor = (self.write_cursor + 1) % KEPT;
     Self::send(io, Message::Sensor(message));
   }
 
   fn forget_bus_shots(&mut self) {
     self.seen = [None; KEPT];
+    self.results = [None; KEPT];
     for slot in &mut self.pending {
       if slot.is_some_and(|pending| !pending.bench) {
         *slot = None;

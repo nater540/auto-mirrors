@@ -22,7 +22,7 @@ pub enum Command {
   Hold(ButtonSet),
   /// Release every held button.
   Release,
-  /// Inject a SHOT through the receive path, as if from the coordinator.
+  /// Fire a console shot at the held position, reported as a bench reading.
   Shot {
     /// Where the gantry was.
     point: ShotPoint,
@@ -44,7 +44,7 @@ status                        state, held buttons, injection, and the last resul
 bench on|off                  enter or leave bench mode (buttons fire shots; SHOT frames are ignored)
 press <set>                   act as a button chord, for example `press a` or `press ab` (x is the center)
 hold <set> | release          hold buttons as the position for the next SHOT, or release them
-shot [a|b|c|other] [age]      inject a SHOT from the coordinator; age in 10 us units
+shot [a|b|c|other] [age]      fire a console shot at the held position (a bench reading; point and age logged)
 sim delay <ms>                delay from a shot to its reading
 sim next <result>             valid, noshot, saturated, negative, baseline, overlap, timeout, frontend
 sim sum <percent>|off         report this sum in percent of S_ref, or the method's";

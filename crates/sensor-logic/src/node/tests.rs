@@ -512,6 +512,173 @@ fn the_heartbeat_uptime_is_the_node_s_clock_in_milliseconds() {
   assert!(matches!(io.sent[0], Message::Heartbeat { uptime_ms: 1_234, .. }));
 }
 
+// --- review findings, 2026-11-15 ---------------------------------------------------------------------------------
+
+#[test]
+fn a_resend_after_a_coordinator_reboot_returns_the_new_epoch_s_reading() {
+  let (mut node, mut io) = node();
+  node.set_held(ButtonSet::A);
+  node.on_frame(0, shot(0), &mut io);
+  run(&mut node, &mut io, 0, DELAY);
+  // The coordinator restarts; its seq 0 is a new shot, read with C held, and that SENSOR frame is lost.
+  node.on_frame(DELAY + 10, heartbeat(5, PROTOCOL_VERSION), &mut io);
+  node.set_held(ButtonSet::C);
+  node.on_frame(DELAY + 20, shot(0), &mut io);
+  node.tick(2 * DELAY + 20, &mut io);
+  io.take();
+  node.on_frame(2 * DELAY + 30, to_sensor(Message::SensorResend { seq: 0 }), &mut io);
+  let resent = io.readings();
+  assert_eq!(resent.len(), 1);
+  assert_eq!((resent[0].h_q15, resent[0].v_q15), (-C, -C));
+}
+
+#[test]
+fn a_resend_never_returns_a_bench_reading() {
+  let (mut node, mut io) = node();
+  node.set_bench(true);
+  for at in [0, 10, 20] {
+    node.on_chord(at, ButtonSet::D, &mut io);
+  }
+  run(&mut node, &mut io, 0, DELAY + 20);
+  node.set_bench(false);
+  node.set_held(ButtonSet::B);
+  node.on_frame(DELAY + 30, shot(1), &mut io);
+  node.tick(2 * DELAY + 30, &mut io);
+  io.take();
+  node.on_frame(2 * DELAY + 40, to_sensor(Message::SensorResend { seq: 1 }), &mut io);
+  let resent = io.readings();
+  assert_eq!(resent.len(), 1);
+  assert!(!resent[0].status.bench);
+  assert_eq!((resent[0].h_q15, resent[0].v_q15), (-C, C));
+}
+
+#[test]
+fn the_newest_kept_result_for_a_seq_is_the_one_resent() {
+  let (mut node, mut io) = node();
+  node.set_held(ButtonSet::A);
+  node.on_frame(0, shot(7), &mut io);
+  run(&mut node, &mut io, 0, DELAY);
+  node.set_held(ButtonSet::D);
+  // Outside the dedup window, the same seq is a new shot.
+  node.on_frame(3_000, shot(7), &mut io);
+  run(&mut node, &mut io, 3_000, 3_000 + DELAY);
+  io.take();
+  node.on_frame(3_500, to_sensor(Message::SensorResend { seq: 7 }), &mut io);
+  assert_eq!((io.readings()[0].h_q15, io.readings()[0].v_q15), (C, -C));
+}
+
+#[test]
+fn console_held_buttons_apply_at_once_and_add_to_the_physical_ones() {
+  let (mut node, mut io) = node();
+  node.set_console_held(ButtonSet::A);
+  node.on_frame(0, shot(1), &mut io);
+  node.set_held(ButtonSet::B);
+  node.on_frame(10, shot(2), &mut io);
+  node.set_console_held(ButtonSet::empty());
+  node.on_frame(20, shot(3), &mut io);
+  run(&mut node, &mut io, 0, DELAY + 20);
+  let positions: Vec<(i16, i16)> = io
+    .readings()
+    .iter()
+    .map(|reading| (reading.h_q15, reading.v_q15))
+    .collect();
+  assert_eq!(
+    positions,
+    [(C, C), (0, C), (-C, C)],
+    "A, then A and B (top edge), then B"
+  );
+}
+
+#[test]
+fn a_console_shot_is_a_bench_reading_that_never_blocks_a_bus_shot() {
+  let (mut node, mut io) = node();
+  node.set_held(ButtonSet::A);
+  node.console_shot(0, &mut io);
+  // The coordinator's own shot 0 arrives just after: it must be answered.
+  node.on_frame(10, shot(0), &mut io);
+  run(&mut node, &mut io, 0, DELAY + 10);
+  let readings = io.readings();
+  assert_eq!(readings.len(), 2);
+  assert!(
+    readings[0].status.bench,
+    "the console shot is marked so the coordinator ignores it"
+  );
+  assert!(!readings[1].status.bench);
+  assert_eq!(readings[1].seq, 0);
+}
+
+#[test]
+fn a_button_held_both_physically_and_on_the_console_stays_held() {
+  let (mut node, _) = node();
+  node.set_held(ButtonSet::A);
+  node.set_console_held(ButtonSet::A);
+  assert_eq!(node.held(), ButtonSet::A);
+  node.set_held(ButtonSet::A);
+  assert_eq!(node.held(), ButtonSet::A);
+}
+
+#[test]
+fn an_uptime_that_disagrees_with_the_local_clock_by_exactly_the_loss_window_is_not_a_reboot() {
+  let loss = SensorTiming::STARTING.coordinator_loss_ms;
+  let mut node = SensorNode::new(setup());
+  let mut io = Recorder::default();
+  node.on_frame(0, heartbeat(10_000, PROTOCOL_VERSION), &mut io);
+  node.on_frame(10, shot(1), &mut io);
+  // 100 ms of local time, 100 + loss ms of coordinator uptime: at the boundary, still the same coordinator.
+  node.on_frame(100, heartbeat(10_100 + loss, PROTOCOL_VERSION), &mut io);
+  node.tick(10 + DELAY, &mut io);
+  assert_eq!(io.readings().len(), 1);
+  // One more millisecond of disagreement is a reboot.
+  node.on_frame(200, shot(2), &mut io);
+  node.on_frame(300, heartbeat(10_300 + 2 * loss + 1, PROTOCOL_VERSION), &mut io);
+  node.tick(200 + DELAY, &mut io);
+  assert_eq!(
+    io.readings().len(),
+    1,
+    "the pending shot was dropped as a coordinator reboot"
+  );
+}
+
+#[test]
+fn the_uptime_wrap_after_49_days_is_not_a_coordinator_reboot() {
+  let mut node = SensorNode::new(setup());
+  let mut io = Recorder::default();
+  let start = u32::MAX - 50;
+  node.on_frame(0, heartbeat(start, PROTOCOL_VERSION), &mut io);
+  node.on_frame(10, shot(1), &mut io);
+  node.on_frame(100, heartbeat(start.wrapping_add(100), PROTOCOL_VERSION), &mut io);
+  node.tick(10 + DELAY, &mut io);
+  assert_eq!(io.readings().len(), 1, "the pending shot survived the wrap");
+}
+
+#[test]
+fn readings_go_out_in_shot_order_even_when_a_slot_is_reused() {
+  let (mut node, mut io) = node();
+  node.on_frame(0, shot(1), &mut io);
+  node.on_frame(DELAY, shot(2), &mut io);
+  node.tick(DELAY, &mut io);
+  node.on_frame(DELAY, shot(3), &mut io);
+  node.set_reply_delay_ms(10);
+  node.on_frame(DELAY + 1, shot(4), &mut io);
+  run(&mut node, &mut io, DELAY, 3 * DELAY);
+  let order: Vec<u8> = io.readings().iter().map(|reading| reading.seq).collect();
+  assert_eq!(order, [1, 2, 3, 4]);
+}
+
+#[test]
+fn an_injected_result_with_a_position_over_a_rejected_chord_reads_as_a_centered_full_beam() {
+  let (mut node, mut io) = node();
+  node.set_held(ButtonSet::A | ButtonSet::C);
+  node.injection_mut().next_result = Some(SensorResult::Valid);
+  node.on_frame(0, shot(1), &mut io);
+  run(&mut node, &mut io, 0, DELAY);
+  let reading = io.readings()[0];
+  assert_eq!(
+    (reading.status.result, reading.h_q15, reading.v_q15, reading.sum_q),
+    (SensorResult::Valid, 0, 0, SUM_Q_ONE)
+  );
+}
+
 #[test]
 fn sum_percent_converts_to_sum_q_and_saturates_from_200() {
   assert_eq!(sum_q_from_percent(100), SUM_Q_ONE);
