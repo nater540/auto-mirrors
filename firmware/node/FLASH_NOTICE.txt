@@ -1,0 +1,9 @@
+align-node: scaffold (milestone M0)
+
+Motors:      none. No stepper output is configured, so no coil can be energized.
+Motor rail:  not driven. No arm pulse is generated; the rail enable stays at its reset state.
+Bus:         none. TWAI is not started.
+Other I/O:   none. Every GPIO stays in its reset state.
+Flash:       nothing is written after boot.
+
+It boots, logs this notice over USB-Serial-JTAG, and idles.

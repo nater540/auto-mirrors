@@ -1,0 +1,10 @@
+align-coordinator: scaffold (milestone M0)
+
+Motors:      none. No move command exists and no bus is started to send one.
+Interlock:   not driven. The relay output and the motor permit stay at their reset state.
+Ruida I/O:   none. FootSW is not driven; Status and fire sense are not read.
+Bus:         none. TWAI is not started.
+Other I/O:   none. Every GPIO stays in its reset state.
+Flash:       nothing is written after boot.
+
+It boots, logs this notice over USB-Serial-JTAG, and idles.
