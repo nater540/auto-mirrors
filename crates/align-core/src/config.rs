@@ -266,6 +266,41 @@ impl NodeTiming {
   };
 }
 
+/// The coordinator's interlock and measurement timing (reference 6.6, 6.7, 7.3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CoordinatorTiming {
+  /// FIRM (reference 7.3): a job that has not fired this long after its start is a fault.
+  pub fire_wait_timeout_ms: u32,
+  /// FIRM (reference 7.3): the motor permit is given only after this long without a fire.
+  pub quiet_before_move_ms: u32,
+  /// UNVERIFIED: the force-guided relay must confirm a change of state within this long. Its operate and release
+  /// times are not known until the part is chosen.
+  pub relay_feedback_timeout_ms: u32,
+  /// UNVERIFIED: the sensor's readings must all arrive this long after the job ends. Sized for the button
+  /// sensor and its resends; a detector's integration time (`docs/SENSOR_PLAN.md`) may need more.
+  pub reading_timeout_ms: u32,
+  /// FIRM (reference 6.6): the start pulse on FootSW, low for at least 100 ms.
+  pub start_pulse_ms: u32,
+  /// FIRM (reference 6.7): one job fires one dot at each of A, B, and C.
+  pub shots_per_job: u8,
+  /// UNVERIFIED: fire edges closer than this belong to one shot (a dot may be several edges with an RF tube or
+  /// PWM). Settled by the Mod5 scope check (`docs/SENSOR_PLAN.md` section 14).
+  pub burst_gap_ms: u32
+}
+
+impl CoordinatorTiming {
+  /// The starting values.
+  pub const STARTING: Self = Self {
+    fire_wait_timeout_ms: 30_000,
+    quiet_before_move_ms: 500,
+    relay_feedback_timeout_ms: 100,
+    reading_timeout_ms: 5_000,
+    start_pulse_ms: 200,
+    shots_per_job: 3,
+    burst_gap_ms: 5
+  };
+}
+
 /// How the sensor node treats SHOT frames (`docs/SENSOR_PLAN.md` sections 3.1 and 9).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SensorTiming {
@@ -320,7 +355,9 @@ pub struct Config {
   /// The bench torque margin test.
   pub torque_test: TorqueTest,
   /// The sensor node's SHOT handling.
-  pub sensor_timing: SensorTiming
+  pub sensor_timing: SensorTiming,
+  /// The coordinator's interlock and measurement timing.
+  pub coordinator: CoordinatorTiming
 }
 
 impl Config {
@@ -332,7 +369,8 @@ impl Config {
     solver: Solver::STARTING,
     node: NodeTiming::STARTING,
     torque_test: TorqueTest::STARTING,
-    sensor_timing: SensorTiming::STARTING
+    sensor_timing: SensorTiming::STARTING,
+    coordinator: CoordinatorTiming::STARTING
   };
 }
 
@@ -374,6 +412,15 @@ mod tests {
     assert_eq!(node.min_step_period_us, 1_000_000 / 500);
     assert!(node.min_step_period_us <= Config::default().motion.step_period_us);
     assert!(Config::default().motion.step_period_us <= node.max_step_period_us);
+  }
+
+  #[test]
+  fn the_coordinator_timing_follows_reference_6_and_7_3() {
+    let timing = Config::default().coordinator;
+    assert_eq!(timing.fire_wait_timeout_ms, 30_000);
+    assert_eq!(timing.quiet_before_move_ms, 500);
+    assert!(timing.start_pulse_ms >= 100, "FootSW must stay low at least 100 ms");
+    assert_eq!(timing.shots_per_job, 3);
   }
 
   #[test]
