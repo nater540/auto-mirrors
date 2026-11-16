@@ -27,6 +27,18 @@ The esp-hal family changes API between minor releases. The crates below are pinn
 | esp-println | =0.18.0 | `esp32c6`, `log-04` | `log` back end over USB-Serial-JTAG. |
 | embassy-executor | =0.10.0 | `log` | Current release; the version esp-rtos 0.4.0 is built against. |
 | embassy-time | =0.5.1 | `log` | Current release (the template asks for 0.5.0; 0.5.1 is a patch). |
+| esp-storage | =0.10.0 | `esp32c6`, `embedded-storage` | Node: blocking flash access for the position records. Moves with the esp-hal family. |
+| embassy-sync | 0.8.0 | | Node: the queues, the blocking mutex around the node, and the move-finished signal. |
+| embassy-futures | 0.1.2 | | Node: `select` of receive against transmit, and of a move against a key press. |
+| embassy-embedded-hal | 0.6.0 | no default features | Node: `BlockingAsync`, the adapter from esp-storage's blocking flash to the async flash sequential-storage takes. |
+| sequential-storage | 8.0.2 | no default features | Node: the record map on the `nvs` partition; it CRC-checks items and keeps the newest per key (reference 5.5). |
+| embedded-io-async | 0.7.0 | | Node: reading the console from USB-Serial-JTAG (esp-hal 1.2.2 implements 0.6 and 0.7). |
+| static_cell | 2.1.1 | | Node: the console line buffer. |
+
+All of the node's crates above were already in `Cargo.lock` through esp-hal and esp-rtos, and were checked on
+2026-11-15. The console parses by hand: `embedded-cli` 0.2.1 (March 2024) and `noline` 0.5.1 (December 2024) are
+past the one-year dormancy rule. The stepper driver is written here: `uln2003` 0.4.0 (January 2025) is half-step
+only and blocking, and `embedded-stepper` 0.1.2 is a blocking port of the Arduino library.
 
 Logging is `log` with esp-println, not defmt. Reason: milestones M4 to M6 need a console a person can read and
 paste back, and defmt output needs a host decoder. This is one choice in two `Cargo.toml` feature lists and can
@@ -41,6 +53,8 @@ change.
 | thiserror | 2.0.21 | no default features | Fault enums; works without `std`. |
 | embedded-can | 0.4.1 | | `align-proto`: the `Frame` trait and `StandardId`, which the esp-hal 1.2.2 TWAI frame implements (`EspTwaiFrame`), so firmware frames go straight into the decoder. Released 2022-09-28, past the one-year dormancy rule; kept because it is a stable trait crate in the active rust-embedded/embedded-hal repository and esp-hal already depends on it. Checked 2026-11-15. |
 | bitflags | 2.13.2 | no default features | `align-proto`: the STATUS flag byte. Released 2026-09-10; already in the tree. Checked 2026-11-15. |
+| embedded-hal | 1.0.0 | | `stepper`: the `OutputPin` the driver is written against; esp-hal 1.2.2 `Output` implements it. |
+| embedded-hal-async | 1.0.0 | | `stepper`: the async `DelayNs`; embassy-time 0.5.1 `Delay` implements it, the host tests fake it. |
 | proptest | 1.12 | `std`, no default features | Property tests, host only. |
 | rand | 0.10.4 | | Simulator only: seeded sensor noise and skipped steps. In 0.10 the convenience methods are on `RngExt`, not `Rng`. |
 | rand_distr | 0.6.0 | | Simulator only: the standard normal distribution. |
@@ -49,14 +63,7 @@ change.
 
 ## Checked, not yet a dependency
 
-These were looked up so that later milestones start from current facts. Check them again when they are added.
-
-| Crate | Current | Needed for |
-|---|---|---|
-| embassy-sync | 0.8.0 | M4: channels, `Signal`, `Watch` (all three modules exist in 0.8.0) |
-| embedded-hal | 1.0.0 | M4: `OutputPin` for the stepper driver |
-| esp-storage | 0.10.0 | M4: flash persistence |
-| sequential-storage | 8.0.2 | M4: persistence map (the reference names it; `ekv` 1.0.0 is the alternative) |
+None at present: every crate looked up for M4 is now a dependency (above).
 
 ## What contradicted the reference
 

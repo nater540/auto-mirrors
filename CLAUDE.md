@@ -32,8 +32,9 @@ add it to the open list in the report.
 Stop at the end of each milestone and report to the owner (hand-off section 6).
 
 - M0 scaffold: done. M1 core math: done. M2 simulator and closed loop: done. M3 protocol: done.
-- M4 stepper and node firmware: next (needs the pin assignments, hand-off open item 7). M5 coordinator firmware,
-  M6 bring-up tools, M7 Ruida UDP (optional, read-only): not started.
+- M4 stepper and node firmware: code done and running on the development board with PROVISIONAL pins. The motor
+  bench test (a 28BYJ-48 on a ULN2003, wired as the node's `FLASH_NOTICE.txt` says) is pending.
+- M5 coordinator firmware, M6 bring-up tools, M7 Ruida UDP (optional, read-only): not started.
 
 ## Things that must not be done
 
@@ -107,6 +108,27 @@ Reference 5.4 and addendum A.8 leave these open; `align-proto` decides them, and
   (`SeqReused`); a new move while one runs is refused (`Busy`). The tracker is RAM only: after a reboot it accepts
   anything, so the node must restore its position before answering a move.
 
+## What the node settled (M4)
+
+`crates/node-logic/src/node.rs` opens with the full list; the ones that shape other milestones:
+
+- **A node boots inhibited.** Only an INHIBIT 0 from the coordinator allows bus moves, and an ESTOP inhibits again.
+  The coordinator (M5) must send INHIBIT 0 on entering `Moving` and INHIBIT 1 on leaving it.
+- **A node needs each channel's soft limits and direction sign by CONFIG after every boot** (they are kept in RAM).
+  The coordinator sends them when it sees a node's uptime restart in its heartbeat.
+- **The node runs the standard approach itself** when a MOVE_REL has `finish_plus`, through
+  `align_core::approach::plan`. The coordinator's actuator must then send a single MOVE_REL with `finish_plus`, not
+  the legs the `Aligner` plans, or the overshoot runs twice. Decide this seam in M5.
+- **The arm pulse runs only while a move runs**, in software, so that a hung CPU drops the rail.
+- **Records are written only between moves**, by the task that runs the moves, so no flash write happens while a
+  motor steps. They live on the `nvs` partition; unreadable contents are erased at boot, every channel then suspect.
+- **Refusals are FAULT frames** with codes 0x20 to 0x2D (`align_proto::FaultCode`), the detail being the move's
+  sequence number or the config key.
+- **The bench console** (`just monitor node`, then `help`) drives motors only in bench mode with the permit present.
+  On the bench there is no switched rail: the firmware checks are the only layer, which the flash notice says.
+- **On the development board, TWAI runs on GPIO 22 alone** in self-test mode (TX and RX looped back through the
+  pin), so frames go out without a transceiver or a second node.
+
 ## Workspace layout
 
 One Cargo workspace, edition 2024, Rust 1.96.0 pinned. Dependencies and lints are declared once in the root
@@ -121,12 +143,17 @@ One Cargo workspace, edition 2024, Rust 1.96.0 pinned. Dependencies and lints ar
 - `crates/align-sim`: `std`. The model of the machine (`world`), the model behind the two traits (`rig`), the
   closed-loop tests (`tests/closed_loop.rs`), and the `align-sim` command-line runner. Every machine number in it
   is an UNVERIFIED placeholder and a scenario parameter, never configuration.
-- `crates/stepper`: `no_std`. 28BYJ-48 driver over `embedded_hal::digital::OutputPin`. Empty until M4.
-- `firmware/node`, `firmware/coordinator`: ESP32-C6 binaries (`align-node`, `align-coordinator`). Scaffold only:
-  they boot, log one line, and touch no pin.
+- `crates/stepper`: `no_std`. 28BYJ-48 full-step driver over `embedded_hal::digital::OutputPin` and the async
+  `DelayNs`: stop flag, rail check, coils released on drop.
+- `crates/node-logic`: `no_std`. The motor node as a state machine (`node`, behind the `NodeIo` trait), its flash
+  record layout (`record`), and the bench console commands (`console`). All host-tested.
+- `firmware/node` (`align-node`): wires `node-logic` to TWAI, the steppers, the arm pulse, the permit and rail
+  inputs, flash, and the USB console. Every pin is in `src/board.rs`, PROVISIONAL for a bare development board.
+- `firmware/coordinator` (`align-coordinator`): scaffold only. It boots, logs its notice, and touches no pin.
 
-Dependency direction: firmware and `align-sim` depend on `align-core`, `align-proto`, and `stepper`; `align-core`
-depends on none of them. HAL types never enter the `crates/` libraries.
+Dependency direction: firmware and `align-sim` depend on `align-core`, `align-proto`, `stepper`, and `node-logic`;
+`node-logic` depends on the first three; `align-core` depends on none of them.
+HAL types never enter the `crates/` libraries.
 
 The firmware crates are workspace members but not `default-members`: a plain `cargo build`, `cargo test`, or
 `cargo clippy` at the root works on the host crates only. **`--workspace` tries to build esp-hal for the host and
