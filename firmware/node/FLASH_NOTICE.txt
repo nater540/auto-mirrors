@@ -6,7 +6,8 @@ Motors:      two stepper channels. Channel 0 drives GPIO 18, 19, 20, 21; channel
              - from the bus: a MOVE_REL, a coordinator heartbeat under 300 ms old carrying protocol version 2,
                an INHIBIT 0 from the coordinator, and the channel's soft limits and direction sign set by CONFIG.
                Boots inhibited.
-             - from the console: `bench on`, then `jog` or `torque`. No heartbeat or CONFIG is needed on the bench.
+             - from the console: `bench on`, then `jog` or `torque`, only while no coordinator is heard and no
+               ESTOP is latched (an INHIBIT 0 clears it).
              At most 4000 steps and 25 s per move; one channel at a time; coils released after every move.
 Motor rail:  GPIO 0 carries a 1 kHz arm pulse only while a move runs; low otherwise. GPIO 7 reads the rail.
 Permit:      GPIO 6 reads the motor permit, pulled down: unconnected means no permit and no move.
@@ -14,9 +15,10 @@ Bus:         TWAI on GPIO 22 alone (TX and RX looped back, open drain, pull-up),
              no transceiver. It sends a heartbeat every 100 ms and a status every second, and acts on frames
              addressed to node 1. GPIO 23 stays in its reset state.
 Other I/O:   none. Every other GPIO stays in its reset state.
-Flash:       writes an 8-byte position record per channel to the `nvs` partition after every move. At first boot,
-             if that partition holds data it cannot read (for example ESP-IDF NVS from an earlier image),
-             it ERASES the partition and starts every channel at position zero, marked suspect.
+Flash:       writes a 9-byte position record per channel to the `nvs` partition before every move (marked
+             suspect) and after it. If that partition holds data it cannot read (for example ESP-IDF NVS from an
+             earlier image), it ERASES the partition and writes every channel at position zero, marked suspect.
+Watchdog:    the TIMG1 watchdog resets the chip if not fed for 1 s; a reset leaves every output low.
 
 Bench wiring: ULN2003 IN1 to IN4 to GPIO 18 to 21, its + to 5V and - to GND. Jumper GPIO 6 and GPIO 7 to 3V3.
 With no switched rail on the bench, the firmware checks are the only layer between a command and the motor.

@@ -250,7 +250,11 @@ pub struct NodeTiming {
   /// UNVERIFIED: the longest step period a CONFIG may set (10 pulses per second), a sanity bound only.
   pub max_step_period_us: u32,
   /// FIRM, chosen in M4: a move still running this long after its computed duration is cut off as a fault.
-  pub move_timeout_margin_ms: u32
+  pub move_timeout_margin_ms: u32,
+  /// FIRM, chosen after the 2026-11-15 review: the hardware watchdog resets the node if it is not fed this long, so
+  /// that a panic or a hang cannot leave coils energized. Longer than a flash sector erase (tens of milliseconds,
+  /// with interrupts masked), short enough that a stuck coil cools quickly.
+  pub watchdog_timeout_ms: u32
 }
 
 impl NodeTiming {
@@ -262,7 +266,8 @@ impl NodeTiming {
     rail_up_timeout_ms: 50,
     min_step_period_us: 2_000,
     max_step_period_us: 100_000,
-    move_timeout_margin_ms: 1_000
+    move_timeout_margin_ms: 1_000,
+    watchdog_timeout_ms: 1_000
   };
 }
 

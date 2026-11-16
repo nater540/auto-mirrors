@@ -25,7 +25,7 @@
 
 mod board;
 
-use core::cell::RefCell;
+use core::cell::{Cell, RefCell};
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use align_core::config::Config;
@@ -44,7 +44,9 @@ use esp_backtrace as _;
 use esp_hal::Async;
 use esp_hal::clock::CpuClock;
 use esp_hal::gpio::{Input, InputConfig, Level, Output, OutputConfig, Pull};
-use esp_hal::timer::timg::TimerGroup;
+use esp_hal::peripherals::TIMG1;
+use esp_hal::time::Duration as HalDuration;
+use esp_hal::timer::timg::{MwdtStage, TimerGroup, Wdt};
 use esp_hal::twai::{BaudRate, EspTwaiFrame, Twai};
 use esp_hal::usb::usb_serial_jtag::{UsbSerialJtag, UsbSerialJtagRx};
 use esp_storage::FlashStorage;
@@ -145,6 +147,34 @@ impl Value<'_> for StoredRecord {
   }
 }
 
+/// Longest console line; a longer one is discarded rather than run truncated.
+const LINE_LEN: usize = 80;
+
+/// A warning that repeats, logged at most once a second with a count of what it held back.
+struct RateLimited {
+  last_ms: Option<u64>,
+  held_back: u32
+}
+
+impl RateLimited {
+  const fn new() -> Self {
+    Self {
+      last_ms: None,
+      held_back: 0
+    }
+  }
+
+  /// Whether to log now, and how many were held back since the last one.
+  fn admit(&mut self, now_ms: u64) -> Option<u32> {
+    if self.last_ms.is_some_and(|last| now_ms.saturating_sub(last) < 1_000) {
+      self.held_back = self.held_back.saturating_add(1);
+      return None;
+    }
+    self.last_ms = Some(now_ms);
+    Some(core::mem::take(&mut self.held_back))
+  }
+}
+
 /// Room for one key and one record, rounded up to the flash word.
 const STORAGE_BUFFER_LEN: usize = 32;
 
@@ -157,6 +187,15 @@ async fn main(spawner: Spawner) -> ! {
 
   let timg0 = TimerGroup::new(peripherals.TIMG0);
   esp_rtos::start(timg0.timer0, peripherals.FROM_CPU_INTR0);
+  let settings = Config::default();
+  // The watchdog resets the chip, and with it every coil output, if the input loop stops feeding it: a panic
+  // spins with interrupts masked, and a hang stops the loop.
+  let mut watchdog = TimerGroup::new(peripherals.TIMG1).wdt;
+  watchdog.set_timeout(
+    MwdtStage::Stage0,
+    HalDuration::from_millis(u64::from(settings.node.watchdog_timeout_ms))
+  );
+  watchdog.enable();
 
   for line in FLASH_NOTICE.lines() {
     info!("{line}");
@@ -194,7 +233,6 @@ async fn main(spawner: Spawner) -> ! {
     )
   ];
 
-  let settings = Config::default();
   let mut node = Node::new(NodeSetup {
     id: board::NODE_ID,
     populated: board::POPULATED_CHANNELS,
@@ -220,7 +258,7 @@ async fn main(spawner: Spawner) -> ! {
       }
     };
   }
-  spawn!(inputs(permit, rail));
+  spawn!(inputs(permit, rail, watchdog));
   spawn!(arm_pulse(arm));
   spawn!(can(twai));
   spawn!(actuator(steppers, records, settings.node.rail_up_timeout_ms));
@@ -287,14 +325,26 @@ async fn restore(records: &mut Records) -> [Restored; MAX_CHANNELS] {
       error!("erasing the record partition failed: {error:?}");
     }
     restored = [Restored::Corrupt; MAX_CHANNELS];
+    // Written at once, so that a second reboot before any move still finds the channels suspect, not fresh.
+    let suspect = AxisRecord {
+      suspect: true,
+      ..AxisRecord::FRESH
+    };
+    for key in (0_u8..).take(MAX_CHANNELS) {
+      let mut buffer = [0_u8; STORAGE_BUFFER_LEN];
+      if let Err(error) = records.store_item(&mut buffer, &key, &StoredRecord(suspect)).await {
+        error!("writing the suspect record of channel {key} failed: {error:?}");
+      }
+    }
   }
   restored
 }
 
 #[embassy_executor::task]
-async fn inputs(permit: Input<'static>, rail: Input<'static>) {
+async fn inputs(permit: Input<'static>, rail: Input<'static>, mut watchdog: Wdt<TIMG1<'static>>) {
   let mut ticker = Ticker::every(Duration::from_millis(1));
   loop {
+    watchdog.feed();
     let rail_ok = rail.is_high();
     RAIL_OK.store(rail_ok, Ordering::Release);
     let now = now_ms();
@@ -323,13 +373,23 @@ async fn arm_pulse(mut arm: Output<'static>) {
 
 #[embassy_executor::task]
 async fn can(mut twai: Twai<'static, Async>) {
+  let mut rejected = RateLimited::new();
   loop {
     if twai.is_bus_off() {
-      // Reference 5.3: brake all, wait 100 ms, recover. Motors stay stopped until the coordinator allows them.
+      // Reference 5.3: brake all, wait 100 ms, recover once, and wait for the recovery to finish rather than
+      // starting it again. Motors stay stopped until the coordinator allows them.
       warn!("CAN bus-off: stopping, recovering in 100 ms");
       with_node(Node::stop);
       Timer::after(Duration::from_millis(100)).await;
       twai.initiate_recovery();
+      let recovered = with_timeout(Duration::from_secs(1), async {
+        while twai.is_bus_off() {
+          Timer::after(Duration::from_millis(5)).await;
+        }
+      });
+      if recovered.await.is_err() {
+        warn!("CAN bus-off: no recovery within 1 s; trying again");
+      }
       continue;
     }
     match select(twai.receive_async(), FRAMES_OUT.receive()).await {
@@ -340,7 +400,11 @@ async fn can(mut twai: Twai<'static, Async>) {
               let now = now_ms();
               with_node(|node, io| node.on_frame(now, envelope, io));
             }
-            Err(error) => warn!("CAN frame rejected: {error}")
+            Err(error) => {
+              if let Some(held_back) = rejected.admit(now_ms()) {
+                warn!("CAN frame rejected: {error} ({held_back} more held back)");
+              }
+            }
           }
         }
       }
@@ -400,23 +464,34 @@ async fn write_record(records: &mut Records, channel: Channel, record: AxisRecor
 
 /// Runs the legs of one move under its timeout. The rail must come up first: the arm pulse starts with the move.
 async fn run(stepper: &mut Stepper<Coil>, request: MoveRequest, rail_up_timeout_ms: u32) -> MoveOutcome {
+  // Waits for the rail; a stop ends the wait at once (the arm pulse stops with it, so the rail would never rise).
   let rail_up = async {
-    while !RAIL_OK.load(Ordering::Acquire) {
+    loop {
+      if STOP.load(Ordering::Acquire) {
+        return false;
+      }
+      if RAIL_OK.load(Ordering::Acquire) {
+        return true;
+      }
       Timer::after(Duration::from_millis(1)).await;
     }
   };
-  if with_timeout(Duration::from_millis(u64::from(rail_up_timeout_ms)), rail_up)
-    .await
-    .is_err()
-  {
+  let end_before_stepping = match with_timeout(Duration::from_millis(u64::from(rail_up_timeout_ms)), rail_up).await {
+    Ok(true) => None,
+    Ok(false) => Some(MoveEnd::Stopped),
+    Err(_) => Some(MoveEnd::RailLost)
+  };
+  if let Some(end) = end_before_stepping {
     return MoveOutcome::Finished {
-      end: MoveEnd::RailLost,
+      end,
       steps_issued: 0,
       phase: stepper.phase()
     };
   }
+  // Steps of the legs already finished; the leg in progress counts its own on the stepper. Kept outside the
+  // future, so that a timeout that drops it still knows how far the move got.
+  let finished_legs = Cell::new(0_i32);
   let legs = async {
-    let mut issued = 0_i32;
     for leg in request.legs_steps {
       let report = stepper
         .run(leg, request.timing, &mut Delay, &STOP, || {
@@ -424,29 +499,33 @@ async fn run(stepper: &mut Stepper<Coil>, request: MoveRequest, rail_up_timeout_
         })
         .await
         .unwrap_or_else(|never| match never.0 {});
-      issued = issued.saturating_add(report.steps_issued);
+      finished_legs.set(finished_legs.get().saturating_add(report.steps_issued));
       if report.end != MoveEnd::Done {
-        return (report.end, issued);
+        return report.end;
       }
     }
-    (MoveEnd::Done, issued)
+    MoveEnd::Done
   };
   match with_timeout(Duration::from_millis(u64::from(request.timeout_ms)), legs).await {
-    Ok((end, steps_issued)) => MoveOutcome::Finished {
+    Ok(end) => MoveOutcome::Finished {
       end,
-      steps_issued,
+      steps_issued: finished_legs.get(),
       phase: stepper.phase()
     },
-    // The dropped future released the coils (`Coils` releases in Drop).
-    Err(_) => MoveOutcome::TimedOut { phase: stepper.phase() }
+    // The dropped move released its coils (the stepper's guard); the leg in progress still knows its steps.
+    Err(_) => MoveOutcome::TimedOut {
+      steps_issued: finished_legs.get().saturating_add(stepper.steps_issued()),
+      phase: stepper.phase()
+    }
   }
 }
 
 #[embassy_executor::task]
 async fn console_task(mut rx: UsbSerialJtagRx<'static, Async>) {
-  static LINE: StaticCell<[u8; 80]> = StaticCell::new();
-  let line = LINE.init([0; 80]);
+  static LINE: StaticCell<[u8; LINE_LEN]> = StaticCell::new();
+  let line = LINE.init([0; LINE_LEN]);
   let mut len = 0_usize;
+  let mut overlong = false;
   loop {
     let mut byte = [0_u8; 1];
     if !matches!(rx.read(&mut byte).await, Ok(1)) {
@@ -458,16 +537,21 @@ async fn console_task(mut rx: UsbSerialJtagRx<'static, Async>) {
           .get(..len)
           .and_then(|bytes| core::str::from_utf8(bytes).ok())
           .unwrap_or("");
-        if !text.trim().is_empty() {
+        if overlong {
+          warn!("line longer than {LINE_LEN} characters: discarded");
+        } else if !text.trim().is_empty() {
           info!("> {text}");
           execute(text, &mut rx).await;
         }
         len = 0;
+        overlong = false;
       }
       other => {
         if let Some(slot) = line.get_mut(len) {
           *slot = other;
           len += 1;
+        } else {
+          overlong = true;
         }
       }
     }
@@ -547,10 +631,18 @@ async fn bench_move(channel: u8, steps: i32, period_us: Option<u32>, rx: &mut Us
     }
     None => return false
   }
-  let mut byte = [0_u8; 1];
-  let outcome = match select(MOVE_FINISHED.wait(), rx.read(&mut byte)).await {
+  // Any key but the end of a line stops the move: a terminal that sends CR and LF leaves the LF waiting.
+  let key = async {
+    loop {
+      let mut byte = [0_u8; 1];
+      if matches!(rx.read(&mut byte).await, Ok(1)) && !matches!(byte[0], b'\r' | b'\n') {
+        return;
+      }
+    }
+  };
+  let outcome = match select(MOVE_FINISHED.wait(), key).await {
     Either::First(outcome) => outcome,
-    Either::Second(_) => {
+    Either::Second(()) => {
       info!("key pressed: stopping");
       with_node(Node::stop);
       MOVE_FINISHED.wait().await
