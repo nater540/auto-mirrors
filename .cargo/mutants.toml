@@ -41,4 +41,11 @@ test_package = ["align-core", "align-sim", "align-proto", "stepper", "node-logic
 #
 # `Stepper::run` returns before computing the direction when `steps == 0`, so `steps > 0` and `steps >= 0` agree on
 # every value that reaches that line.
-exclude_re = ["replace \\| with \\^ in compose_id", "replace > with >= in Stepper<P>::run"]
+#
+# `Aligner::leg` returns before it sets the last direction when `steps == 0`, so `steps > 0` and `steps >= 0` agree
+# on every value that reaches that line.
+exclude_re = [
+  "replace \\| with \\^ in compose_id",
+  "replace > with >= in Stepper<P>::run",
+  "replace > with >= in Aligner<A, S>::leg"
+]

@@ -163,9 +163,7 @@ pub fn step_limit(poke_steps: f32, config: &Solver) -> Vector4<f32> {
 /// or when an input is not finite; the caller keeps the old Jacobian. The caller also checks the conditioning of
 /// the result and discards an update that fails it.
 pub fn broyden_update(jacobian: &Jacobian, dq: &Vector4<f32>, dm: &Vector4<f32>, config: &Solver) -> Option<Jacobian> {
-  if !(all_finite(jacobian.iter()) && all_finite(dq.iter()) && all_finite(dm.iter())) {
-    return None;
-  }
+  // A non-finite input makes a non-finite update (an infinite step divides to NaN), which the last line refuses.
   let step_squared = dq.norm_squared();
   let min_norm = config.broyden_min_step_norm_steps;
   if step_squared <= 0.0 || step_squared < min_norm * min_norm {
@@ -357,6 +355,19 @@ mod tests {
       acceptable.check(&config),
       Err(SolveFault::IllConditioned { .. })
     ));
+  }
+
+  /// Finite entries whose largest singular value overflows `f32`, beside a block whose singular values are 1.
+  #[test]
+  fn a_singular_value_that_overflows_is_not_finite() {
+    let big = 3.0e38;
+    let jacobian = Jacobian::new(
+      big, big, 0.0, 0.0, //
+      big, -big, 0.0, 0.0, //
+      0.0, 0.0, 1.0, 0.0, //
+      0.0, 0.0, 0.0, 1.0
+    );
+    assert_eq!(Conditioning::of(&jacobian), Err(SolveFault::NotFinite));
   }
 
   #[test]

@@ -291,6 +291,17 @@ mod tests {
   }
 
   #[test]
+  fn a_quadrant_exactly_three_sigma_below_zero_is_accepted() {
+    let edge = Quadrants {
+      a: 1.0,
+      b: -(LIMITS.negative_sigma * 0.01),
+      c: 1.0,
+      d: 1.0
+    };
+    assert_eq!(edge.check(10.0, 0.01, &LIMITS), Ok(()));
+  }
+
+  #[test]
   fn a_quadrant_more_than_three_sigma_below_zero_is_a_baseline_error() {
     let inside = Quadrants {
       a: 1.0,

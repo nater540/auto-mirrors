@@ -1,7 +1,22 @@
-//! The aligner's own checks. The procedure itself is held to a model of the machine in `align-sim`.
+//! The aligner's own checks, and the procedure on a scripted machine where every number is exact.
+//!
+//! The procedure as a whole is held to a model of the machine in `align-sim`. That model has noise and
+//! stick-slip, so it cannot tell a measurement from the mean of two, or one repeat measurement from none. The
+//! scripted machine here can: it is linear, `m = m0 + J q` with `J = I / 256`, and every product is exact in `f32`.
+
+extern crate std;
+
+use core::future::Future;
+use core::pin::pin;
+use core::task::{Context, Poll, Waker};
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::vec;
+use std::vec::Vec;
 
 use super::*;
 use crate::approach::LastDir;
+use crate::quadrant::Reading;
 
 /// A machine that is never reached: these tests stop before anything moves or measures.
 struct Unreached;
@@ -227,4 +242,332 @@ fn a_leg_of_exactly_the_per_move_cap_is_allowed() {
       steps: cap + 1
     })
   );
+}
+
+// --- the scripted machine --------------------------------------------------------------------------------------
+
+/// Runs a future that never waits: the scripted machine answers at once.
+fn run<F: Future>(future: F) -> F::Output {
+  let mut future = pin!(future);
+  match future.as_mut().poll(&mut Context::from_waker(Waker::noop())) {
+    Poll::Ready(output) => output,
+    Poll::Pending => panic!("the scripted machine never waits")
+  }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Event {
+  Move(Axis, i32),
+  Measure
+}
+
+/// What the machine does, and what it did.
+struct Script {
+  /// The true response, normalized units per step.
+  jacobian: Jacobian,
+  /// The measurement at position zero.
+  m0: Vector4<f32>,
+  /// The fraction of a command each axis really moves, chosen by how many measurements came before the move.
+  /// The last entry holds from then on.
+  response: Vec<[f32; 4]>,
+  /// Added to the measurement vector, by measurement; nothing once the list is used up.
+  noise: Vec<[f32; 4]>,
+  /// A shift of all three readings, by measurement: a head offset, which changes no component of `m`.
+  offset: Vec<f32>,
+  /// Where each axis really is, in steps.
+  q: Vector4<f32>,
+  log: Vec<Event>
+}
+
+#[derive(Clone)]
+struct Machine(Rc<RefCell<Script>>);
+
+impl Machine {
+  fn new(m0: [f32; 4]) -> Self {
+    Self(Rc::new(RefCell::new(Script {
+      jacobian: Jacobian::identity() / 256.0,
+      m0: Vector4::from(m0),
+      response: vec![[1.0; 4]],
+      noise: Vec::new(),
+      offset: Vec::new(),
+      q: Vector4::zeros(),
+      log: Vec::new()
+    })))
+  }
+
+  fn with(self, change: impl FnOnce(&mut Script)) -> Self {
+    change(&mut self.0.borrow_mut());
+    self
+  }
+
+  fn log(&self) -> Vec<Event> {
+    self.0.borrow().log.clone()
+  }
+
+  /// The net command of each axis in each run of moves: one entry per step taken.
+  fn steps(&self) -> Vec<[i32; 4]> {
+    let mut steps = Vec::new();
+    let mut moving: Option<[i32; 4]> = None;
+    for event in self.log() {
+      match event {
+        Event::Move(axis, delta_steps) => moving.get_or_insert([0; 4])[axis.index()] += delta_steps,
+        Event::Measure => steps.extend(moving.take())
+      }
+    }
+    steps.extend(moving);
+    steps
+  }
+
+  /// How many measurements were taken in a row, for each run of them.
+  fn measure_runs(&self) -> Vec<usize> {
+    let mut runs = Vec::new();
+    let mut count = 0;
+    for event in self.log() {
+      match event {
+        Event::Measure => count += 1,
+        Event::Move(..) if count > 0 => runs.push(core::mem::take(&mut count)),
+        Event::Move(..) => {}
+      }
+    }
+    if count > 0 {
+      runs.push(count);
+    }
+    runs
+  }
+}
+
+fn measured_before(script: &Script) -> usize {
+  script.log.iter().filter(|event| **event == Event::Measure).count()
+}
+
+impl Actuator for Machine {
+  async fn move_rel(&mut self, axis: Axis, delta_steps: i32) -> Result<(), MoveFault> {
+    let mut script = self.0.borrow_mut();
+    let index = measured_before(&script);
+    let response = script.response.get(index).or(script.response.last()).copied().unwrap();
+    #[expect(clippy::cast_precision_loss, reason = "test steps are small")]
+    let moved = delta_steps as f32 * response[axis.index()];
+    script.q[axis.index()] += moved;
+    script.log.push(Event::Move(axis, delta_steps));
+    Ok(())
+  }
+}
+
+impl BeamSensor for Machine {
+  async fn measure(&mut self) -> Result<Shots, SensorFault> {
+    let mut script = self.0.borrow_mut();
+    let index = measured_before(&script);
+    let noise = Vector4::from(script.noise.get(index).copied().unwrap_or([0.0; 4]));
+    let offset = script.offset.get(index).copied().unwrap_or(0.0);
+    let m = script.m0 + script.jacobian * script.q + noise;
+    let reading = |h_norm, v_norm| Reading {
+      h_norm,
+      v_norm,
+      sum: 1.0
+    };
+    let a = reading(offset, offset);
+    let b = reading(a.h_norm + m.x, a.v_norm + m.y);
+    let c = reading(b.h_norm + m.z, b.v_norm + m.w);
+    script.log.push(Event::Measure);
+    Ok(Shots { a, b, c })
+  }
+}
+
+/// The starting values with a quiet sensor: the scripted machine has no noise but what a test adds, and the low
+/// judging floor (0.0146) lets the small steps of these tests be judged.
+fn quiet() -> Config {
+  let mut config = Config::default();
+  config.sensor.noise_sigma_norm = 0.001;
+  config
+}
+
+/// An aligner on the machine, which believes the true Jacobian and finds every axis in the standard direction.
+fn on(machine: &Machine, config: &Config) -> Aligner<Machine, Machine> {
+  let jacobian = machine.0.borrow().jacobian;
+  let calibration = Calibration {
+    jacobian,
+    q0_steps: [0; 4],
+    cond: 1.0
+  };
+  let standard = AxisState {
+    last_dir: LastDir::Plus,
+    ..AxisState::default()
+  };
+  Aligner::new(machine.clone(), machine.clone(), *config, SUM_REF)
+    .unwrap()
+    .with_calibration(calibration)
+    .with_axes(PerAxis::splat(standard))
+}
+
+// --- judging a step --------------------------------------------------------------------------------------------
+
+#[test]
+fn a_step_that_went_as_predicted_is_measured_once() {
+  let machine = Machine::new([0.2, 0.0, 0.0, 0.0]);
+  let report = run(on(&machine, &quiet()).align()).unwrap();
+  assert_eq!(
+    machine.steps().first(),
+    Some(&[-31, 0, 0, 0]),
+    "0.6 * 0.2 * 256 / 1.0025"
+  );
+  assert_eq!(machine.measure_runs().get(..2), Some([1, 1].as_slice()));
+  assert!(report.iterations >= 2);
+}
+
+#[test]
+fn a_step_the_beam_ignored_is_measured_again_and_the_second_in_a_row_is_a_fault() {
+  let machine = Machine::new([0.2, 0.0, 0.0, 0.0]).with(|script| script.response = vec![[0.0, 1.0, 1.0, 1.0]]);
+  let outcome = run(on(&machine, &quiet()).align());
+  assert_eq!(outcome, Err(AlignFault::AxisNotResponding { axis: Axis::M1H }));
+  assert_eq!(
+    machine.measure_runs(),
+    [1, 2, 2],
+    "one look before, then two after each of two steps"
+  );
+}
+
+#[test]
+fn the_suspect_streak_counts_one_axis_at_a_time() {
+  // The first step finds M1H dead, the second M1V: two suspects in a row, but not on one axis. M1V is misaligned
+  // only after the first step (a shift of every later measurement), so that each step is dominated by its dead
+  // axis; from a misalignment present from the start, no two steps in a row can both be.
+  let machine = Machine::new([0.2, 0.0, 0.0, 0.0]).with(|script| {
+    script.response = Vec::from([
+      [1.0; 4],
+      [0.0, 1.0, 1.0, 1.0],
+      [0.0, 1.0, 1.0, 1.0],
+      [1.0, 0.0, 1.0, 1.0],
+      [1.0, 0.0, 1.0, 1.0],
+      [1.0; 4]
+    ]);
+    script.noise = core::iter::once([0.0; 4])
+      .chain(core::iter::repeat_n([0.0, 0.2, 0.0, 0.0], 30))
+      .collect();
+  });
+  let outcome = run(on(&machine, &quiet()).align());
+  assert!(
+    !matches!(outcome, Err(AlignFault::AxisNotResponding { .. })),
+    "{outcome:?}"
+  );
+  assert_eq!(machine.measure_runs().get(..3), Some([1, 2, 2].as_slice()));
+}
+
+#[test]
+fn a_step_whose_readings_leave_the_linear_range_is_not_judged() {
+  // M1H is dead throughout. After the first step every reading is shifted past the linear range (a head offset, so
+  // the measurement vector is unchanged). That measurement ends one step and starts the next, so both are coarse:
+  // each is measured once and not counted, and the fault comes two steps later than without the shift.
+  let machine = Machine::new([0.2, 0.0, 0.0, 0.0]).with(|script| {
+    script.response = vec![[0.0, 1.0, 1.0, 1.0]];
+    script.offset = vec![0.0, 0.65];
+  });
+  let outcome = run(on(&machine, &quiet()).align());
+  assert_eq!(outcome, Err(AlignFault::AxisNotResponding { axis: Axis::M1H }));
+  assert_eq!(machine.measure_runs(), [1, 1, 1, 2, 2]);
+}
+
+#[test]
+fn two_poor_steps_in_a_row_ask_for_a_recalibration() {
+  // Each step removes about 60% of the residual; asking for 70% makes both poor.
+  let mut config = quiet();
+  config.solver.min_residual_reduction_frac = 0.7;
+  let machine = Machine::new([0.2, 0.0, 0.0, 0.0]);
+  let report = run(on(&machine, &config).align()).unwrap();
+  assert_eq!(report.recalibrations, 1);
+  let poke = config.motion.poke_steps;
+  let steps = machine.steps();
+  assert_eq!(steps.get(..2), Some([[-31, 0, 0, 0], [-12, 0, 0, 0]].as_slice()));
+  assert!(
+    machine.log().contains(&Event::Move(Axis::M2V, poke)),
+    "the recalibration pokes M2V"
+  );
+}
+
+/// With `lambda = sigma` the step is half the Gauss-Newton step; a third of that damping makes it 0.9 of it.
+fn heavily_damped() -> Config {
+  let mut config = quiet();
+  config.solver.lambda_frac = 1.0;
+  config.solver.alpha = 1.0;
+  config
+}
+
+#[test]
+fn a_good_step_divides_the_damping_by_three() {
+  let machine = Machine::new([0.2, 0.0, 0.0, 0.0]);
+  run(on(&machine, &heavily_damped()).align()).unwrap();
+  // 0.5 * 0.2 * 256 = 25.6, leaving 0.0984 (good); then 0.9 * 0.0984 * 256 = 22.7.
+  assert_eq!(
+    machine.steps().get(..2),
+    Some([[-26, 0, 0, 0], [-23, 0, 0, 0]].as_slice())
+  );
+}
+
+#[test]
+fn a_poor_step_multiplies_the_damping_by_three() {
+  let mut config = heavily_damped();
+  config.solver.min_residual_reduction_frac = 0.7;
+  let machine = Machine::new([0.2, 0.0, 0.0, 0.0]);
+  // Only the first two steps matter here; damped this hard, the attempts run out.
+  let _outcome = run(on(&machine, &config).align());
+  // 25.6 as before, now poor; then 0.1 * 0.0984 * 256 = 2.5.
+  assert_eq!(
+    machine.steps().get(..2),
+    Some([[-26, 0, 0, 0], [-3, 0, 0, 0]].as_slice())
+  );
+}
+
+#[test]
+fn a_step_whose_prediction_is_exactly_the_judging_floor_is_judged() {
+  // Binary-exact thresholds: a change sigma of 1/64 and one sigma make the floor 1/32, and 8 steps of 1/256 reach
+  // it exactly. M1H is dead, so a judged step names it and two in a row are a fault.
+  let mut config = Config::default();
+  config.sensor.noise_sigma_norm = 1.0 / 128.0;
+  config.solver.judge_noise_sigmas = 1.0;
+  crate::test_support::assert_close(
+    calibration::judging_floor(&config.sensor, &config.solver),
+    1.0 / 32.0,
+    0.0
+  );
+  let machine = Machine::new([0.05, 0.0, 0.0, 0.0]).with(|script| script.response = vec![[0.0, 1.0, 1.0, 1.0]]);
+  let outcome = run(on(&machine, &config).align());
+  assert_eq!(machine.steps().first(), Some(&[-8, 0, 0, 0]));
+  assert_eq!(outcome, Err(AlignFault::AxisNotResponding { axis: Axis::M1H }));
+}
+
+// --- confirming a success --------------------------------------------------------------------------------------
+
+#[test]
+fn a_success_is_the_mean_of_two_measurements() {
+  // Already aligned. The second look reads 0.03, outside the tolerance, but the mean, 0.015, is inside.
+  let machine = Machine::new([0.0; 4]).with(|script| script.noise = vec![[0.0; 4], [0.03, 0.0, 0.0, 0.0]]);
+  let report = run(on(&machine, &quiet()).align()).unwrap();
+  assert_eq!((report.iterations, report.residual_norm), (0, 0.015));
+  assert_eq!(machine.log(), [Event::Measure, Event::Measure]);
+}
+
+#[test]
+fn a_mean_outside_the_tolerance_is_corrected_from() {
+  // The first look reads 0.02, the second 0.03: the step is taken from the mean, 0.025, not from either.
+  let machine = Machine::new([0.0; 4]).with(|script| script.noise = vec![[0.02, 0.0, 0.0, 0.0], [0.03, 0.0, 0.0, 0.0]]);
+  run(on(&machine, &quiet()).align()).unwrap();
+  assert_eq!(
+    machine.steps().first(),
+    Some(&[-4, 0, 0, 0]),
+    "0.6 * 0.025 * 255.4 = 3.8; from 0.03 it would be 5"
+  );
+}
+
+#[test]
+fn a_mean_is_in_the_linear_range_only_if_both_of_its_measurements_are() {
+  // M1H is dead. The first look is inside the tolerance but outside the linear range (shifted readings); the
+  // second is linear but reads 0.035. Their mean, 0.025, is corrected from as a coarse measurement: the first step
+  // is not judged, so the fault comes after the third step instead of the second.
+  let machine = Machine::new([0.025, 0.0, 0.0, 0.0]).with(|script| {
+    script.response = vec![[0.0, 1.0, 1.0, 1.0]];
+    script.noise = vec![[-0.01, 0.0, 0.0, 0.0], [0.01, 0.0, 0.0, 0.0]];
+    script.offset = vec![0.65];
+  });
+  let outcome = run(on(&machine, &quiet()).align());
+  assert_eq!(outcome, Err(AlignFault::AxisNotResponding { axis: Axis::M1H }));
+  assert_eq!(machine.steps().len(), 3);
 }

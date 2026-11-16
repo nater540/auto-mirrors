@@ -116,6 +116,16 @@ mod tests {
   }
 
   #[test]
+  fn an_offset_of_exactly_the_allowed_fraction_needs_no_centering() {
+    let edge = LIMITS.offset_warn_frac * LIMITS.solver_max_norm;
+    let offset = HeadOffset {
+      h_norm: edge,
+      v_norm: -edge
+    };
+    assert!(!offset.needs_mechanical_centering(&LIMITS));
+  }
+
+  #[test]
   fn an_offset_above_thirty_percent_of_the_solver_range_needs_mechanical_centering() {
     // 30% of the 0.6 solver range is 0.18.
     assert!(
