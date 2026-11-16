@@ -110,24 +110,42 @@ fails.** Build firmware by package and target, through the justfile.
 
 ## Commands
 
+`just` lists every recipe by group. The ones used most:
+
 ```bash
-just               # list the recipes
-just ci            # everything that must pass before a commit
-just test          # host tests; `just test align-core` for one crate
-just clippy        # host crates and tests, warnings denied
-just fmt           # format everything
-just check-no-std  # build the no_std libraries for the ESP32-C6 (proves no std, no alloc)
-just firmware      # build both images in release mode; never flashes
-just firmware-clippy
-cargo test -p align-core <test_name>                     # one test
-cargo run -p align-sim --release -- run                  # one simulated alignment, every move and measurement
-cargo run -p align-sim --release -- sweep --runs 5000    # convergence against conditioning; see `sweep --help`
+just ci                    # everything that must pass before a commit, cheapest first
+just test                  # host tests; `just test align-core` for one crate
+just clippy                # host crates and tests, warnings denied (`just lint` is the same)
+just fmt                   # format everything
+just doc                   # API docs with warnings denied
+just check-no-std          # build the no_std libraries for the ESP32-C6 (proves no std, no alloc)
+just firmware              # build both images in release mode; never flashes
+just image node            # write the flashable image to target/images/ and print its size; touches no board
+just sim --seed 7          # one simulated alignment, every move and measurement
+just sweep --runs 5000     # convergence against conditioning (the Y span)
+just sweep-margins         # how much stick-slip, noise, backlash, and step loss the thresholds tolerate
+just deny                  # licenses, advisories, bans, and sources (deny.toml)
+just outdated              # the pinned crates against crates.io
+just doctor                # the tools the recipes need, and what is missing
+just mutants -j 4          # mutation testing of the alignment logic, about 5 minutes
+just check-commits <base>  # format, clippy, tests, and the no_std build at every commit after <base>
+cargo test -p align-core <test_name>   # one test
 ```
 
-After changing the aligner, the solver, or a threshold, run the sweep before and after and compare the tables, and
-run `PROPTEST_CASES=2000 cargo test -p align-sim` once.
+After changing the aligner, the solver, or a threshold: run `just sweep` and `just sweep-margins` before and after
+and compare the tables, run `just test-stress` once, and run `just mutants`. A surviving mutant gets a test that
+states the boundary; it is excluded in `.cargo/mutants.toml` only if it cannot change behavior, with the reason.
+Before handing a branch over, run `just check-commits <base>`: every commit must pass, not only the last.
 
-There is no flashing recipe and no cargo runner yet, on purpose. `cargo deny` is not configured yet.
+**The board recipes talk to hardware: `flash`, `monitor`, `reset`, `board-info`, `ports`.**
+
+- `just flash node` (or `coordinator`) is the only way to flash. It prints the crate's `FLASH_NOTICE.txt`, asks for
+  the crate name to be typed, and refuses to run without a terminal, so Claude cannot flash: the owner runs it.
+  There is no cargo runner, on purpose: `cargo run` must not flash around the notice.
+- **`firmware/<crate>/FLASH_NOTICE.txt` states what the image does to motors and I/O.** The image logs it at boot.
+  Change it in the same commit as any change to what the firmware drives; a stale notice is a safety defect.
+- Do not run `monitor`, `reset`, or `board-info` on a port without knowing what is on it. Other boards are often
+  attached to this machine.
 
 ## Code style: non-negotiable
 
