@@ -78,7 +78,11 @@ type Records = MapStorage<u8, Flash, Cache<Uncached, Uncached, Uncached, u8>>;
 static NODE: Mutex<Raw, RefCell<Option<Node>>> = Mutex::new(RefCell::new(None));
 static FRAMES_OUT: Queue<Raw, Envelope, 16> = Queue::new();
 static MOVES: Queue<Raw, MoveRequest, 2> = Queue::new();
-static PERSIST: Queue<Raw, (Channel, AxisRecord), { MAX_CHANNELS }> = Queue::new();
+/// The newest record of each channel not yet written. A newer record replaces an older one of its channel, which
+/// only the newest matters for, so no burst of records can overflow it and drop the one marked suspect.
+static PENDING_RECORDS: Mutex<Raw, RefCell<[Option<AxisRecord>; MAX_CHANNELS]>> =
+  Mutex::new(RefCell::new([None; MAX_CHANNELS]));
+static RECORD_PENDING: Signal<Raw, ()> = Signal::new();
 static STOP: AtomicBool = AtomicBool::new(false);
 static RAIL_OK: AtomicBool = AtomicBool::new(false);
 static MOVE_FINISHED: Signal<Raw, MoveOutcome> = Signal::new();
@@ -109,13 +113,31 @@ impl NodeIo for Outbox {
   }
 
   fn persist(&mut self, channel: Channel, record: AxisRecord) {
-    if PERSIST.try_send((channel, record)).is_err() {
+    let queued = PENDING_RECORDS.lock(|cell| {
+      let mut pending = cell.borrow_mut();
+      let slot = pending.get_mut(usize::from(channel.get()))?;
+      *slot = Some(record);
+      Some(())
+    });
+    if queued.is_none() {
       error!(
-        "persist queue full: the record of channel {} was not written",
+        "channel {} has no record slot: its record was not written",
         channel.get()
       );
     }
+    RECORD_PENDING.signal(());
   }
+}
+
+/// The oldest-numbered channel with a record waiting to be written, and that record.
+fn take_pending_record() -> Option<(Channel, AxisRecord)> {
+  PENDING_RECORDS.lock(|cell| {
+    let mut pending = cell.borrow_mut();
+    (0_u8..).zip(pending.iter_mut()).find_map(|(index, slot)| {
+      let channel = Channel::new(index)?;
+      Some((channel, slot.take()?))
+    })
+  })
 }
 
 /// Runs `f` on the node. `None` before the node exists, or if it is already borrowed (which would be a bug here:
@@ -188,14 +210,6 @@ async fn main(spawner: Spawner) -> ! {
   let timg0 = TimerGroup::new(peripherals.TIMG0);
   esp_rtos::start(timg0.timer0, peripherals.FROM_CPU_INTR0);
   let settings = Config::default();
-  // The watchdog resets the chip, and with it every coil output, if the input loop stops feeding it: a panic
-  // spins with interrupts masked, and a hang stops the loop.
-  let mut watchdog = TimerGroup::new(peripherals.TIMG1).wdt;
-  watchdog.set_timeout(
-    MwdtStage::Stage0,
-    HalDuration::from_millis(u64::from(settings.node.watchdog_timeout_ms))
-  );
-  watchdog.enable();
 
   for line in FLASH_NOTICE.lines() {
     info!("{line}");
@@ -258,6 +272,16 @@ async fn main(spawner: Spawner) -> ! {
       }
     };
   }
+  // The watchdog resets the chip, and with it every coil output, if the input loop stops feeding it: a panic
+  // spins with interrupts masked, and a hang stops the loop. It starts only now, with the loop that feeds it:
+  // before this no coil can be driven, while erasing the record partition at boot may take longer than its
+  // timeout (six sectors, up to 400 ms each by flash datasheets), and a halt above must stay halted.
+  let mut watchdog = TimerGroup::new(peripherals.TIMG1).wdt;
+  watchdog.set_timeout(
+    MwdtStage::Stage0,
+    HalDuration::from_millis(u64::from(settings.node.watchdog_timeout_ms))
+  );
+  watchdog.enable();
   spawn!(inputs(permit, rail, watchdog));
   spawn!(arm_pulse(arm));
   spawn!(can(twai));
@@ -425,13 +449,15 @@ async fn can(mut twai: Twai<'static, Async>) {
 async fn actuator(mut steppers: [Stepper<Coil>; 2], mut records: Records, rail_up_timeout_ms: u32) {
   loop {
     // Records first: they are written only here, between moves.
-    while let Ok((channel, record)) = PERSIST.try_receive() {
+    while let Some((channel, record)) = take_pending_record() {
       write_record(&mut records, channel, record).await;
     }
-    match select(PERSIST.receive(), MOVES.receive()).await {
-      Either::First((channel, record)) => write_record(&mut records, channel, record).await,
+    match select(RECORD_PENDING.wait(), MOVES.receive()).await {
+      // The loop writes it.
+      Either::First(()) => {}
       Either::Second(request) => {
-        while let Ok((channel, record)) = PERSIST.try_receive() {
+        // Among them the record marked suspect that the node queued with this move: it is written before a step.
+        while let Some((channel, record)) = take_pending_record() {
           write_record(&mut records, channel, record).await;
         }
         let outcome = match steppers.get_mut(usize::from(request.channel.get())) {
