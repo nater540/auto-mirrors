@@ -1,5 +1,5 @@
-//! Tests of the coordinator state machine: each transition and fault, then the interlock rules as properties over
-//! random event sequences.
+//! Tests of the coordinator state machine: each transition and fault,
+//! then the interlock rules as a property over random event sequences.
 
 extern crate std;
 

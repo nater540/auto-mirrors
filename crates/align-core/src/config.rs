@@ -306,8 +306,8 @@ impl CoordinatorTiming {
 pub struct SensorTiming {
   /// UNVERIFIED: a SHOT whose `seq` was seen within this long is a duplicate and is ignored.
   pub dedup_window_ms: u32,
-  /// UNVERIFIED: without a coordinator heartbeat for this long, the sensor drops its pending shots and forgets every
-  /// seen `seq`.
+  /// UNVERIFIED: without a coordinator heartbeat for this long,
+  /// the sensor drops its pending shots and forgets every seen `seq`.
   pub coordinator_loss_ms: u32
 }
 

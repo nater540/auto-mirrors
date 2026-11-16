@@ -5,8 +5,8 @@
 //! The firmware feeds it the Ruida's signals and the relay's feedback, and carries out the [`Actions`] it returns.
 //!
 //! The events are named for what happens, not for the Ruida's pins, so that a test frame without a Ruida can drive
-//! the same machine: a start becomes "start the job", a fire edge becomes [`Event::Fire`], and the Status line
-//! becomes [`Event::JobRunning`].
+//! the same machine. A start is "start the job", a fire edge is [`Event::Fire`],
+//! and the Status line is [`Event::JobRunning`].
 //!
 //! States beyond the table of reference 7.3, which leaves these steps implicit (proposed in `docs/SENSOR_PLAN.md`
 //! section 13; the owner approved the protocol that needs them):
