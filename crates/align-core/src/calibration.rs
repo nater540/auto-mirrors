@@ -20,7 +20,7 @@ pub struct Calibration {
   /// Commanded position of every axis when the baseline was measured, in steps.
   pub q0_steps: [i32; 4],
   /// Condition number of the Jacobian when it was accepted.
-  pub cond: f32,
+  pub cond: f32
 }
 
 /// The Jacobian from a baseline measurement and the measurement after poking each axis by `poke_steps`:
@@ -69,7 +69,7 @@ mod tests {
       2.8e-3, 0.0, 0.0, 0.0, //
       1.0e-4, 2.0e-3, 0.0, 0.0, //
       3.4e-3, 0.0, 3.4e-3, 0.0, //
-      0.0, 2.4e-3, -1.0e-4, 2.4e-3,
+      0.0, 2.4e-3, -1.0e-4, 2.4e-3
     )
   }
 

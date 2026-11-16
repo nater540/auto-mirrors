@@ -12,6 +12,7 @@ The esp-hal family changes API between minor releases. The crates below are pinn
 | Item | Pin | Why | Checked how |
 |---|---|---|---|
 | Rust | 1.96.0 (`rust-toolchain.toml`) | The floor is 1.95.0, set by esp-hal 1.2.2 and esp-rtos 0.4.0. 1.96.0 is the version the owner's other projects pin and the one installed here. Stable is 1.100.0; nothing needs it yet. | `cargo info`, `rustup check` |
+| rustfmt for `just fmt` | `nightly` (1.99.0-nightly, 2026-07-19, checked 2026-11-15) | Formatting only. The owner's no-trailing-comma rule needs `trailing_comma = "Never"`, which stable rustfmt ignores. Builds, tests, and clippy stay on 1.96.0. The channel floats: if a newer nightly reformats code, pin a dated nightly here. | `cargo +nightly fmt --version` |
 | Target | `riscv32imac-unknown-none-elf` | ESP32-C6. A prebuilt target on stable: no espup, no Xtensa fork, no `build-std`. | Both firmware crates build with the pinned toolchain |
 | esp-generate | 2.0.0 | Source of the firmware skeleton. The copy installed on this machine was 1.3.0, which generates the previous generation (esp-hal ~1.1.0, esp-rtos 0.3.0). 2.0.0 was installed into a scratch directory for this run; the global install was left alone. | `esp-generate --help` of both versions |
 

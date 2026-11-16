@@ -25,7 +25,7 @@ pub enum LastDir {
   /// The plus direction: backlash is taken up.
   Plus,
   /// The minus direction.
-  Minus,
+  Minus
 }
 
 /// The legs of one approach. Either may be zero.
@@ -34,7 +34,7 @@ pub struct Approach {
   /// First leg: zero, or a negative move past the target.
   pub reverse_steps: i32,
   /// Second leg: zero, or a positive move onto the target.
-  pub forward_steps: i32,
+  pub forward_steps: i32
 }
 
 impl Approach {
@@ -54,7 +54,7 @@ pub fn plan(delta_steps: i32, last_dir: LastDir, overshoot_steps: i32) -> Approa
   let overshoot = overshoot_steps.max(0);
   let direct = Approach {
     reverse_steps: 0,
-    forward_steps: delta_steps,
+    forward_steps: delta_steps
   };
   if last_dir == LastDir::Plus && delta_steps >= 0 {
     return direct;
@@ -65,7 +65,7 @@ pub fn plan(delta_steps: i32, last_dir: LastDir, overshoot_steps: i32) -> Approa
   }
   Approach {
     reverse_steps: reverse,
-    forward_steps: overshoot,
+    forward_steps: overshoot
   }
 }
 
@@ -75,7 +75,7 @@ pub struct SoftLimits {
   /// Lowest allowed commanded position, in steps.
   pub min_steps: i32,
   /// Highest allowed commanded position, in steps.
-  pub max_steps: i32,
+  pub max_steps: i32
 }
 
 impl SoftLimits {
@@ -86,7 +86,7 @@ impl SoftLimits {
     let margin = libm::round((max - min).max(0.0) * f64::from(motion.soft_limit_margin_frac).max(0.0));
     Self {
       min_steps: saturate(min - margin),
-      max_steps: saturate(max + margin),
+      max_steps: saturate(max + margin)
     }
   }
 
@@ -231,13 +231,13 @@ mod tests {
       m1_h: -100,
       m1_v: -200,
       m2_h: 0,
-      m2_v: -1,
+      m2_v: -1
     };
     motion.soft_max_steps = PerAxis {
       m1_h: 100,
       m1_v: 300,
       m2_h: 50,
-      m2_v: 1,
+      m2_v: 1
     };
     motion.soft_limit_margin_frac = 0.0;
     assert_eq!(

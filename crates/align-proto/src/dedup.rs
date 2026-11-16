@@ -21,7 +21,7 @@ pub enum MoveDecision {
   /// A repeat of the move that is running: do nothing. The MOVE_DONE follows when it ends.
   AlreadyRunning,
   /// A repeat of the move that has ended: send this MOVE_DONE again, and do not move.
-  AlreadyDone(MoveDone),
+  AlreadyDone(MoveDone)
 }
 
 /// Why a MOVE_REL was refused. The node does not move, and reports the fault.
@@ -36,7 +36,7 @@ pub enum MoveRefused {
     /// The move accepted under that number.
     accepted: MoveRel,
     /// The move received now.
-    received: MoveRel,
+    received: MoveRel
   },
   /// A different move arrived while one is running.
   #[error("MoveRel seq {received} arrived while seq {running} is still running")]
@@ -44,15 +44,15 @@ pub enum MoveRefused {
     /// The sequence number of the running move.
     running: u8,
     /// The sequence number received.
-    received: u8,
-  },
+    received: u8
+  }
 }
 
 /// The last move a node accepted, and how it ended.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct MoveRelTracker {
   last: Option<MoveRel>,
-  done: Option<MoveDone>,
+  done: Option<MoveDone>
 }
 
 impl MoveRelTracker {
@@ -91,19 +91,19 @@ impl MoveRelTracker {
         return Err(MoveRefused::SeqReused {
           seq: received.seq,
           accepted,
-          received,
+          received
         });
       }
       return Ok(
         self
           .done
-          .map_or(MoveDecision::AlreadyRunning, MoveDecision::AlreadyDone),
+          .map_or(MoveDecision::AlreadyRunning, MoveDecision::AlreadyDone)
       );
     }
     if self.done.is_none() {
       return Err(MoveRefused::Busy {
         running: accepted.seq,
-        received: received.seq,
+        received: received.seq
       });
     }
     Ok(MoveDecision::Run)
@@ -123,7 +123,7 @@ impl MoveRelTracker {
       seq: running.seq,
       channel: running.channel,
       result,
-      pos_steps,
+      pos_steps
     };
     self.done = Some(done);
     Some(done)
@@ -147,7 +147,7 @@ mod tests {
       seq,
       channel: Channel::new(1).unwrap(),
       delta_steps,
-      finish_plus: true,
+      finish_plus: true
     }
   }
 

@@ -16,7 +16,7 @@ pub enum Axis {
   /// Mirror 2, the screw that steers the beam horizontally.
   M2H,
   /// Mirror 2, the screw that steers the beam vertically.
-  M2V,
+  M2V
 }
 
 impl Axis {
@@ -29,7 +29,7 @@ impl Axis {
       Axis::M1H => 0,
       Axis::M1V => 1,
       Axis::M2H => 2,
-      Axis::M2V => 3,
+      Axis::M2V => 3
     }
   }
 }
@@ -44,7 +44,7 @@ pub struct PerAxis<T> {
   /// Value for [`Axis::M2H`].
   pub m2_h: T,
   /// Value for [`Axis::M2V`].
-  pub m2_v: T,
+  pub m2_v: T
 }
 
 impl<T> PerAxis<T> {
@@ -54,7 +54,7 @@ impl<T> PerAxis<T> {
       Axis::M1H => &mut self.m1_h,
       Axis::M1V => &mut self.m1_v,
       Axis::M2H => &mut self.m2_h,
-      Axis::M2V => &mut self.m2_v,
+      Axis::M2V => &mut self.m2_v
     }
   }
 }
@@ -66,7 +66,7 @@ impl<T: Copy> PerAxis<T> {
       m1_h: value,
       m1_v: value,
       m2_h: value,
-      m2_v: value,
+      m2_v: value
     }
   }
 
@@ -76,7 +76,7 @@ impl<T: Copy> PerAxis<T> {
       Axis::M1H => self.m1_h,
       Axis::M1V => self.m1_v,
       Axis::M2H => self.m2_h,
-      Axis::M2V => self.m2_v,
+      Axis::M2V => self.m2_v
     }
   }
 
@@ -104,7 +104,7 @@ mod tests {
       m1_h: 10,
       m1_v: 20,
       m2_h: 30,
-      m2_v: 40,
+      m2_v: 40
     };
     assert_eq!(values.to_array(), [10, 20, 30, 40]);
     for axis in Axis::ALL {

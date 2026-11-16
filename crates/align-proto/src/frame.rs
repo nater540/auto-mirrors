@@ -90,7 +90,7 @@ pub enum Class {
   /// Liveness, in both directions.
   Heartbeat = 0x8,
   /// A configuration value, coordinator to node.
-  Config = 0x9,
+  Config = 0x9
 }
 
 impl Class {
@@ -107,7 +107,7 @@ impl Class {
       0x7 => Self::Sensor,
       0x8 => Self::Heartbeat,
       0x9 => Self::Config,
-      _ => return None,
+      _ => return None
     })
   }
 
@@ -119,7 +119,7 @@ impl Class {
       Self::Fault => 4,
       Self::Heartbeat => 6,
       Self::MoveRel => 7,
-      Self::MoveDone | Self::Status | Self::Sensor | Self::Config => 8,
+      Self::MoveDone | Self::Status | Self::Sensor | Self::Config => 8
     }
   }
 }
@@ -132,7 +132,7 @@ pub struct IdFields {
   /// The node address.
   pub node: NodeId,
   /// The channel.
-  pub channel: Channel,
+  pub channel: Channel
 }
 
 /// The identifier for a class, a node, and a channel.
@@ -142,7 +142,7 @@ pub const fn compose_id(class: Class, node: NodeId, channel: Channel) -> Standar
   // names class 0xF, which every receiver rejects as undefined.
   match StandardId::new(raw) {
     Some(id) => id,
-    None => StandardId::MAX,
+    None => StandardId::MAX
   }
 }
 
@@ -152,7 +152,7 @@ pub fn split_id(id: StandardId) -> IdFields {
   IdFields {
     class_bits: ((raw >> CLASS_SHIFT) & 0xF) as u8,
     node: NodeId(((raw >> NODE_SHIFT) & NODE_MASK) as u8),
-    channel: Channel((raw & AXIS_MASK) as u8),
+    channel: Channel((raw & AXIS_MASK) as u8)
   }
 }
 

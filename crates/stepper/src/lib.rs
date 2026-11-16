@@ -24,7 +24,7 @@ pub const SEQUENCE: [[bool; 4]; 4] = [
   [true, true, false, false],
   [false, true, true, false],
   [false, false, true, true],
-  [true, false, false, true],
+  [true, false, false, true]
 ];
 
 /// A row of [`SEQUENCE`]. Stored with the position so that a re-energized motor starts where it stopped
@@ -55,7 +55,7 @@ impl Phase {
       0 => SEQUENCE[0],
       1 => SEQUENCE[1],
       2 => SEQUENCE[2],
-      _ => SEQUENCE[3],
+      _ => SEQUENCE[3]
     }
   }
 }
@@ -68,7 +68,7 @@ pub struct Timing {
   /// Time from energizing the stored phase to the first step, in milliseconds.
   pub energize_dwell_ms: u32,
   /// Time the last state is held before the coils are released, in milliseconds.
-  pub hold_before_release_ms: u32,
+  pub hold_before_release_ms: u32
 }
 
 /// Why a move ended.
@@ -80,7 +80,7 @@ pub enum MoveEnd {
   Stopped,
   /// The motor rail read as down: steps after it were not issued, and steps just before it may not have turned
   /// the motor. The position is not trusted afterwards.
-  RailLost,
+  RailLost
 }
 
 /// What a move did.
@@ -89,7 +89,7 @@ pub struct MoveReport {
   /// Why it ended.
   pub end: MoveEnd,
   /// Steps issued, signed like the request. Without feedback this is what was commanded, not what turned.
-  pub steps_issued: i32,
+  pub steps_issued: i32
 }
 
 /// A coil output failed. The driver tried to release every coil before returning it.
@@ -99,7 +99,7 @@ pub struct PinFault<E: core::fmt::Debug>(pub E);
 
 /// The four coil outputs, IN1 to IN4. Releases every coil when dropped.
 pub struct Coils<P: OutputPin> {
-  pins: [P; 4],
+  pins: [P; 4]
 }
 
 impl<P: OutputPin> Coils<P> {
@@ -151,7 +151,7 @@ impl<P: OutputPin> Drop for Coils<P> {
 /// One motor: its coils and the phase it is in.
 pub struct Stepper<P: OutputPin> {
   coils: Coils<P>,
-  phase: Phase,
+  phase: Phase
 }
 
 impl<P: OutputPin> Stepper<P> {
@@ -182,12 +182,12 @@ impl<P: OutputPin> Stepper<P> {
     timing: Timing,
     delay: &mut D,
     stop: &AtomicBool,
-    mut rail_ok: impl FnMut() -> bool,
+    mut rail_ok: impl FnMut() -> bool
   ) -> Result<MoveReport, PinFault<P::Error>> {
     if steps == 0 {
       return Ok(MoveReport {
         end: MoveEnd::Done,
-        steps_issued: 0,
+        steps_issued: 0
       });
     }
     let forward = steps > 0;
@@ -198,7 +198,7 @@ impl<P: OutputPin> Stepper<P> {
     if let Some(early) = check(stop, &mut rail_ok) {
       return Ok(MoveReport {
         end: early,
-        steps_issued: 0,
+        steps_issued: 0
       });
     }
     self.coils.energize(self.phase)?;
@@ -221,7 +221,7 @@ impl<P: OutputPin> Stepper<P> {
     self.coils.release()?;
     Ok(MoveReport {
       end,
-      steps_issued: issued,
+      steps_issued: issued
     })
   }
 }
@@ -256,7 +256,7 @@ mod tests {
   #[derive(Clone, Debug, PartialEq)]
   enum Event {
     Coils([bool; 4]),
-    WaitUs(u64),
+    WaitUs(u64)
   }
 
   #[derive(Default)]
@@ -264,14 +264,14 @@ mod tests {
     levels: [bool; 4],
     events: Vec<Event>,
     /// Fail the pin with this index on its next write.
-    fail_pin: Option<usize>,
+    fail_pin: Option<usize>
   }
 
   type Shared = Rc<RefCell<Bench>>;
 
   struct FakePin {
     index: usize,
-    bench: Shared,
+    bench: Shared
   }
 
   #[derive(Debug, PartialEq)]
@@ -316,7 +316,7 @@ mod tests {
   struct FakeDelay {
     bench: Shared,
     /// Pend forever instead of completing, to test a dropped move.
-    hang: bool,
+    hang: bool
   }
 
   impl DelayNs for FakeDelay {
@@ -340,20 +340,20 @@ mod tests {
   const TIMING: Timing = Timing {
     step_period_us: 5_000,
     energize_dwell_ms: 20,
-    hold_before_release_ms: 100,
+    hold_before_release_ms: 100
   };
 
   fn bench() -> (Shared, Stepper<FakePin>, FakeDelay) {
     let bench: Shared = Rc::default();
     let pins = [0, 1, 2, 3].map(|index| FakePin {
       index,
-      bench: bench.clone(),
+      bench: bench.clone()
     });
     let stepper = Stepper::new(Coils::new(pins).unwrap(), Phase::default());
     bench.borrow_mut().events.clear();
     let delay = FakeDelay {
       bench: bench.clone(),
-      hang: false,
+      hang: false
     };
     (bench, stepper, delay)
   }
@@ -413,7 +413,7 @@ mod tests {
     bench.borrow_mut().levels = [true; 4];
     let pins = [0, 1, 2, 3].map(|index| FakePin {
       index,
-      bench: bench.clone(),
+      bench: bench.clone()
     });
     let _coils = Coils::new(pins).unwrap();
     assert_eq!(bench.borrow().levels, OFF);
@@ -559,7 +559,7 @@ mod tests {
     let stop = AtomicBool::new(false);
     let mut hanging = FakeDelay {
       bench: bench.clone(),
-      hang: true,
+      hang: true
     };
     {
       let mut future = pin!(stepper.run(10, TIMING, &mut hanging, &stop, || true));
@@ -587,7 +587,7 @@ mod tests {
     let bench: Shared = Rc::default();
     let pins = [0, 1, 2, 3].map(|index| FakePin {
       index,
-      bench: bench.clone(),
+      bench: bench.clone()
     });
     let mut coils = Coils::new(pins).unwrap();
     bench.borrow_mut().levels = [true; 4];

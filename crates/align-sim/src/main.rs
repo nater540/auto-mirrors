@@ -21,7 +21,7 @@ use rand::{RngExt, SeedableRng};
 #[command(about = "Simulated mirror alignment: the align-core procedure against a model of the machine")]
 struct Cli {
   #[command(subcommand)]
-  command: Command,
+  command: Command
 }
 
 #[derive(Subcommand)]
@@ -29,7 +29,7 @@ enum Command {
   /// Run one alignment and print every move and measurement
   Run(RunArgs),
   /// Run many alignments at each Y span and print how conditioning affects convergence
-  Sweep(SweepArgs),
+  Sweep(SweepArgs)
 }
 
 /// The imperfections of the simulated machine. Every default is an UNVERIFIED placeholder.
@@ -49,7 +49,7 @@ struct Imperfections {
   noise: f64,
   /// Fraction of each screw's effect that leaks into the other direction
   #[arg(long, default_value_t = 0.05)]
-  coupling: f64,
+  coupling: f64
 }
 
 #[derive(Args)]
@@ -67,7 +67,7 @@ struct RunArgs {
   #[arg(long, default_value_t = 500.0)]
   y_span: f64,
   #[command(flatten)]
-  imperfections: Imperfections,
+  imperfections: Imperfections
 }
 
 #[derive(Args)]
@@ -86,7 +86,7 @@ struct SweepArgs {
   #[arg(long)]
   jacobian_error: Option<f32>,
   #[command(flatten)]
-  imperfections: Imperfections,
+  imperfections: Imperfections
 }
 
 fn main() -> anyhow::Result<()> {
@@ -94,7 +94,7 @@ fn main() -> anyhow::Result<()> {
   let mut out = io::stdout().lock();
   match cli.command {
     Command::Run(args) => run(&args, &mut out),
-    Command::Sweep(args) => sweep(&args, &mut out),
+    Command::Sweep(args) => sweep(&args, &mut out)
   }
 }
 
@@ -109,7 +109,7 @@ fn scenario(imperfections: Imperfections, y_span_mm: f64, seed: u64) -> Scenario
     axes: PerAxis::splat(AxisModel {
       backlash_steps: imperfections.backlash,
       stick_steps: imperfections.stick,
-      skip_probability: imperfections.skip,
+      skip_probability: imperfections.skip
     }),
     cross_coupling: imperfections.coupling,
     seed,
@@ -129,7 +129,7 @@ fn run(args: &RunArgs, out: &mut impl Write) -> anyhow::Result<()> {
     m1_h: *m1_h,
     m1_v: *m1_v,
     m2_h: *m2_h,
-    m2_v: *m2_v,
+    m2_v: *m2_v
   };
   scenario.head_offset_um = [*offset_h, *offset_v];
 
@@ -150,7 +150,7 @@ fn run(args: &RunArgs, out: &mut impl Write) -> anyhow::Result<()> {
   for record in rig.world().log() {
     match record {
       Record::Move { axis, delta_steps } => writeln!(out, "  move    {axis:?} {delta_steps:+}")?,
-      Record::Measure { true_residual_norm } => writeln!(out, "  measure true residual {true_residual_norm:.4}")?,
+      Record::Measure { true_residual_norm } => writeln!(out, "  measure true residual {true_residual_norm:.4}")?
     }
   }
   match outcome {
@@ -169,7 +169,7 @@ fn run(args: &RunArgs, out: &mut impl Write) -> anyhow::Result<()> {
         ""
       },
     )?,
-    Err(fault) => writeln!(out, "fault: {fault}")?,
+    Err(fault) => writeln!(out, "fault: {fault}")?
   }
   let world = rig.world();
   writeln!(out, "end: true residual {:.4}", world.true_shots().measurement().amax())?;
@@ -220,11 +220,11 @@ fn sweep(args: &SweepArgs, out: &mut impl Write) -> anyhow::Result<()> {
         m1_h: misalignments.random_range(-35.0..35.0),
         m1_v: misalignments.random_range(-35.0..35.0),
         m2_h: misalignments.random_range(-50.0..50.0),
-        m2_v: misalignments.random_range(-50.0..50.0),
+        m2_v: misalignments.random_range(-50.0..50.0)
       };
       scenario.head_offset_um = [
         misalignments.random_range(-200.0..200.0),
-        misalignments.random_range(-200.0..200.0),
+        misalignments.random_range(-200.0..200.0)
       ];
       let rig = Rig::new(scenario);
       if let Ok(conditioning) = Conditioning::of(&rig.world().true_jacobian()) {
@@ -251,7 +251,7 @@ fn sweep(args: &SweepArgs, out: &mut impl Write) -> anyhow::Result<()> {
             recalibrated += 1;
           }
         }
-        Err(fault) => *faults.entry(fault_kind(&fault)).or_insert(0_u32) += 1,
+        Err(fault) => *faults.entry(fault_kind(&fault)).or_insert(0_u32) += 1
       }
     }
     let mean_steps = if converged == 0 {
@@ -285,6 +285,6 @@ fn fault_kind(fault: &AlignFault) -> &'static str {
     AlignFault::Calibration(_) => "calibration rejected (conditioning)",
     AlignFault::Solve(_) => "solver",
     AlignFault::AxisNotResponding { .. } => "axis not responding",
-    AlignFault::NotConverged { .. } => "not converged",
+    AlignFault::NotConverged { .. } => "not converged"
   }
 }

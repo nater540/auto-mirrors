@@ -25,7 +25,7 @@ pub enum MoveFault {
   SoftLimit,
   /// The node did not answer.
   #[error("no answer from the node")]
-  NoAnswer,
+  NoAnswer
 }
 
 /// Why a measurement produced no readings.
@@ -33,7 +33,7 @@ pub enum MoveFault {
 pub enum SensorFault {
   /// No reading arrived: the job did not run, no fire was seen, or the sensor node was silent.
   #[error("no reading arrived from the sensor")]
-  NoReading,
+  NoReading
 }
 
 /// Turns one adjuster screw.

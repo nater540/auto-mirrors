@@ -8,7 +8,7 @@ pub struct TestFrame {
   id: Id,
   remote: bool,
   dlc: usize,
-  data: [u8; 8],
+  data: [u8; 8]
 }
 
 impl TestFrame {
@@ -21,7 +21,7 @@ impl TestFrame {
   pub fn raw_id(&self) -> u16 {
     match self.id {
       Id::Standard(id) => id.as_raw(),
-      Id::Extended(_) => panic!("an extended frame has no 11-bit identifier"),
+      Id::Extended(_) => panic!("an extended frame has no 11-bit identifier")
     }
   }
 }
@@ -34,7 +34,7 @@ impl Frame for TestFrame {
       id: id.into(),
       remote: false,
       dlc: payload.len(),
-      data,
+      data
     })
   }
 
@@ -43,7 +43,7 @@ impl Frame for TestFrame {
       id: id.into(),
       remote: true,
       dlc,
-      data: [0; 8],
+      data: [0; 8]
     })
   }
 

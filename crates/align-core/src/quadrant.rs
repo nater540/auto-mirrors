@@ -22,7 +22,7 @@ pub struct Quadrants {
   /// Lower left.
   pub c: f32,
   /// Lower right.
-  pub d: f32,
+  pub d: f32
 }
 
 /// One beam position reading.
@@ -33,7 +33,7 @@ pub struct Reading {
   /// Vertical position, normalized to `[-1, 1]`.
   pub v_norm: f32,
   /// Sum of the four quadrants, in the sensor's own units.
-  pub sum: f32,
+  pub sum: f32
 }
 
 /// Why a reading was rejected.
@@ -62,7 +62,7 @@ pub enum ReadingFault {
   NotRepeatable,
   /// The sum changed too much from the previous shot: misfire or upstream clipping.
   #[error("sensor sum changed from the previous shot")]
-  EnergyChanged,
+  EnergyChanged
 }
 
 impl Quadrants {
@@ -88,7 +88,7 @@ impl Quadrants {
     Ok(Reading {
       h_norm: ((self.a + self.d) - (self.b + self.c)) / sum,
       v_norm: ((self.a + self.b) - (self.c + self.d)) / sum,
-      sum,
+      sum
     })
   }
 
@@ -192,7 +192,7 @@ mod tests {
       a: 1.0,
       b: 1.0,
       c: 1.0,
-      d: 1.0,
+      d: 1.0
     }
     .normalize()
     .unwrap();
@@ -219,7 +219,7 @@ mod tests {
       a: 4.0,
       b: 3.0,
       c: 1.0,
-      d: 2.0,
+      d: 2.0
     }
     .normalize()
     .unwrap();
@@ -233,14 +233,14 @@ mod tests {
       a: 0.0,
       b: 0.0,
       c: 0.0,
-      d: 0.0,
+      d: 0.0
     };
     assert_eq!(dark.normalize(), Err(ReadingFault::NoSignal));
     let negative = Quadrants {
       a: -1.0,
       b: 0.0,
       c: 0.0,
-      d: 0.5,
+      d: 0.5
     };
     assert_eq!(negative.normalize(), Err(ReadingFault::NoSignal));
   }
@@ -251,7 +251,7 @@ mod tests {
       a: f32::NAN,
       b: 1.0,
       c: 1.0,
-      d: 1.0,
+      d: 1.0
     };
     assert_eq!(broken.normalize(), Err(ReadingFault::NotFinite));
     assert_eq!(broken.check(10.0, 0.01, &LIMITS), Err(ReadingFault::NotFinite));
@@ -259,7 +259,7 @@ mod tests {
       a: f32::INFINITY,
       b: 1.0,
       c: 1.0,
-      d: 1.0,
+      d: 1.0
     };
     assert_eq!(infinite.normalize(), Err(ReadingFault::NotFinite));
   }
@@ -270,14 +270,14 @@ mod tests {
       a: 8.9,
       b: 1.0,
       c: 1.0,
-      d: 1.0,
+      d: 1.0
     };
     assert_eq!(below.check(10.0, 0.01, &LIMITS), Ok(()));
     let at = Quadrants {
       a: 9.0,
       b: 1.0,
       c: 1.0,
-      d: 1.0,
+      d: 1.0
     };
     assert_eq!(at.check(10.0, 0.01, &LIMITS), Err(ReadingFault::Saturated));
   }
@@ -288,14 +288,14 @@ mod tests {
       a: 1.0,
       b: -0.029,
       c: 1.0,
-      d: 1.0,
+      d: 1.0
     };
     assert_eq!(inside.check(10.0, 0.01, &LIMITS), Ok(()));
     let outside = Quadrants {
       a: 1.0,
       b: -0.031,
       c: 1.0,
-      d: 1.0,
+      d: 1.0
     };
     assert_eq!(outside.check(10.0, 0.01, &LIMITS), Err(ReadingFault::NegativeQuadrant));
   }

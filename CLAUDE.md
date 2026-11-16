@@ -140,7 +140,7 @@ fails.** Build firmware by package and target, through the justfile.
 just ci                    # everything that must pass before a commit, cheapest first
 just test                  # host tests; `just test align-core` for one crate
 just clippy                # host crates and tests, warnings denied (`just lint` is the same)
-just fmt                   # format everything
+just fmt                   # format everything (nightly rustfmt, for `trailing_comma`)
 just doc                   # API docs with warnings denied
 just check-no-std          # build the no_std libraries for the ESP32-C6 (proves no std, no alloc)
 just firmware              # build both images in release mode; never flashes
@@ -192,6 +192,10 @@ gate and the boot log check are in `scripts/board.sh`.
 - **Aim for ~120-character lines**, comments and Markdown included. Break where the text has a natural pause; do
   not pad lines out to the limit. Never leave a last line of a few words ("as suspect.") under a full one:
   end lines at sentence or clause boundaries instead, one sentence per line when sentences run long.
+- **No trailing comma after the last item of a multi-line list**: `use` lists, struct fields and literals, enum
+  variants, arguments, arrays, and TOML arrays. rustfmt enforces it for Rust through `trailing_comma = "Never"`,
+  an unstable option, so **format with `just fmt` (nightly rustfmt), never a plain `cargo fmt`**, which puts the
+  commas back.
 - **No em-dashes or en-dashes, anywhere**: code, comments, string literals, docs, commit messages. Use a colon, a
   comma, parentheses, a plain hyphen, or two sentences.
 - **No contractions** in docs, comments, commit messages, or messages to the owner ("do not", never the short form).

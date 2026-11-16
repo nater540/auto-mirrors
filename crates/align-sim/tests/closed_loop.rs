@@ -26,7 +26,7 @@ fn misalignment() -> impl Strategy<Value = (PerAxis<f64>, [f64; 2])> {
     -50.0..50.0,
     -50.0..50.0,
     -200.0..200.0,
-    -200.0..200.0,
+    -200.0..200.0
   )
     .prop_map(|(m1_h, m1_v, m2_h, m2_v, offset_h, offset_v)| (PerAxis { m1_h, m1_v, m2_h, m2_v }, [offset_h, offset_v]))
 }
@@ -85,7 +85,7 @@ fn an_ideal_machine_is_aligned_from_a_known_misalignment() {
       m1_h: 30.0,
       m1_v: -25.0,
       m2_h: -40.0,
-      m2_v: 35.0,
+      m2_v: 35.0
     },
     ..Scenario::IDEAL
   };
@@ -118,7 +118,7 @@ fn seeded(index: u64, stick_steps: u32) -> (Scenario, StdRng) {
     m1_h: draw.random_range(-35.0..35.0),
     m1_v: draw.random_range(-35.0..35.0),
     m2_h: draw.random_range(-50.0..50.0),
-    m2_v: draw.random_range(-50.0..50.0),
+    m2_v: draw.random_range(-50.0..50.0)
   };
   scenario.head_offset_um = [draw.random_range(-200.0..200.0), draw.random_range(-200.0..200.0)];
   (scenario, draw)
@@ -129,7 +129,7 @@ fn seeded(index: u64, stick_steps: u32) -> (Scenario, StdRng) {
 struct Tally {
   runs: u32,
   within_the_cap: u32,
-  recalibrated: u32,
+  recalibrated: u32
 }
 
 impl Tally {
@@ -253,9 +253,9 @@ fn a_dead_axis_is_marked_suspect_and_then_reported_as_not_responding() {
         m1_h: 25.0,
         m1_v: -25.0,
         m2_h: 35.0,
-        m2_v: -35.0,
+        m2_v: -35.0
       },
-      [50.0, -50.0],
+      [50.0, -50.0]
     );
     *scenario.axes.get_mut(dead) = AxisModel::DEAD;
     let rig = Rig::new(scenario);
@@ -304,7 +304,7 @@ fn a_two_position_absolute_target_fails_where_the_three_position_difference_succ
       m1_h: 15.0,
       m1_v: -10.0,
       m2_h: -20.0,
-      m2_v: 15.0,
+      m2_v: 15.0
     },
     // A small offset on purpose. At this geometry the absolute target turns every micrometer of offset into
     // about 60 urad of beam angle, so an offset of a few hundred micrometers throws the beam off the sensor
@@ -325,7 +325,7 @@ fn a_two_position_absolute_target_fails_where_the_three_position_difference_succ
     Rig::new(scenario)
       .aligner(Config::default())
       .with_target(absolute_target)
-      .align(),
+      .align()
   );
   assert!(
     matches!(rejected, Err(AlignFault::Calibration(SolveFault::IllConditioned { cond, .. })) if cond > 200.0),
@@ -415,14 +415,14 @@ fn alignment_survives_occasional_skipped_steps() {
       m1_h: 30.0,
       m1_v: -20.0,
       m2_h: -45.0,
-      m2_v: 40.0,
+      m2_v: 40.0
     },
-    [80.0, 60.0],
+    [80.0, 60.0]
   );
   scenario.axes = PerAxis::splat(AxisModel {
     backlash_steps: 20,
     stick_steps: 3,
-    skip_probability: 0.02,
+    skip_probability: 0.02
   });
   let rig = Rig::new(scenario);
   let (outcome, _) = align(&rig, Config::default());
@@ -438,9 +438,9 @@ fn every_axis_is_left_having_last_moved_in_the_plus_direction() {
       m1_h: -30.0,
       m1_v: 20.0,
       m2_h: 45.0,
-      m2_v: -40.0,
+      m2_v: -40.0
     },
-    [0.0, 0.0],
+    [0.0, 0.0]
   );
   let rig = Rig::new(scenario);
   let (outcome, aligner) = align(&rig, Config::default());
@@ -450,9 +450,9 @@ fn every_axis_is_left_having_last_moved_in_the_plus_direction() {
     let last_move = rig.world().log().iter().rev().find_map(|record| match record {
       Record::Move {
         axis: moved,
-        delta_steps,
+        delta_steps
       } if *moved == axis => Some(*delta_steps),
-      _ => None,
+      _ => None
     });
     assert!(last_move.unwrap() > 0, "{axis:?} last moved {last_move:?}");
   }
@@ -466,9 +466,9 @@ fn the_coordinator_position_matches_the_commands_the_rig_received() {
       m1_h: 20.0,
       m1_v: 20.0,
       m2_h: -30.0,
-      m2_v: -30.0,
+      m2_v: -30.0
     },
-    [0.0, 0.0],
+    [0.0, 0.0]
   );
   let rig = Rig::new(scenario);
   let (outcome, aligner) = align(&rig, Config::default());

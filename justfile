@@ -64,15 +64,15 @@ test-stress cases="2000":
 clippy:
     cargo clippy --all-targets -- -D warnings
 
-# Format every crate, firmware included
+# Format every crate, firmware included. Nightly rustfmt: rustfmt.toml uses `trailing_comma`, an unstable option
 [group('host')]
 fmt:
-    cargo fmt --all
+    cargo +nightly fmt --all
 
-# Fail if any file is not formatted
+# Fail if any file is not formatted (nightly rustfmt, as `fmt`)
 [group('host')]
 fmt-check:
-    cargo fmt --all --check
+    cargo +nightly fmt --all --check
 
 # Build the API docs of the host crates, warnings (a broken link, a missing doc) denied
 [group('host')]
@@ -243,6 +243,7 @@ doctor:
     have "rustc" "rustup installs the toolchain pinned in rust-toolchain.toml" rustc --version
     have "cargo" "comes with the toolchain" cargo --version
     have "rustfmt" "rustup component add rustfmt" cargo fmt --version
+    have "nightly rustfmt" "rustup toolchain install nightly --component rustfmt (fmt: trailing_comma)" cargo +nightly fmt --version
     have "clippy" "rustup component add clippy" cargo clippy --version
     if rustup target list --installed 2>/dev/null | grep -qx "{{ target }}"; then
       printf '  ok       %-16s %s\n' "target" "{{ target }}"
@@ -294,7 +295,7 @@ check-commits base:
       result="ok"
       (
         cd "$tree" || exit 1
-        cargo fmt --all --check \
+        cargo +nightly fmt --all --check \
           && cargo clippy --quiet --all-targets -- -D warnings \
           && cargo test --quiet \
           && cargo build --quiet {{ no_std_crates }} --target {{ target }}

@@ -21,5 +21,5 @@ pub use dedup::{MoveDecision, MoveRefused, MoveRelTracker};
 pub use frame::{Channel, Class, NodeId};
 pub use message::{
   ConfigKey, DecodeError, EncodeError, Envelope, FaultCode, Message, MoveDone, MoveRel, MoveResult, SensorReading,
-  Status, StatusFlags,
+  Status, StatusFlags
 };

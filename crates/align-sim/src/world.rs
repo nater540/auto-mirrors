@@ -43,7 +43,7 @@ pub struct Geometry {
   /// Mirror 2 to the head at X near.
   pub lx_near_mm: f64,
   /// Mirror 2 to the head at X far.
-  pub lx_far_mm: f64,
+  pub lx_far_mm: f64
 }
 
 impl Geometry {
@@ -53,7 +53,7 @@ impl Geometry {
     ly_near_mm: 100.0,
     ly_far_mm: 600.0,
     lx_near_mm: 100.0,
-    lx_far_mm: 700.0,
+    lx_far_mm: 700.0
   };
 
   /// The path lengths `(Ly, Lx)` at the measurement points A, B, and C.
@@ -61,7 +61,7 @@ impl Geometry {
     [
       (self.ly_near_mm, self.lx_near_mm),
       (self.ly_far_mm, self.lx_near_mm),
-      (self.ly_far_mm, self.lx_far_mm),
+      (self.ly_far_mm, self.lx_far_mm)
     ]
   }
 }
@@ -76,7 +76,7 @@ pub struct Beam {
   /// Sum of the four quadrants for a centered beam.
   pub sum_ref: f64,
   /// Noise on each quadrant, one sigma, in the units of `sum_ref`.
-  pub quadrant_noise_sigma: f64,
+  pub quadrant_noise_sigma: f64
 }
 
 impl Beam {
@@ -86,7 +86,7 @@ impl Beam {
     radius_um: 4_000.0,
     aperture_half_um: 10_000.0,
     sum_ref: 1_000.0,
-    quadrant_noise_sigma: 0.0,
+    quadrant_noise_sigma: 0.0
   };
 
   /// Sets the quadrant noise so that one normalized coordinate of a centered beam has the given sigma. The
@@ -106,7 +106,7 @@ pub struct AxisModel {
   /// Screw travel the seat resists before it slips. Zero or one means the seat follows every step.
   pub stick_steps: u32,
   /// Chance that a commanded step does not move the rotor. `1.0` is a dead axis.
-  pub skip_probability: f64,
+  pub skip_probability: f64
 }
 
 impl AxisModel {
@@ -114,13 +114,13 @@ impl AxisModel {
   pub const IDEAL: Self = Self {
     backlash_steps: 0,
     stick_steps: 0,
-    skip_probability: 0.0,
+    skip_probability: 0.0
   };
   /// An axis whose motor never moves.
   pub const DEAD: Self = Self {
     backlash_steps: 0,
     stick_steps: 0,
-    skip_probability: 1.0,
+    skip_probability: 1.0
   };
 }
 
@@ -142,7 +142,7 @@ pub struct Scenario {
   /// How far each screw starts from its aligned position.
   pub misalignment_steps: PerAxis<f64>,
   /// Seed for the noise and the skipped steps.
-  pub seed: u64,
+  pub seed: u64
 }
 
 impl Scenario {
@@ -155,7 +155,7 @@ impl Scenario {
     cross_coupling: 0.0,
     head_offset_um: [0.0; 2],
     misalignment_steps: PerAxis::splat(0.0),
-    seed: 0,
+    seed: 0
   };
 
   /// A machine with every imperfection at an UNVERIFIED placeholder size: 20 steps of backlash (about 3.5 degrees
@@ -167,7 +167,7 @@ impl Scenario {
       axes: PerAxis::splat(AxisModel {
         backlash_steps: 20,
         stick_steps: 3,
-        skip_probability: 0.0,
+        skip_probability: 0.0
       }),
       cross_coupling: 0.05,
       seed,
@@ -186,7 +186,7 @@ pub struct AngleErrors {
   /// Leg 2 (mirror 2 to the head), horizontal.
   pub leg2_h_urad: f64,
   /// Leg 2, vertical.
-  pub leg2_v_urad: f64,
+  pub leg2_v_urad: f64
 }
 
 impl AngleErrors {
@@ -206,13 +206,13 @@ pub enum Record {
     /// The axis.
     axis: Axis,
     /// The commanded steps.
-    delta_steps: i32,
+    delta_steps: i32
   },
   /// A measurement cycle.
   Measure {
     /// Infinity norm of the noise-free three-position difference vector at that moment.
-    true_residual_norm: f32,
-  },
+    true_residual_norm: f32
+  }
 }
 
 /// The state of one screw.
@@ -223,7 +223,7 @@ struct Screw {
   thread: i64,
   seat: i64,
   lowest_commanded: i64,
-  highest_commanded: i64,
+  highest_commanded: i64
 }
 
 impl Screw {
@@ -233,7 +233,7 @@ impl Screw {
     thread: 0,
     seat: 0,
     lowest_commanded: 0,
-    highest_commanded: 0,
+    highest_commanded: 0
   };
 }
 
@@ -243,7 +243,7 @@ pub struct World {
   scenario: Scenario,
   screws: PerAxis<Screw>,
   rng: StdRng,
-  log: Vec<Record>,
+  log: Vec<Record>
 }
 
 impl World {
@@ -253,7 +253,7 @@ impl World {
       scenario,
       screws: PerAxis::splat(Screw::START),
       rng: StdRng::seed_from_u64(scenario.seed),
-      log: Vec::new(),
+      log: Vec::new()
     }
   }
 
@@ -328,7 +328,7 @@ impl World {
       leg1_h_urad,
       leg1_v_urad,
       leg2_h_urad: leg1_h_urad + tilt(Axis::M2H) + coupling * tilt(Axis::M2V),
-      leg2_v_urad: leg1_v_urad + tilt(Axis::M2V) + coupling * tilt(Axis::M2H),
+      leg2_v_urad: leg1_v_urad + tilt(Axis::M2V) + coupling * tilt(Axis::M2H)
     }
   }
 
@@ -339,7 +339,7 @@ impl World {
     // Microradians times millimeters is nanometers.
     [
       offset_h + (angles.leg1_h_urad * ly_mm + angles.leg2_h_urad * lx_mm) * 1.0e-3,
-      offset_v + (angles.leg1_v_urad * ly_mm + angles.leg2_v_urad * lx_mm) * 1.0e-3,
+      offset_v + (angles.leg1_v_urad * ly_mm + angles.leg2_v_urad * lx_mm) * 1.0e-3
     ]
   }
 
@@ -370,7 +370,7 @@ impl World {
       entry(coupling * g1h * dx),
       entry(g1v * dx),
       entry(coupling * g2h * dx),
-      entry(g2v * dx),
+      entry(g2v * dx)
     )
   }
 
@@ -409,13 +409,13 @@ impl World {
       a: signal(right * top, noise_a),
       b: signal(left * top, noise_b),
       c: signal(left * bottom, noise_c),
-      d: signal(right * bottom, noise_d),
+      d: signal(right * bottom, noise_d)
     };
     // With no usable signal the node still reports: a zero position and the sum it saw.
     quadrants.normalize().unwrap_or(Reading {
       h_norm: 0.0,
       v_norm: 0.0,
-      sum: quadrants.sum().max(0.0),
+      sum: quadrants.sum().max(0.0)
     })
   }
 }
@@ -516,7 +516,7 @@ mod tests {
       ly_near_mm: 100.0,
       ly_far_mm: 600.0,
       lx_near_mm: 100.0,
-      lx_far_mm: 600.0,
+      lx_far_mm: 600.0
     };
     // Equal gains on all four axes, as the reference table assumes.
     scenario.mechanics.deflect_k = PerAxis::splat(2.0);
@@ -560,7 +560,7 @@ mod tests {
     scenario.axes.m2_h = AxisModel {
       backlash_steps: 20,
       stick_steps: 0,
-      skip_probability: 0.0,
+      skip_probability: 0.0
     };
     let mut world = World::new(scenario);
     world.move_rel(Axis::M2H, 50);
@@ -580,7 +580,7 @@ mod tests {
     scenario.axes.m1_v = AxisModel {
       backlash_steps: 20,
       stick_steps: 0,
-      skip_probability: 0.0,
+      skip_probability: 0.0
     };
     let mut world = World::new(scenario);
     world.move_rel(Axis::M1V, -170);
@@ -594,7 +594,7 @@ mod tests {
     scenario.axes.m2_h = AxisModel {
       backlash_steps: 0,
       stick_steps: 3,
-      skip_probability: 0.0,
+      skip_probability: 0.0
     };
     let mut world = World::new(scenario);
     world.move_rel(Axis::M2H, 2);
@@ -619,7 +619,7 @@ mod tests {
     scenario.axes.m1_h = AxisModel {
       backlash_steps: 0,
       stick_steps: 0,
-      skip_probability: 0.1,
+      skip_probability: 0.1
     };
     scenario.seed = 7;
     let mut world = World::new(scenario);

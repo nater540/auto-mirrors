@@ -8,7 +8,7 @@
 [target.riscv32imac-unknown-none-elf]
 rustflags = [
   # Needed for esp-backtrace to walk the stack after a panic.
-  "-C", "force-frame-pointers",
+  "-C", "force-frame-pointers"
 ]
 
 [env]

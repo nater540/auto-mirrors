@@ -64,7 +64,7 @@ pub struct MoveRel {
   /// The move, in full steps (addendum A.8), signed by direction.
   pub delta_steps: i32,
   /// The move ends in the plus direction, with the overshoot of the standard approach (flags bit 0).
-  pub finish_plus: bool,
+  pub finish_plus: bool
 }
 
 /// How a move ended (the `result` byte of MOVE_DONE, addendum A.8).
@@ -77,7 +77,7 @@ pub enum MoveResult {
   /// The switched motor rail dropped during the move: the position is no longer trusted.
   RailLost = 2,
   /// The move would have crossed a soft limit.
-  SoftLimit = 3,
+  SoftLimit = 3
 }
 
 impl MoveResult {
@@ -87,7 +87,7 @@ impl MoveResult {
       1 => Self::Stopped,
       2 => Self::RailLost,
       3 => Self::SoftLimit,
-      _ => return None,
+      _ => return None
     })
   }
 }
@@ -103,7 +103,7 @@ pub struct MoveDone {
   pub result: MoveResult,
   /// The commanded position after the move, in full steps. Without position feedback this is
   /// the count of steps issued, not a measurement.
-  pub pos_steps: i32,
+  pub pos_steps: i32
 }
 
 bitflags::bitflags! {
@@ -139,7 +139,7 @@ pub struct Status {
   /// The commanded position, in full steps.
   pub pos_steps: i32,
   /// Motor current. Always 0 from a stepper node (addendum A.8); kept for a DC gearmotor node, which measures it.
-  pub current_ma: u16,
+  pub current_ma: u16
 }
 
 /// A beam reading from the sensor node (SENSOR, class 0x7). The sensor hardware is designed separately; this is
@@ -155,7 +155,7 @@ pub struct SensorReading {
   /// Normalized vertical position, Q15.
   pub v_q15: i16,
   /// The quadrant sum, in sensor units.
-  pub sum: u16,
+  pub sum: u16
 }
 
 /// A configuration key (addendum A.8). The node rejects any other key.
@@ -170,7 +170,7 @@ pub enum ConfigKey {
   /// The upper soft limit, in full steps.
   SoftMaxSteps = 4,
   /// `+1` or `-1`: which way the motor turns for a plus step.
-  DirSign = 5,
+  DirSign = 5
 }
 
 impl ConfigKey {
@@ -181,7 +181,7 @@ impl ConfigKey {
       3 => Self::SoftMinSteps,
       4 => Self::SoftMaxSteps,
       5 => Self::DirSign,
-      _ => return None,
+      _ => return None
     })
   }
 }
@@ -192,14 +192,14 @@ pub enum Message {
   /// Stop every motor and disarm (class 0x0).
   Estop {
     /// Why. Values are not yet defined.
-    reason: u8,
+    reason: u8
   },
   /// Motion is inhibited, or allowed again (class 0x1).
   Inhibit {
     /// Motion is inhibited.
     inhibited: bool,
     /// What inhibited it. Values are not yet defined.
-    source: u8,
+    source: u8
   },
   /// A node reports a fault (class 0x2).
   Fault {
@@ -208,14 +208,14 @@ pub enum Message {
     /// What went wrong.
     code: FaultCode,
     /// Code-specific detail.
-    detail: u16,
+    detail: u16
   },
   /// Move one channel (class 0x3).
   MoveRel(MoveRel),
   /// Stop the move in progress (class 0x4).
   Stop {
     /// Why. Values are not yet defined.
-    reason: u8,
+    reason: u8
   },
   /// A move has ended (class 0x5).
   MoveDone(MoveDone),
@@ -230,7 +230,7 @@ pub enum Message {
     /// The sender's state. Values are defined with the state machines (M4, M5).
     state: u8,
     /// The sender's firmware version.
-    fw_version: u8,
+    fw_version: u8
   },
   /// Set a configuration value on one channel (class 0x9).
   Config {
@@ -239,8 +239,8 @@ pub enum Message {
     /// The channel it applies to.
     channel: Channel,
     /// The value, in the unit the key names.
-    value: i32,
-  },
+    value: i32
+  }
 }
 
 impl Message {
@@ -256,7 +256,7 @@ impl Message {
       Self::Status(_) => Class::Status,
       Self::Sensor(_) => Class::Sensor,
       Self::Heartbeat { .. } => Class::Heartbeat,
-      Self::Config { .. } => Class::Config,
+      Self::Config { .. } => Class::Config
     }
   }
 
@@ -268,7 +268,7 @@ impl Message {
       | Self::MoveRel(MoveRel { channel, .. })
       | Self::MoveDone(MoveDone { channel, .. })
       | Self::Status(Status { channel, .. }) => Some(*channel),
-      Self::Estop { .. } | Self::Inhibit { .. } | Self::Stop { .. } | Self::Sensor(_) | Self::Heartbeat { .. } => None,
+      Self::Estop { .. } | Self::Inhibit { .. } | Self::Stop { .. } | Self::Sensor(_) | Self::Heartbeat { .. } => None
     }
   }
 }
@@ -281,8 +281,8 @@ pub enum EncodeError {
   #[error("the frame type refused a {class:?} frame")]
   FrameRejected {
     /// The class of the message.
-    class: Class,
-  },
+    class: Class
+  }
 }
 
 /// Why a frame is not a valid message.
@@ -292,19 +292,19 @@ pub enum DecodeError {
   #[error("CAN frame has the extended identifier {raw:#x}; the protocol uses 11-bit identifiers only")]
   ExtendedId {
     /// The 29-bit identifier.
-    raw: u32,
+    raw: u32
   },
   /// The frame is a remote (RTR) frame, which carries no data. The protocol does not use them.
   #[error("CAN frame {raw:#x} is a remote frame; the protocol uses data frames only")]
   RemoteFrame {
     /// The 11-bit identifier.
-    raw: u16,
+    raw: u16
   },
   /// The identifier names a class above 0x9.
   #[error("CAN identifier names class {class_bits:#x}, which is not defined")]
   UnknownClass {
     /// The class number.
-    class_bits: u8,
+    class_bits: u8
   },
   /// The payload length is not the one the class requires.
   #[error("{class:?} needs a {expected}-byte payload, the frame has {got}")]
@@ -314,7 +314,7 @@ pub enum DecodeError {
     /// The length the class requires.
     expected: u8,
     /// The length received.
-    got: usize,
+    got: usize
   },
   /// The payload's axis byte and the identifier's axis field differ.
   #[error("{class:?} names channel {payload} in its payload but channel {id} in its identifier")]
@@ -324,7 +324,7 @@ pub enum DecodeError {
     /// The channel in the identifier.
     id: u8,
     /// The axis byte in the payload.
-    payload: u8,
+    payload: u8
   },
   /// A message that names no channel has a nonzero axis field in its identifier.
   #[error("{class:?} names no channel, but its identifier's axis field is {id}")]
@@ -332,32 +332,32 @@ pub enum DecodeError {
     /// The class of the frame.
     class: Class,
     /// The axis field of the identifier.
-    id: u8,
+    id: u8
   },
   /// The `inhibited` byte of an INHIBIT is neither 0 nor 1.
   #[error("Inhibit carries {value} in its inhibited byte, which must be 0 or 1")]
   NotABool {
     /// The byte received.
-    value: u8,
+    value: u8
   },
   /// A MOVE_REL sets flag bits the protocol does not define. A move is never run on a guess at what they mean.
   #[error("MoveRel sets undefined flag bits ({flags:#010b}); only bit 0 (finish_plus) is defined")]
   UndefinedMoveFlags {
     /// The flag byte received.
-    flags: u8,
+    flags: u8
   },
   /// The `result` byte of a MOVE_DONE is not one of the four results of addendum A.8.
   #[error("MoveDone carries result {value}, which is not defined (0 to 3 are)")]
   UnknownMoveResult {
     /// The byte received.
-    value: u8,
+    value: u8
   },
   /// The key of a CONFIG is not one of the five keys of addendum A.8.
   #[error("Config names key {key}, which is not defined (1 to 5 are)")]
   UnknownConfigKey {
     /// The key received.
-    key: u8,
-  },
+    key: u8
+  }
 }
 
 const MOVE_FLAG_FINISH_PLUS: u8 = 0b0000_0001;
@@ -368,7 +368,7 @@ pub struct Envelope {
   /// The node at the far end from the coordinator ([`NodeId::COORDINATOR`] for messages to or from every node).
   pub node: NodeId,
   /// The message.
-  pub message: Message,
+  pub message: Message
 }
 
 impl Envelope {
@@ -392,7 +392,7 @@ impl Envelope {
         seq,
         channel,
         delta_steps,
-        finish_plus,
+        finish_plus
       }) => {
         let [d0, d1, d2, d3] = delta_steps.to_le_bytes();
         let flags = if finish_plus { MOVE_FLAG_FINISH_PLUS } else { 0 };
@@ -402,7 +402,7 @@ impl Envelope {
         seq,
         channel,
         result,
-        pos_steps,
+        pos_steps
       }) => {
         let [p0, p1, p2, p3] = pos_steps.to_le_bytes();
         [seq, channel.get(), result as u8, 0, p0, p1, p2, p3]
@@ -411,7 +411,7 @@ impl Envelope {
         channel,
         flags,
         pos_steps,
-        current_ma,
+        current_ma
       }) => {
         let [p0, p1, p2, p3] = pos_steps.to_le_bytes();
         let [c0, c1] = current_ma.to_le_bytes();
@@ -422,7 +422,7 @@ impl Envelope {
         kind,
         h_q15,
         v_q15,
-        sum,
+        sum
       }) => {
         let [h0, h1] = h_q15.to_le_bytes();
         let [v0, v1] = v_q15.to_le_bytes();
@@ -432,7 +432,7 @@ impl Envelope {
       Message::Heartbeat {
         uptime_ms,
         state,
-        fw_version,
+        fw_version
       } => {
         let [u0, u1, u2, u3] = uptime_ms.to_le_bytes();
         [u0, u1, u2, u3, state, fw_version, 0, 0]
@@ -458,20 +458,20 @@ impl Envelope {
   pub fn decode<F: Frame>(frame: &F) -> Result<Self, DecodeError> {
     let id = match frame.id() {
       Id::Standard(id) => id,
-      Id::Extended(id) => return Err(DecodeError::ExtendedId { raw: id.as_raw() }),
+      Id::Extended(id) => return Err(DecodeError::ExtendedId { raw: id.as_raw() })
     };
     if frame.is_remote_frame() {
       return Err(DecodeError::RemoteFrame { raw: id.as_raw() });
     }
     let fields = split_id(id);
     let class = Class::from_bits(fields.class_bits).ok_or(DecodeError::UnknownClass {
-      class_bits: fields.class_bits,
+      class_bits: fields.class_bits
     })?;
     let data = frame.data();
     let wrong_length = DecodeError::WrongLength {
       class,
       expected: class.data_len(),
-      got: data.len(),
+      got: data.len()
     };
     if data.len() != usize::from(class.data_len()) {
       return Err(wrong_length);
@@ -484,7 +484,7 @@ impl Envelope {
         Err(DecodeError::ChannelMismatch {
           class,
           id: fields.channel.get(),
-          payload,
+          payload
         })
       }
     };
@@ -496,14 +496,14 @@ impl Envelope {
         let inhibited = match inhibited {
           0 => false,
           1 => true,
-          value => return Err(DecodeError::NotABool { value }),
+          value => return Err(DecodeError::NotABool { value })
         };
         Message::Inhibit { inhibited, source }
       }
       (Class::Fault, &[axis, code, d0, d1]) => Message::Fault {
         channel: channel(axis)?,
         code: FaultCode(code),
-        detail: u16::from_le_bytes([d0, d1]),
+        detail: u16::from_le_bytes([d0, d1])
       },
       (Class::MoveRel, &[seq, axis, d0, d1, d2, d3, flags]) => {
         if flags & !MOVE_FLAG_FINISH_PLUS != 0 {
@@ -513,51 +513,51 @@ impl Envelope {
           seq,
           channel: channel(axis)?,
           delta_steps: i32::from_le_bytes([d0, d1, d2, d3]),
-          finish_plus: flags & MOVE_FLAG_FINISH_PLUS != 0,
+          finish_plus: flags & MOVE_FLAG_FINISH_PLUS != 0
         })
       }
       (Class::MoveDone, &[seq, axis, result, _pad, p0, p1, p2, p3]) => Message::MoveDone(MoveDone {
         seq,
         channel: channel(axis)?,
         result: MoveResult::from_byte(result).ok_or(DecodeError::UnknownMoveResult { value: result })?,
-        pos_steps: i32::from_le_bytes([p0, p1, p2, p3]),
+        pos_steps: i32::from_le_bytes([p0, p1, p2, p3])
       }),
       (Class::Status, &[axis, flags, p0, p1, p2, p3, c0, c1]) => Message::Status(Status {
         channel: channel(axis)?,
         flags: StatusFlags::from_bits_retain(flags),
         pos_steps: i32::from_le_bytes([p0, p1, p2, p3]),
-        current_ma: u16::from_le_bytes([c0, c1]),
+        current_ma: u16::from_le_bytes([c0, c1])
       }),
       (Class::Sensor, &[seq, kind, h0, h1, v0, v1, s0, s1]) => Message::Sensor(SensorReading {
         seq,
         kind,
         h_q15: i16::from_le_bytes([h0, h1]),
         v_q15: i16::from_le_bytes([v0, v1]),
-        sum: u16::from_le_bytes([s0, s1]),
+        sum: u16::from_le_bytes([s0, s1])
       }),
       (Class::Heartbeat, &[u0, u1, u2, u3, state, fw_version]) => Message::Heartbeat {
         uptime_ms: u32::from_le_bytes([u0, u1, u2, u3]),
         state,
-        fw_version,
+        fw_version
       },
       (Class::Config, &[key, axis, _pad0, _pad1, v0, v1, v2, v3]) => Message::Config {
         key: ConfigKey::from_byte(key).ok_or(DecodeError::UnknownConfigKey { key })?,
         channel: channel(axis)?,
-        value: i32::from_le_bytes([v0, v1, v2, v3]),
+        value: i32::from_le_bytes([v0, v1, v2, v3])
       },
       // The length was checked against the class above, so every class matched one arm.
-      _ => return Err(wrong_length),
+      _ => return Err(wrong_length)
     };
 
     if message.channel().is_none() && fields.channel != Channel::ZERO {
       return Err(DecodeError::UnexpectedChannel {
         class,
-        id: fields.channel.get(),
+        id: fields.channel.get()
       });
     }
     Ok(Self {
       node: fields.node,
-      message,
+      message
     })
   }
 }
@@ -593,11 +593,11 @@ mod tests {
       seq: 9,
       channel: ch(1),
       delta_steps,
-      finish_plus: true,
+      finish_plus: true
     };
     let encoded = encode(Envelope {
       node: NodeId::MIRROR_1,
-      message: Message::MoveRel(move_rel),
+      message: Message::MoveRel(move_rel)
     });
     let d = delta_steps.to_le_bytes();
     assert_eq!(encoded.data(), &[9, 1, d[0], d[1], d[2], d[3], 1]);
@@ -610,11 +610,11 @@ mod tests {
       channel: ch(0),
       flags: StatusFlags::empty(),
       pos_steps: 0x0403_0201,
-      current_ma: 0x0605,
+      current_ma: 0x0605
     };
     let encoded = encode(Envelope {
       node: NodeId::MIRROR_2,
-      message: Message::Status(status),
+      message: Message::Status(status)
     });
     assert_eq!(encoded.data(), &[0, 0, 1, 2, 3, 4, 5, 6]);
   }
@@ -624,7 +624,7 @@ mod tests {
     for message in examples() {
       let encoded = encode(Envelope {
         node: NodeId::MIRROR_1,
-        message,
+        message
       });
       assert_eq!(
         encoded.data().len(),
@@ -639,7 +639,7 @@ mod tests {
     for message in examples() {
       let envelope = Envelope {
         node: NodeId::SENSOR,
-        message,
+        message
       };
       assert_eq!(Envelope::decode(&encode(envelope)), Ok(envelope));
     }
@@ -676,7 +676,7 @@ mod tests {
       ConfigKey::OvershootSteps,
       ConfigKey::SoftMinSteps,
       ConfigKey::SoftMaxSteps,
-      ConfigKey::DirSign,
+      ConfigKey::DirSign
     ];
     assert_eq!(keys.map(|k| k as u8), [1, 2, 3, 4, 5]);
     assert_eq!(FaultCode::AXIS_NOT_RESPONDING.0, 0x10);
@@ -726,7 +726,7 @@ mod tests {
     }
     let envelope = Envelope {
       node: NodeId::MIRROR_1,
-      message: Message::Stop { reason: 0 },
+      message: Message::Stop { reason: 0 }
     };
     assert!(matches!(
       envelope.encode::<Refusing>(),
@@ -752,13 +752,13 @@ mod tests {
     let short = DecodeError::WrongLength {
       class: Class::MoveRel,
       expected: 7,
-      got: 6,
+      got: 6
     };
     assert_eq!(decode(id, &[0; 6]), Err(short));
     let long = DecodeError::WrongLength {
       class: Class::MoveRel,
       expected: 7,
-      got: 8,
+      got: 8
     };
     assert_eq!(decode(id, &[0; 8]), Err(long));
   }
@@ -840,11 +840,11 @@ mod tests {
       seq: 1,
       channel: ch(0),
       result: MoveResult::Done,
-      pos_steps: 7,
+      pos_steps: 7
     };
     let encoded = encode(Envelope {
       node: NodeId::MIRROR_1,
-      message: Message::MoveDone(done),
+      message: Message::MoveDone(done)
     });
     assert_eq!(encoded.data().get(3), Some(&0));
     let mut with_pad = [0_u8; 8];
@@ -872,49 +872,49 @@ mod tests {
       Message::Estop { reason: 3 },
       Message::Inhibit {
         inhibited: true,
-        source: 2,
+        source: 2
       },
       Message::Fault {
         channel: ch(1),
         code: FaultCode::RAIL_LOST_DURING_MOVE,
-        detail: 0xBEEF,
+        detail: 0xBEEF
       },
       Message::MoveRel(MoveRel {
         seq: 255,
         channel: ch(2),
         delta_steps: i32::MIN,
-        finish_plus: false,
+        finish_plus: false
       }),
       Message::Stop { reason: 1 },
       Message::MoveDone(MoveDone {
         seq: 0,
         channel: ch(1),
         result: MoveResult::RailLost,
-        pos_steps: -5,
+        pos_steps: -5
       }),
       Message::Status(Status {
         channel: ch(0),
         flags: StatusFlags::SUSPECT | StatusFlags::RAIL_OK,
         pos_steps: i32::MAX,
-        current_ma: 0,
+        current_ma: 0
       }),
       Message::Sensor(SensorReading {
         seq: 7,
         kind: 1,
         h_q15: i16::MIN,
         v_q15: i16::MAX,
-        sum: u16::MAX,
+        sum: u16::MAX
       }),
       Message::Heartbeat {
         uptime_ms: u32::MAX,
         state: 4,
-        fw_version: 1,
+        fw_version: 1
       },
       Message::Config {
         key: ConfigKey::DirSign,
         channel: ch(1),
-        value: -1,
-      },
+        value: -1
+      }
     ]
   }
 
@@ -949,7 +949,7 @@ mod tests {
           seq,
           channel,
           delta_steps,
-          finish_plus,
+          finish_plus
         })
       }),
       any::<u8>().prop_map(|reason| Message::Stop { reason }),
@@ -958,7 +958,7 @@ mod tests {
           seq,
           channel,
           result,
-          pos_steps,
+          pos_steps
         })
       }),
       (any_channel(), any::<u8>(), any::<i32>(), any::<u16>()).prop_map(|(channel, flags, pos_steps, current_ma)| {
@@ -966,7 +966,7 @@ mod tests {
           channel,
           flags: StatusFlags::from_bits_retain(flags),
           pos_steps,
-          current_ma,
+          current_ma
         })
       }),
       (any::<u8>(), any::<u8>(), any::<i16>(), any::<i16>(), any::<u16>()).prop_map(
@@ -976,7 +976,7 @@ mod tests {
             kind,
             h_q15,
             v_q15,
-            sum,
+            sum
           })
         }
       ),

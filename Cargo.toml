@@ -6,7 +6,7 @@ members = [
   "crates/align-sim",
   "crates/stepper",
   "firmware/node",
-  "firmware/coordinator",
+  "firmware/coordinator"
 ]
 # The firmware crates build only for riscv32imac-unknown-none-elf. Leaving them out of `default-members` lets a
 # plain `cargo build`, `cargo test`, or `cargo clippy` at the root work on the host crates alone. `--workspace`

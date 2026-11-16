@@ -43,7 +43,7 @@ pub struct AxisState {
   /// Direction of the last move.
   pub last_dir: LastDir,
   /// Set when a move failed or the beam did not respond as predicted; cleared by the next convergence.
-  pub suspect: bool,
+  pub suspect: bool
 }
 
 /// The result of a successful alignment.
@@ -60,7 +60,7 @@ pub struct AlignReport {
   /// Whether that offset is large enough to ask for mechanical centering.
   pub needs_mechanical_centering: bool,
   /// Condition number of the Jacobian in use at the end.
-  pub cond: f32,
+  pub cond: f32
 }
 
 /// Why an alignment or a calibration stopped without success.
@@ -75,7 +75,7 @@ pub enum AlignFault {
     /// The axis that was moving.
     axis: Axis,
     /// What the actuator reported.
-    fault: MoveFault,
+    fault: MoveFault
   },
   /// A move would have left the soft limits. Nothing was moved; manual pre-alignment is required.
   #[error("axis {axis:?}: a move to {target_steps} steps is outside the soft limits")]
@@ -83,7 +83,7 @@ pub enum AlignFault {
     /// The axis.
     axis: Axis,
     /// The commanded position the move would have reached.
-    target_steps: i64,
+    target_steps: i64
   },
   /// A single move would have been longer than the per-move cap. Nothing was moved.
   #[error("axis {axis:?}: a move of {steps} steps is longer than the per-move cap")]
@@ -91,7 +91,7 @@ pub enum AlignFault {
     /// The axis.
     axis: Axis,
     /// The length of the refused leg.
-    steps: i32,
+    steps: i32
   },
   /// The sensor delivered nothing.
   #[error("sensor: {0}")]
@@ -103,7 +103,7 @@ pub enum AlignFault {
   #[error("axis {axis:?}: the calibration poke did not move the beam")]
   WeakColumn {
     /// The axis.
-    axis: Axis,
+    axis: Axis
   },
   /// The calibrated Jacobian was rejected.
   #[error("calibration rejected: {0}")]
@@ -116,14 +116,14 @@ pub enum AlignFault {
   #[error("axis {axis:?} is not responding")]
   AxisNotResponding {
     /// The axis.
-    axis: Axis,
+    axis: Axis
   },
   /// The residual stayed above the tolerance after every allowed iteration and recalibration.
   #[error("not converged: residual {residual_norm} after the last allowed recalibration")]
   NotConverged {
     /// Infinity norm of the last measurement vector.
-    residual_norm: f32,
-  },
+    residual_norm: f32
+  }
 }
 
 /// One accepted measurement.
@@ -133,7 +133,7 @@ struct Measured {
   /// The control target built from the shots.
   vector: Vector4<f32>,
   /// Whether every reading is inside the solver's linear range.
-  linear: bool,
+  linear: bool
 }
 
 /// How one solver attempt ended.
@@ -141,8 +141,8 @@ enum Attempt {
   Converged(Measured),
   /// The Jacobian is no longer trusted; `residual_norm` is where the attempt stopped.
   Recalibrate {
-    residual_norm: f32,
-  },
+    residual_norm: f32
+  }
 }
 
 /// What is carried from one solver step to the next.
@@ -150,13 +150,13 @@ struct Progress {
   jacobian: Jacobian,
   lambda: f32,
   poor_steps: u8,
-  suspect_streak: Option<(Axis, u8)>,
+  suspect_streak: Option<(Axis, u8)>
 }
 
 /// What a judged step asks for.
 enum Verdict {
   Continue,
-  Recalibrate,
+  Recalibrate
 }
 
 /// Runs calibration and alignment against an actuator and a sensor.
@@ -167,7 +167,7 @@ pub struct Aligner<A, S> {
   sum_ref: f32,
   axes: PerAxis<AxisState>,
   calibration: Option<Calibration>,
-  target: fn(&Shots) -> Vector4<f32>,
+  target: fn(&Shots) -> Vector4<f32>
 }
 
 impl<A: Actuator, S: BeamSensor> Aligner<A, S> {
@@ -182,7 +182,7 @@ impl<A: Actuator, S: BeamSensor> Aligner<A, S> {
       sum_ref,
       axes: PerAxis::splat(AxisState::default()),
       calibration: None,
-      target: Shots::measurement,
+      target: Shots::measurement
     }
   }
 
@@ -286,7 +286,7 @@ impl<A: Actuator, S: BeamSensor> Aligner<A, S> {
     let calibration = Calibration {
       jacobian,
       q0_steps,
-      cond: conditioning.cond,
+      cond: conditioning.cond
     };
     self.calibration = Some(calibration);
     Ok(calibration)
@@ -319,7 +319,7 @@ impl<A: Actuator, S: BeamSensor> Aligner<A, S> {
             residual_norm: last.vector.amax(),
             head_offset,
             needs_mechanical_centering: head_offset.needs_mechanical_centering(&self.config.sensor),
-            cond: self.calibration.map_or(f32::NAN, |calibration| calibration.cond),
+            cond: self.calibration.map_or(f32::NAN, |calibration| calibration.cond)
           });
         }
         Attempt::Recalibrate { residual_norm } => {
@@ -339,19 +339,19 @@ impl<A: Actuator, S: BeamSensor> Aligner<A, S> {
     let mut current = self.measure().await?;
     let Some(calibration) = self.calibration else {
       return Ok(Attempt::Recalibrate {
-        residual_norm: current.vector.amax(),
+        residual_norm: current.vector.amax()
       });
     };
     let Ok(conditioning) = self.accept(&calibration.jacobian) else {
       return Ok(Attempt::Recalibrate {
-        residual_norm: current.vector.amax(),
+        residual_norm: current.vector.amax()
       });
     };
     let mut progress = Progress {
       jacobian: calibration.jacobian,
       lambda: conditioning.damping(&solver_config),
       poor_steps: 0,
-      suspect_streak: None,
+      suspect_streak: None
     };
     let poke = solver::steps_to_vector([self.config.motion.poke_steps; 4]).x;
     let limit = solver::step_limit(poke, &solver_config);
@@ -365,7 +365,7 @@ impl<A: Actuator, S: BeamSensor> Aligner<A, S> {
         &current.vector,
         progress.lambda,
         solver_config.alpha,
-        &limit,
+        &limit
       )
       .map_err(AlignFault::Solve)?;
       let steps = solver::round_to_steps(&dq);
@@ -390,14 +390,14 @@ impl<A: Actuator, S: BeamSensor> Aligner<A, S> {
       current = next;
       if matches!(verdict, Verdict::Recalibrate) {
         return Ok(Attempt::Recalibrate {
-          residual_norm: current.vector.amax(),
+          residual_norm: current.vector.amax()
         });
       }
     }
 
     if !solver::converged(&current.vector, &solver_config) {
       return Ok(Attempt::Recalibrate {
-        residual_norm: current.vector.amax(),
+        residual_norm: current.vector.amax()
       });
     }
     if let Some(stored) = self.calibration.as_mut() {
@@ -419,7 +419,7 @@ impl<A: Actuator, S: BeamSensor> Aligner<A, S> {
     before: &Measured,
     after: &Measured,
     taken: &Vector4<f32>,
-    clamped: bool,
+    clamped: bool
   ) -> Result<Verdict, AlignFault> {
     let solver_config = self.config.solver;
     if !(before.linear && after.linear) {
@@ -441,7 +441,7 @@ impl<A: Actuator, S: BeamSensor> Aligner<A, S> {
       self.axes.get_mut(axis).suspect = true;
       let streak = match progress.suspect_streak {
         Some((previous, count)) if previous == axis => count.saturating_add(1),
-        _ => 1,
+        _ => 1
       };
       progress.suspect_streak = Some((axis, streak));
       if streak >= solver_config.suspect_fault_streak {
@@ -506,10 +506,10 @@ impl<A: Actuator, S: BeamSensor> Aligner<A, S> {
           return Ok(Measured {
             shots,
             vector: (self.target)(&shots),
-            linear: readings.iter().all(|reading| reading.in_solver_range(&sensor_limits)),
+            linear: readings.iter().all(|reading| reading.in_solver_range(&sensor_limits))
           });
         }
-        Err(fault) => rejected = fault,
+        Err(fault) => rejected = fault
       }
     }
     Err(AlignFault::Reading(rejected))

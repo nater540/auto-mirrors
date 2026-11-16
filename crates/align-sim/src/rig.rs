@@ -69,7 +69,7 @@ impl Rig {
     Calibration {
       jacobian,
       q0_steps: [0; 4],
-      cond,
+      cond
     }
   }
 }

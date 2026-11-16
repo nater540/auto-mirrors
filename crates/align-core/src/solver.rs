@@ -43,11 +43,11 @@ pub enum SolveFault {
     /// The condition number found.
     cond: f32,
     /// The configured limit.
-    limit: f32,
+    limit: f32
   },
   /// The damped normal matrix has no Cholesky factor. With positive damping this means a numerical breakdown.
   #[error("damped normal matrix is not positive definite")]
-  NotPositiveDefinite,
+  NotPositiveDefinite
 }
 
 /// The extreme singular values of a Jacobian.
@@ -58,7 +58,7 @@ pub struct Conditioning {
   /// Smallest singular value.
   pub sigma_min: f32,
   /// Condition number, `sigma_max / sigma_min`.
-  pub cond: f32,
+  pub cond: f32
 }
 
 impl Conditioning {
@@ -87,7 +87,7 @@ impl Conditioning {
     Ok(Self {
       sigma_max,
       sigma_min,
-      cond: sigma_max / sigma_min,
+      cond: sigma_max / sigma_min
     })
   }
 
@@ -100,7 +100,7 @@ impl Conditioning {
     if self.cond > config.cond_max {
       return Err(SolveFault::IllConditioned {
         cond: self.cond,
-        limit: config.cond_max,
+        limit: config.cond_max
       });
     }
     Ok(())
@@ -126,7 +126,7 @@ pub fn dls_step(
   measurement: &Vector4<f32>,
   lambda: f32,
   alpha: f32,
-  dq_max: &Vector4<f32>,
+  dq_max: &Vector4<f32>
 ) -> Result<Vector4<f32>, SolveFault> {
   let inputs_finite = all_finite(jacobian.iter())
     && all_finite(measurement.iter())
@@ -208,7 +208,7 @@ pub fn unresponsive_axis(
   dq: &Vector4<f32>,
   dm: &Vector4<f32>,
   noise_floor: f32,
-  config: &Solver,
+  config: &Solver
 ) -> Option<Axis> {
   if !(all_finite(jacobian.iter()) && all_finite(dq.iter()) && all_finite(dm.iter())) {
     return None;
@@ -285,7 +285,7 @@ mod tests {
       dy, 0.0, 0.0, 0.0, //
       0.0, dy, 0.0, 0.0, //
       dx, 0.0, dx, 0.0, //
-      0.0, dx, 0.0, dx,
+      0.0, dx, 0.0, dx
     ) * gain
   }
 
@@ -303,17 +303,17 @@ mod tests {
     assert_close(
       Conditioning::of(&model_jacobian(500.0, 500.0, 1.0)).unwrap().cond,
       2.62,
-      0.005,
+      0.005
     );
     assert_close(
       Conditioning::of(&model_jacobian(500.0, 800.0, 1.0)).unwrap().cond,
       3.54,
-      0.005,
+      0.005
     );
     assert_close(
       Conditioning::of(&model_jacobian(50.0, 800.0, 1.0)).unwrap().cond,
       32.0,
-      0.5,
+      0.5
     );
   }
 
@@ -344,7 +344,7 @@ mod tests {
         assert_close(cond, 80.0, 0.5);
         assert_close(limit, 50.0, 0.0);
       }
-      other => panic!("expected IllConditioned, got {other:?}"),
+      other => panic!("expected IllConditioned, got {other:?}")
     }
   }
 
@@ -396,7 +396,7 @@ mod tests {
       &measurement,
       conditioning.damping(&CONFIG),
       CONFIG.alpha,
-      &no_clamp(),
+      &no_clamp()
     )
     .unwrap();
     let remaining = (measurement + jacobian * dq).norm() / measurement.norm();
@@ -417,7 +417,7 @@ mod tests {
         &measurement,
         conditioning.damping(&CONFIG),
         CONFIG.alpha,
-        &no_clamp(),
+        &no_clamp()
       )
       .unwrap();
       measurement += jacobian * dq;
@@ -453,7 +453,7 @@ mod tests {
       &Vector4::zeros(),
       1e-4,
       CONFIG.alpha,
-      &no_clamp(),
+      &no_clamp()
     )
     .unwrap();
     assert_eq!(round_to_steps(&dq), [0, 0, 0, 0]);
@@ -726,7 +726,7 @@ mod tests {
       100.0_f32..900.0,
       100.0_f32..900.0,
       proptest::array::uniform4(0.5_f32..2.0),
-      proptest::array::uniform16(-0.05_f32..0.05),
+      proptest::array::uniform16(-0.05_f32..0.05)
     )
       .prop_map(|(dy, dx, gains, coupling)| {
         let [g1h, g1v, g2h, g2v] = gains;
@@ -746,7 +746,7 @@ mod tests {
           0.0,
           g1v * dx,
           0.0,
-          g2v * dx,
+          g2v * dx
         );
         (model + Jacobian::from_row_slice(&coupling) * dy.min(dx)) * 5.6e-6
       })

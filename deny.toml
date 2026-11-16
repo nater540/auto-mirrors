@@ -6,7 +6,7 @@ all-features = false
 targets = [
   "aarch64-apple-darwin",
   "x86_64-unknown-linux-gnu",
-  "riscv32imac-unknown-none-elf",
+  "riscv32imac-unknown-none-elf"
 ]
 
 [advisories]
@@ -18,7 +18,7 @@ ignore = [
   # or a host binary. Neither has a known vulnerability, and neither can be upgraded from here. Look again at
   # every esp-hal upgrade (docs/VERSIONS.md).
   { id = "RUSTSEC-2024-0436", reason = "paste: unmaintained proc-macro crate needed by esp-hal 1.2.2 and riscv 0.15" },
-  { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml: unmaintained, in build scripts through esp-config 0.8" },
+  { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml: unmaintained, in build scripts through esp-config 0.8" }
 ]
 
 [licenses]
@@ -28,7 +28,7 @@ allow = [
   "Apache-2.0",
   "ISC",
   "Zlib",
-  "Unicode-3.0",
+  "Unicode-3.0"
 ]
 confidence-threshold = 0.9
 

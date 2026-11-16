@@ -22,7 +22,7 @@ pub enum DirSign {
   /// Stepping forward through the phase table advances the screw.
   Forward,
   /// Stepping backward through the phase table advances the screw.
-  Reversed,
+  Reversed
 }
 
 impl DirSign {
@@ -30,7 +30,7 @@ impl DirSign {
   pub const fn factor(self) -> i32 {
     match self {
       DirSign::Forward => 1,
-      DirSign::Reversed => -1,
+      DirSign::Reversed => -1
     }
   }
 }
@@ -53,7 +53,7 @@ pub struct Mechanics {
   /// UNVERIFIED: depends on wiring and thread hand. Set per axis at commissioning.
   pub dir_sign: PerAxis<DirSign>,
   /// VERIFIED: datasheet minimum pull-in torque, 34.3 mN m at 5 V and 100 to 120 pulses per second.
-  pub pull_in_torque_newton_m: f32,
+  pub pull_in_torque_newton_m: f32
 }
 
 impl Mechanics {
@@ -66,10 +66,10 @@ impl Mechanics {
       m1_h: 2.0,
       m1_v: SQRT_2,
       m2_h: 2.0,
-      m2_v: SQRT_2,
+      m2_v: SQRT_2
     },
     dir_sign: PerAxis::splat(DirSign::Forward),
-    pull_in_torque_newton_m: 0.0343,
+    pull_in_torque_newton_m: 0.0343
   };
 }
 
@@ -105,7 +105,7 @@ pub struct Motion {
   pub soft_max_steps: PerAxis<i32>,
   /// UNVERIFIED: the soft limits are widened by this fraction of travel, the largest plausible step loss. They are
   /// a runaway guard, not a position truth.
-  pub soft_limit_margin_frac: f32,
+  pub soft_limit_margin_frac: f32
 }
 
 impl Motion {
@@ -123,7 +123,7 @@ impl Motion {
     max_move_ms: 25_000,
     soft_min_steps: PerAxis::splat(-4_000),
     soft_max_steps: PerAxis::splat(4_000),
-    soft_limit_margin_frac: 0.10,
+    soft_limit_margin_frac: 0.10
   };
 }
 
@@ -153,7 +153,7 @@ pub struct SensorLimits {
   /// a component of the measurement vector is a difference of two readings, and `3 * sqrt(2) * 0.005` is about `0.02`.
   pub noise_sigma_norm: f32,
   /// FIRM starting value: invalid shots in a row before a fault (reference 7.3).
-  pub max_invalid_shots: u8,
+  pub max_invalid_shots: u8
 }
 
 impl SensorLimits {
@@ -168,7 +168,7 @@ impl SensorLimits {
     energy_tolerance_frac: 0.3,
     offset_warn_frac: 0.3,
     noise_sigma_norm: 0.005,
-    max_invalid_shots: 3,
+    max_invalid_shots: 3
   };
 }
 
@@ -208,7 +208,7 @@ pub struct Solver {
   /// sigmas of a measurement component (reference 3.1).
   pub min_column_sigmas: f32,
   /// FIRM starting value: suspect steps in a row on one axis before the "axis not responding" fault (addendum A.5).
-  pub suspect_fault_streak: u8,
+  pub suspect_fault_streak: u8
 }
 
 impl Solver {
@@ -227,7 +227,7 @@ impl Solver {
     poor_steps_before_recalibration: 2,
     max_recalibrations: 1,
     min_column_sigmas: 5.0,
-    suspect_fault_streak: 2,
+    suspect_fault_streak: 2
   };
 }
 
@@ -250,7 +250,7 @@ pub struct NodeTiming {
   /// UNVERIFIED: the longest step period a CONFIG may set (10 pulses per second), a sanity bound only.
   pub max_step_period_us: u32,
   /// FIRM, chosen in M4: a move still running this long after its computed duration is cut off as a fault.
-  pub move_timeout_margin_ms: u32,
+  pub move_timeout_margin_ms: u32
 }
 
 impl NodeTiming {
@@ -262,7 +262,7 @@ impl NodeTiming {
     rail_up_timeout_ms: 50,
     min_step_period_us: 2_000,
     max_step_period_us: 100_000,
-    move_timeout_margin_ms: 1_000,
+    move_timeout_margin_ms: 1_000
   };
 }
 
@@ -278,7 +278,7 @@ pub struct Config {
   /// Solver thresholds.
   pub solver: Solver,
   /// Motor node guards and reporting.
-  pub node: NodeTiming,
+  pub node: NodeTiming
 }
 
 impl Config {
@@ -288,7 +288,7 @@ impl Config {
     motion: Motion::STARTING,
     sensor: SensorLimits::STARTING,
     solver: Solver::STARTING,
-    node: NodeTiming::STARTING,
+    node: NodeTiming::STARTING
   };
 }
 

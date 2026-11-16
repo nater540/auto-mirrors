@@ -26,7 +26,7 @@ pub struct Shots {
   /// Y far, X near.
   pub b: Reading,
   /// Y far, X far.
-  pub c: Reading,
+  pub c: Reading
 }
 
 /// The constant beam offset at the head, as read at point A. A health metric only.
@@ -35,7 +35,7 @@ pub struct HeadOffset {
   /// Horizontal offset, normalized.
   pub h_norm: f32,
   /// Vertical offset, normalized.
-  pub v_norm: f32,
+  pub v_norm: f32
 }
 
 impl Shots {
@@ -45,7 +45,7 @@ impl Shots {
       self.b.h_norm - self.a.h_norm,
       self.b.v_norm - self.a.v_norm,
       self.c.h_norm - self.b.h_norm,
-      self.c.v_norm - self.b.v_norm,
+      self.c.v_norm - self.b.v_norm
     )
   }
 
@@ -53,7 +53,7 @@ impl Shots {
   pub fn head_offset(&self) -> HeadOffset {
     HeadOffset {
       h_norm: self.a.h_norm,
-      v_norm: self.a.v_norm,
+      v_norm: self.a.v_norm
     }
   }
 }
@@ -80,7 +80,7 @@ mod tests {
     Reading {
       h_norm,
       v_norm,
-      sum: 100.0,
+      sum: 100.0
     }
   }
 
@@ -89,7 +89,7 @@ mod tests {
     let shots = Shots {
       a: reading(0.10, -0.20),
       b: reading(0.25, 0.05),
-      c: reading(-0.05, 0.30),
+      c: reading(-0.05, 0.30)
     };
     let m = shots.measurement();
     assert_close(m.x, 0.15, 1e-6);
@@ -103,7 +103,7 @@ mod tests {
     let shots = Shots {
       a: reading(0.17, -0.11),
       b: reading(0.17, -0.11),
-      c: reading(0.17, -0.11),
+      c: reading(0.17, -0.11)
     };
     assert_eq!(shots.measurement(), Vector4::zeros());
     assert_eq!(
