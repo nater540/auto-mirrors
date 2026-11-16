@@ -101,12 +101,16 @@ sweep *args: _sim
 sweep-margins runs="5000": _sim
     #!/usr/bin/env bash
     set -euo pipefail
-    # One row of a sweep at the 500 mm span, with its label in front and its fault tally under it.
-    row() {
-      local label="$1"
-      shift
-      {{ sim_bin }} sweep --runs {{ runs }} --y-spans 500 "$@" | tail -n +3 \
+    # One row of a sweep at a Y span, with its label in front and its fault tally under it.
+    row_at() {
+      local span="$1" label="$2"
+      shift 2
+      {{ sim_bin }} sweep --runs {{ runs }} --y-spans "$span" "$@" | tail -n +3 \
         | sed -e "1s/^/$(printf '%-22s' "$label")/" -e "2,\$s/^/$(printf '%-22s' "")/"
+    }
+    # The same at the 500 mm span.
+    row() {
+      row_at 500 "$@"
     }
     echo "{{ runs }} runs per row, default config, placeholder machine (UNVERIFIED numbers)"
     printf '%-22s%s\n' "" "y_span_mm  model_cond  converged  first_attempt  mean_steps  recalibrated  faults"
@@ -116,6 +120,8 @@ sweep-margins runs="5000": _sim
     for steps in 0 1 2 3 5 8; do row "  stick $steps" --stick "$steps" --jacobian-error 0.3; done
     echo "sensor noise, one sigma of a normalized coordinate"
     for sigma in 0.002 0.005 0.008 0.012; do row "  noise $sigma" --noise "$sigma"; done
+    echo "sensor noise at the placeholder, at shorter Y spans (the worse conditioning amplifies it)"
+    for span in 300 200; do row_at "$span" "  noise 0.005, $span mm" --noise 0.005; done
     echo "backlash, steps (the overshoot is 120)"
     for steps in 20 60 100 130 200; do row "  backlash $steps" --backlash "$steps"; done
     echo "chance that a step is skipped"
