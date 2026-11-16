@@ -81,9 +81,11 @@ impl Rig {
 
 impl Actuator for Rig {
   /// The simulated node has no feedback either: it always reports success, whatever the screw did.
-  async fn move_rel(&mut self, axis: Axis, delta_steps: i32) -> Result<(), MoveFault> {
-    self.world_mut().move_rel(axis, delta_steps);
-    Ok(())
+  async fn move_rel(&mut self, axis: Axis, delta_steps: i32) -> Result<i32, MoveFault> {
+    let mut world = self.world_mut();
+    world.move_rel(axis, delta_steps);
+    let commanded = world.commanded_steps(axis);
+    Ok(i32::try_from(commanded).unwrap_or(if commanded < 0 { i32::MIN } else { i32::MAX }))
   }
 }
 

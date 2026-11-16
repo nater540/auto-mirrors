@@ -15,15 +15,21 @@ use crate::measurement::Shots;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum MoveFault {
   /// The move was stopped before it finished.
-  #[error("move was stopped before it finished")]
-  Stopped,
+  #[error("move was stopped before it finished, at {pos_steps} steps")]
+  Stopped {
+    /// The commanded position the node reported where it stopped.
+    pos_steps: i32
+  },
   /// The motor rail was lost during the move, so steps were lost while the node kept counting.
-  #[error("motor rail was lost during the move")]
-  RailLost,
-  /// The node refused the move at its own soft limit.
+  #[error("motor rail was lost during the move, at {pos_steps} steps")]
+  RailLost {
+    /// The commanded position the node reported where it stopped.
+    pos_steps: i32
+  },
+  /// The node refused the move at its own soft limit. Nothing moved.
   #[error("node refused the move at its soft limit")]
   SoftLimit,
-  /// The node did not answer.
+  /// The node did not answer, so whether and how far the motor moved is unknown.
   #[error("no answer from the node")]
   NoAnswer
 }
@@ -42,15 +48,18 @@ pub enum SensorFault {
   reason = "the firmware and the simulator both run on one thread, so the future needs no Send bound"
 )]
 pub trait Actuator {
-  /// Moves one axis by a signed number of full steps and returns once the motor has stopped and released.
-  /// Positive is the plus direction: the screw advancing against the springs.
+  /// Moves one axis by a signed number of full steps and returns, once the motor has stopped and released, the
+  /// commanded position the node reports (the `pos_steps` of its `MOVE_DONE`), in full steps from the commissioning
+  /// position. Positive is the plus direction: the screw advancing against the springs.
   ///
-  /// The actuator has no position feedback: `Ok` means the steps were commanded, not that the screw turned.
+  /// The node's count is the one its soft limits and its record follow, so the aligner adopts it rather than
+  /// adding up its own commands.
+  /// The actuator has no position feedback: the count says what was commanded, not that the screw turned.
   ///
   /// # Errors
   ///
   /// A [`MoveFault`] if the move was cut short or never confirmed. After one, the axis position is not trusted.
-  async fn move_rel(&mut self, axis: Axis, delta_steps: i32) -> Result<(), MoveFault>;
+  async fn move_rel(&mut self, axis: Axis, delta_steps: i32) -> Result<i32, MoveFault>;
 }
 
 /// Reads the beam at the three gantry positions.

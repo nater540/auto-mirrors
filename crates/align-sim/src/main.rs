@@ -353,6 +353,7 @@ fn fault_kind(fault: &AlignFault) -> &'static str {
     AlignFault::WeakColumn { .. } => "weak calibration column",
     AlignFault::Calibration(_) => "calibration rejected (conditioning)",
     AlignFault::Solve(_) => "solver",
+    AlignFault::PositionUnknown { .. } => "position unknown",
     AlignFault::AxisNotResponding { .. } => "axis not responding",
     AlignFault::NotConverged { .. } => "not converged"
   }

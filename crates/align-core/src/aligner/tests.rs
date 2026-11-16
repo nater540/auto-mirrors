@@ -23,7 +23,7 @@ use crate::quadrant::Reading;
 struct Unreached;
 
 impl Actuator for Unreached {
-  async fn move_rel(&mut self, _axis: Axis, _delta_steps: i32) -> Result<(), MoveFault> {
+  async fn move_rel(&mut self, _axis: Axis, _delta_steps: i32) -> Result<i32, MoveFault> {
     Err(MoveFault::NoAnswer)
   }
 }
@@ -277,6 +277,10 @@ struct Script {
   offset: Vec<f32>,
   /// Where each axis really is, in steps.
   q: Vector4<f32>,
+  /// What the node counts: the sum of the steps it ran.
+  commanded: [i32; 4],
+  /// How the node answers each move, by the number of moves before it; done once the list is used up.
+  answers: Vec<Answer>,
   log: Vec<Event>
 }
 
@@ -292,6 +296,8 @@ impl Machine {
       noise: Vec::new(),
       offset: Vec::new(),
       q: Vector4::zeros(),
+      commanded: [0; 4],
+      answers: Vec::new(),
       log: Vec::new()
     })))
   }
@@ -341,16 +347,46 @@ fn measured_before(script: &Script) -> usize {
   script.log.iter().filter(|event| **event == Event::Measure).count()
 }
 
+/// How the node answers a move.
+#[derive(Clone, Copy, Debug)]
+enum Answer {
+  /// It ran the move and says where it ended.
+  Done,
+  /// It ran the move, and the answer was lost.
+  Lost,
+  /// It ran this many steps of the move and stopped.
+  Stopped(i32),
+  /// It ran the move but reports this position, which disagrees with the commands.
+  Reports(i32)
+}
+
 impl Actuator for Machine {
-  async fn move_rel(&mut self, axis: Axis, delta_steps: i32) -> Result<(), MoveFault> {
+  async fn move_rel(&mut self, axis: Axis, delta_steps: i32) -> Result<i32, MoveFault> {
     let mut script = self.0.borrow_mut();
+    let moves_before = script
+      .log
+      .iter()
+      .filter(|event| matches!(event, Event::Move(..)))
+      .count();
+    let answer = script.answers.get(moves_before).copied().unwrap_or(Answer::Done);
+    let ran_steps = match answer {
+      Answer::Stopped(ran_steps) => ran_steps,
+      Answer::Done | Answer::Lost | Answer::Reports(_) => delta_steps
+    };
     let index = measured_before(&script);
     let response = script.response.get(index).or(script.response.last()).copied().unwrap();
     #[expect(clippy::cast_precision_loss, reason = "test steps are small")]
-    let moved = delta_steps as f32 * response[axis.index()];
+    let moved = ran_steps as f32 * response[axis.index()];
     script.q[axis.index()] += moved;
+    script.commanded[axis.index()] += ran_steps;
     script.log.push(Event::Move(axis, delta_steps));
-    Ok(())
+    let pos_steps = script.commanded[axis.index()];
+    match answer {
+      Answer::Done => Ok(pos_steps),
+      Answer::Lost => Err(MoveFault::NoAnswer),
+      Answer::Stopped(_) => Err(MoveFault::Stopped { pos_steps }),
+      Answer::Reports(reported) => Ok(reported)
+    }
   }
 }
 
@@ -630,6 +666,85 @@ fn a_suspect_step_that_grew_the_residual_is_poor_as_well() {
   );
 }
 
+// --- what the node says about a move ---------------------------------------------------------------------------
+
+/// An aligner on a machine whose node answers as scripted, every axis in the standard direction.
+fn answering(answers: &[Answer], config: &Config) -> (Machine, Aligner<Machine, Machine>) {
+  let machine = Machine::new([0.0; 4]).with(|script| script.answers = answers.to_vec());
+  let aligner = on(&machine, config);
+  (machine, aligner)
+}
+
+/// The review of 2026-11-15: the node ran a move to 400 and its answer was lost; the aligner kept 0, and a retry
+/// took the screw to 800, twice the soft limit.
+#[test]
+fn after_an_unanswered_move_the_axis_waits_for_its_position_from_the_node() {
+  let mut config = quiet();
+  config.motion.soft_min_steps = PerAxis::splat(-400);
+  config.motion.soft_max_steps = PerAxis::splat(400);
+  config.motion.soft_limit_margin_frac = 0.0;
+  let (machine, mut aligner) = answering(&[Answer::Lost], &config);
+  assert_eq!(
+    run(aligner.approach(Axis::M1H, 400)),
+    Err(AlignFault::Move {
+      axis: Axis::M1H,
+      fault: MoveFault::NoAnswer
+    })
+  );
+  assert!(aligner.axes().m1_h.lost && aligner.axes().m1_h.suspect);
+  assert_eq!(
+    run(aligner.approach(Axis::M1H, 400)),
+    Err(AlignFault::PositionUnknown { axis: Axis::M1H })
+  );
+  assert_eq!(
+    run(aligner.calibrate()),
+    Err(AlignFault::PositionUnknown { axis: Axis::M1H })
+  );
+  assert_eq!(machine.log(), [Event::Move(Axis::M1H, 400)], "nothing else moved");
+  // The coordinator reads the node's STATUS and gives the position back: now the limit holds.
+  aligner.restore_position(Axis::M1H, 400);
+  assert!(!aligner.axes().m1_h.lost && aligner.axes().m1_h.suspect);
+  assert_eq!(
+    run(aligner.approach(Axis::M1H, 400)),
+    Err(AlignFault::SoftLimit {
+      axis: Axis::M1H,
+      target_steps: 800
+    })
+  );
+  assert_eq!(machine.0.borrow().commanded[0], 400);
+}
+
+#[test]
+fn a_stopped_move_leaves_the_axis_where_the_node_says_it_stopped() {
+  let (_machine, mut aligner) = answering(&[Answer::Stopped(30)], &quiet());
+  assert_eq!(
+    run(aligner.approach(Axis::M2V, 100)),
+    Err(AlignFault::Move {
+      axis: Axis::M2V,
+      fault: MoveFault::Stopped { pos_steps: 30 }
+    })
+  );
+  let state = aligner.axes().m2_v;
+  assert_eq!(
+    (state.pos_steps, state.suspect, state.lost, state.last_dir),
+    (30, true, false, LastDir::Unknown)
+  );
+}
+
+#[test]
+fn the_position_the_node_reports_is_adopted_and_a_disagreement_makes_the_axis_suspect() {
+  let (_machine, mut aligner) = answering(&[Answer::Done, Answer::Reports(203)], &quiet());
+  run(aligner.approach(Axis::M1V, 100)).unwrap();
+  assert_eq!(
+    (aligner.axes().m1_v.pos_steps, aligner.axes().m1_v.suspect),
+    (100, false)
+  );
+  run(aligner.approach(Axis::M1V, 100)).unwrap();
+  assert_eq!(
+    (aligner.axes().m1_v.pos_steps, aligner.axes().m1_v.suspect),
+    (203, true)
+  );
+}
 // --- confirming a success --------------------------------------------------------------------------------------
 
 #[test]

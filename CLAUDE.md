@@ -107,6 +107,17 @@ These fill gaps in the documents. Each was found by a failing closed-loop test, 
   of three times the backlash leaves a small beam's linear range, and 0.02 of a small beam is finer than the seats'
   stick-slip. A small test beam (a laser pointer) needs expanding to about 3 mm radius or more, or the thresholds
   need restating in physical units; the first is the recommendation (2026-11-15).
+- **The node's count is the position.** `Actuator::move_rel` returns the `pos_steps` of the node's `MOVE_DONE`, and
+  `Stopped` and `RailLost` carry it; the aligner adopts it, and a count that disagrees with the commands makes the
+  axis suspect. A move with no answer marks the axis `lost`: it does not move again until the coordinator reads the
+  node's STATUS and calls `Aligner::restore_position` (M5). Before, a lost answer and a retry ran a screw to twice
+  its soft limit (review of 2026-11-15).
+- **A step that grows the residual by more than noise is poor**, judged or not, coarse or clamped, and a suspect
+  step that grew it is poor too: a stored column with the wrong sign otherwise walks the beam off the sensor. A
+  calibration records the direction signs it was measured under and is not used under others.
+- **A success is confirmed** by a second measurement with no move between; the mean of the two must be inside the
+  tolerance as well. On one measurement, 9 runs in 1000 at the placeholder noise stopped with the true residual
+  above 0.03.
 - The absolute two-position target is kept out of the product and exists only in
   `crates/align-sim/tests/closed_loop.rs`, through the `Aligner::with_target` seam.
 

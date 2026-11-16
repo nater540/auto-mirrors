@@ -54,7 +54,11 @@ pub struct AxisState {
   /// Direction of the last move.
   pub last_dir: LastDir,
   /// Set when a move failed or the beam did not respond as predicted; cleared by the next convergence.
-  pub suspect: bool
+  pub suspect: bool,
+  /// The position is unknown: a move was sent and never answered, so the node may have run all of it, part, or none.
+  /// The axis does not move again until its position is read from the node and given back with
+  /// [`Aligner::restore_position`], so that the soft limits are checked against a count that is true.
+  pub lost: bool
 }
 
 /// The result of a successful alignment.
@@ -124,6 +128,12 @@ pub enum AlignFault {
   /// The solver could not produce a step.
   #[error("solver: {0}")]
   Solve(SolveFault),
+  /// An axis was asked to move while its position is unknown, after a move that went unanswered.
+  #[error("axis {axis:?}: the position is unknown since a move went unanswered; read it from the node first")]
+  PositionUnknown {
+    /// The axis.
+    axis: Axis
+  },
   /// The beam did not respond to an axis on consecutive steps: skipping, a coupler that slid off,
   /// or a screw at the end of its travel.
   #[error("axis {axis:?} is not responding")]
@@ -250,6 +260,25 @@ impl<A: Actuator, S: BeamSensor> Aligner<A, S> {
     &self.axes
   }
 
+  /// Gives back the position of an axis read from its node (its `STATUS`), after a move that went unanswered.
+  /// The axis stays suspect, and its last direction is unknown, until the next convergence.
+  pub fn restore_position(&mut self, axis: Axis, pos_steps: i32) {
+    let state = self.axes.get_mut(axis);
+    state.pos_steps = pos_steps;
+    state.lost = false;
+    state.suspect = true;
+    state.last_dir = LastDir::Unknown;
+  }
+
+  /// Where an axis is, if that is known.
+  fn known(&self, axis: Axis) -> Result<AxisState, AlignFault> {
+    let state = self.axes.get(axis);
+    if state.lost {
+      return Err(AlignFault::PositionUnknown { axis });
+    }
+    Ok(state)
+  }
+
   /// The calibration in use, if any: the Jacobian measured by the last poking, never one updated by Broyden.
   pub fn calibration(&self) -> Option<&Calibration> {
     self.calibration.as_ref()
@@ -261,10 +290,10 @@ impl<A: Actuator, S: BeamSensor> Aligner<A, S> {
   ///
   /// # Errors
   ///
-  /// [`AlignFault::SoftLimit`] or [`AlignFault::MoveTooLong`] before anything moved, or [`AlignFault::Move`] if
-  /// the actuator failed; the axis is then marked suspect and its last direction unknown.
+  /// [`AlignFault::PositionUnknown`], [`AlignFault::SoftLimit`], or [`AlignFault::MoveTooLong`] before anything
+  /// moved. [`AlignFault::Move`] if the actuator failed: the axis is then suspect, and its last direction unknown.
   pub async fn approach(&mut self, axis: Axis, delta_steps: i32) -> Result<(), AlignFault> {
-    let state = self.axes.get(axis);
+    let state = self.known(axis)?;
     self.check_approach(axis, Planned::from(state), delta_steps)?;
     let plan = approach::plan(delta_steps, state.last_dir, self.config.motion.overshoot_steps);
     for leg in plan.legs() {
@@ -314,7 +343,7 @@ impl<A: Actuator, S: BeamSensor> Aligner<A, S> {
     // its overshoot reaches the same lowest point as the return leg's, by a shorter leg.
     for axis in Axis::ALL {
       let standard = Planned {
-        pos_steps: i64::from(self.axes.get(axis).pos_steps),
+        pos_steps: i64::from(self.known(axis)?.pos_steps),
         last_dir: LastDir::Plus
       };
       let poked = self.check_approach(axis, standard, poke_steps)?;
@@ -456,7 +485,7 @@ impl<A: Actuator, S: BeamSensor> Aligner<A, S> {
       // The whole step is checked before any axis moves, so that a refusal does not leave it half taken.
       for (axis, delta_steps) in Axis::ALL.into_iter().zip(steps) {
         if delta_steps != 0 {
-          self.check_approach(axis, Planned::from(self.axes.get(axis)), delta_steps)?;
+          self.check_approach(axis, Planned::from(self.known(axis)?), delta_steps)?;
         }
       }
       for (axis, delta_steps) in Axis::ALL.into_iter().zip(steps) {
@@ -632,14 +661,25 @@ impl<A: Actuator, S: BeamSensor> Aligner<A, S> {
     let outcome = self.actuator.move_rel(axis, steps).await;
     let state = self.axes.get_mut(axis);
     match outcome {
-      Ok(()) => {
-        state.pos_steps = state.pos_steps.saturating_add(steps);
+      Ok(pos_steps) => {
+        // The node's count is adopted; one that disagrees with this count means one of them is wrong.
+        if pos_steps != state.pos_steps.saturating_add(steps) {
+          state.suspect = true;
+        }
+        state.pos_steps = pos_steps;
         state.last_dir = if steps > 0 { LastDir::Plus } else { LastDir::Minus };
         Ok(())
       }
       Err(fault) => {
         state.suspect = true;
         state.last_dir = LastDir::Unknown;
+        match fault {
+          MoveFault::Stopped { pos_steps } | MoveFault::RailLost { pos_steps } => state.pos_steps = pos_steps,
+          MoveFault::SoftLimit => {}
+          // Addendum A.5 asks not to trust the position for the soft limits after a lost move; with no answer
+          // there is no position at all to trust, so the axis waits for one from its node.
+          MoveFault::NoAnswer => state.lost = true
+        }
         Err(AlignFault::Move { axis, fault })
       }
     }
