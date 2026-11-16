@@ -17,6 +17,7 @@
 
 pub mod approach;
 pub mod axis;
+pub mod calibration;
 pub mod config;
 pub mod measurement;
 pub mod quadrant;
