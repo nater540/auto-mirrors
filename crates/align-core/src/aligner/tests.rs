@@ -1,6 +1,7 @@
 //! The aligner's own checks. The procedure itself is held to a model of the machine in `align-sim`.
 
 use super::*;
+use crate::approach::LastDir;
 
 /// A machine that is never reached: these tests stop before anything moves or measures.
 struct Unreached;
@@ -53,7 +54,7 @@ fn a_reference_sum_that_is_not_a_positive_number_is_refused() {
 
 #[test]
 fn every_threshold_that_is_not_a_number_is_refused() {
-  let fields: [Field; 16] = [
+  let fields: [Field; 17] = [
     ("soft_limit_margin_frac", |c| &mut c.motion.soft_limit_margin_frac),
     ("sum_min_frac", |c| &mut c.sensor.sum_min_frac),
     ("edge_max_norm", |c| &mut c.sensor.edge_max_norm),
@@ -73,7 +74,8 @@ fn every_threshold_that_is_not_a_number_is_refused() {
     ("min_residual_reduction_frac", |c| {
       &mut c.solver.min_residual_reduction_frac
     }),
-    ("min_column_sigmas", |c| &mut c.solver.min_column_sigmas)
+    ("min_column_sigmas", |c| &mut c.solver.min_column_sigmas),
+    ("judge_noise_sigmas", |c| &mut c.solver.judge_noise_sigmas)
   ];
   for (name, field) in fields {
     let what = rejected(|config| *field(config) = f32::NAN);
@@ -143,4 +145,86 @@ fn each_range_is_held_at_its_edges() {
       )
     }
   }
+}
+
+fn aligner(config: &Config) -> Aligner<Unreached, Unreached> {
+  Aligner::new(Unreached, Unreached, *config, SUM_REF).unwrap()
+}
+
+#[test]
+fn a_checked_approach_ends_where_its_legs_do_and_going_plus() {
+  let aligner = aligner(&Config::default());
+  for (from_dir, delta_steps) in [(LastDir::Unknown, 10), (LastDir::Minus, -30), (LastDir::Plus, 10)] {
+    let from = Planned {
+      pos_steps: 0,
+      last_dir: from_dir
+    };
+    let to = aligner.check_approach(Axis::M2V, from, delta_steps).unwrap();
+    assert_eq!(
+      (to.pos_steps, to.last_dir),
+      (i64::from(delta_steps), LastDir::Plus),
+      "{from_dir:?} {delta_steps}"
+    );
+  }
+  let still = Planned {
+    pos_steps: 7,
+    last_dir: LastDir::Plus
+  };
+  let to = aligner.check_approach(Axis::M2V, still, 0).unwrap();
+  assert_eq!(
+    (to.pos_steps, to.last_dir),
+    (7, LastDir::Plus),
+    "no legs: nothing changes"
+  );
+}
+
+#[test]
+fn a_checked_approach_is_refused_at_the_first_leg_that_leaves_the_limits() {
+  let mut config = Config::default();
+  config.motion.soft_min_steps = PerAxis::splat(0);
+  config.motion.soft_max_steps = PerAxis::splat(100);
+  let aligner = aligner(&config);
+  let from = Planned {
+    pos_steps: 0,
+    last_dir: LastDir::Unknown
+  };
+  // [-10, 110] with the margin. From an unknown direction, 10 steps first go to 10 - 120.
+  assert_eq!(
+    aligner.check_approach(Axis::M1V, from, 10).map(|to| to.pos_steps),
+    Err(AlignFault::SoftLimit {
+      axis: Axis::M1V,
+      target_steps: -110
+    })
+  );
+  let plus = Planned {
+    last_dir: LastDir::Plus,
+    ..from
+  };
+  assert_eq!(
+    aligner.check_approach(Axis::M1V, plus, 110).map(|to| to.pos_steps),
+    Ok(110)
+  );
+  assert!(matches!(
+    aligner.check_approach(Axis::M1V, plus, 111),
+    Err(AlignFault::SoftLimit { target_steps: 111, .. })
+  ));
+}
+
+#[test]
+fn a_leg_of_exactly_the_per_move_cap_is_allowed() {
+  let config = Config::default();
+  let aligner = aligner(&config);
+  let cap = config.motion.max_move_steps;
+  let from = Planned {
+    pos_steps: 0,
+    last_dir: LastDir::Plus
+  };
+  assert!(aligner.check_approach(Axis::M1H, from, cap).is_ok());
+  assert_eq!(
+    aligner.check_approach(Axis::M1H, from, cap + 1).map(|to| to.pos_steps),
+    Err(AlignFault::MoveTooLong {
+      axis: Axis::M1H,
+      steps: cap + 1
+    })
+  );
 }

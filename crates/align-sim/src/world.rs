@@ -145,6 +145,11 @@ pub struct Scenario {
   pub seed: u64
 }
 
+/// UNVERIFIED placeholder: the position noise of the sensor in [`Scenario::realistic`], one sigma of a normalized
+/// coordinate. It is below the configuration's own placeholder (`noise_sigma_norm`, 0.005),
+/// which is the largest noise the convergence tolerance can see.
+pub const REALISTIC_POSITION_NOISE_NORM: f64 = 0.002;
+
 impl Scenario {
   /// A perfect machine, already aligned: no backlash, no stick-slip, no noise, no offset.
   pub const IDEAL: Self = Self {
@@ -163,7 +168,7 @@ impl Scenario {
   /// normalized, and 5% cross-coupling. Already aligned; set the misalignment and the offset per test.
   pub fn realistic(seed: u64) -> Self {
     Self {
-      beam: Beam::PLACEHOLDER.with_position_noise(0.002),
+      beam: Beam::PLACEHOLDER.with_position_noise(REALISTIC_POSITION_NOISE_NORM),
       axes: PerAxis::splat(AxisModel {
         backlash_steps: 20,
         stick_steps: 3,

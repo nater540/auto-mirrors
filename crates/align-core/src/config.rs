@@ -208,7 +208,12 @@ pub struct Solver {
   /// sigmas of a measurement component (reference 3.1).
   pub min_column_sigmas: f32,
   /// FIRM starting value: suspect steps in a row on one axis before the "axis not responding" fault (addendum A.5).
-  pub suspect_fault_streak: u8
+  pub suspect_fault_streak: u8,
+  /// FIRM, after the 2026-11-15 review: a solver step is judged only when its prediction stands this many noise
+  /// sigmas clear of what noise alone produces. CALCULATED value: `3.64` is the 99th percentile of the norm of four
+  /// independent unit normal components (the square root of 13.28, the 0.99 quantile of chi-square with four
+  /// degrees of freedom), so a healthy step is called a mismatch by noise at most once in a hundred.
+  pub judge_noise_sigmas: f32
 }
 
 impl Solver {
@@ -227,7 +232,8 @@ impl Solver {
     poor_steps_before_recalibration: 2,
     max_recalibrations: 1,
     min_column_sigmas: 5.0,
-    suspect_fault_streak: 2
+    suspect_fault_streak: 2,
+    judge_noise_sigmas: 3.64
   };
 }
 

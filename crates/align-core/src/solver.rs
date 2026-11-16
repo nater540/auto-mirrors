@@ -199,8 +199,10 @@ pub fn prediction_mismatch(jacobian: &Jacobian, dq: &Vector4<f32>, dm: &Vector4<
 ///
 /// `J^-1 dm` is the step each axis appears to have taken. An axis is unresponsive when
 ///
-/// - its predicted contribution, `abs(dq_j) * norm(J_j)`, is at least `noise_floor`, so that its absence could
-///   be seen at all, and
+/// - its command stands clear of the noise in its apparent step: the noise of `dm` (each component of sigma
+///   `change_sigma`) reaches the apparent step of axis `j` amplified by `norm(row_j(J^-1))`, and the command must
+///   exceed `judge_noise_sigmas` of that noise by the margin the test below allows in either direction, so that
+///   neither a healthy axis is named nor a dead one missed by noise alone; and
 /// - it appears to have taken less than `1 - prediction_mismatch_frac` of its command.
 ///
 /// Of several such axes the one with the largest missing contribution is returned. An axis that did not move at
@@ -211,21 +213,27 @@ pub fn unresponsive_axis(
   jacobian: &Jacobian,
   dq: &Vector4<f32>,
   dm: &Vector4<f32>,
-  noise_floor: f32,
+  change_sigma: f32,
   config: &Solver
 ) -> Option<Axis> {
   if !(all_finite(jacobian.iter()) && all_finite(dq.iter()) && all_finite(dm.iter())) {
     return None;
   }
-  let apparent = jacobian.try_inverse()? * dm;
+  let inverse = jacobian.try_inverse()?;
+  let apparent = inverse * dm;
+  let margin = config
+    .prediction_mismatch_frac
+    .min(1.0 - config.prediction_mismatch_frac);
   let mut worst: Option<(Axis, f32)> = None;
-  for ((axis, column), (commanded, taken)) in Axis::ALL
+  for (((axis, column), row), (commanded, taken)) in Axis::ALL
     .into_iter()
     .zip(jacobian.column_iter())
+    .zip(inverse.row_iter())
     .zip(dq.iter().zip(apparent.iter()))
   {
     let gain = column.norm();
-    let visible = commanded.abs() * gain >= noise_floor;
+    let apparent_sigma = change_sigma * row.norm();
+    let visible = margin * commanded.abs() >= config.judge_noise_sigmas * apparent_sigma;
     // The fraction of the command that is missing: 0 for a perfect response, 1 for none, above 1 for a reversed
     // one. Dividing is safe: a visible command is not zero.
     let missing_frac = (commanded - taken) / commanded;
@@ -604,13 +612,13 @@ mod tests {
     assert!(prediction_mismatch(&jacobian, &dq, &Vector4::repeat(f32::NAN), &CONFIG));
   }
 
-  /// The floor the aligner uses with the starting config: 5 * sqrt(2) * 0.005.
-  const FLOOR: f32 = 0.035_36;
+  /// The noise of one component of a change with the starting config: 2 * 0.005.
+  const FLOOR: f32 = 0.01;
 
   #[test]
   fn a_dead_axis_is_named_as_unresponsive_whichever_axis_it_is() {
     let jacobian = realistic_jacobian();
-    let commanded = Vector4::new(40.0, -30.0, 60.0, 25.0);
+    let commanded = Vector4::new(40.0, -30.0, 60.0, 45.0);
     for dead in Axis::ALL {
       let mut moved = commanded;
       moved[dead.index()] = 0.0;
@@ -696,6 +704,113 @@ mod tests {
     );
     assert_eq!(
       unresponsive_axis(&jacobian, &Vector4::zeros(), &Vector4::zeros(), FLOOR, &CONFIG),
+      None
+    );
+  }
+
+  /// The review of 2026-11-15 found a healthy M2H named unresponsive in one run of eight after a command of 11
+  /// steps at the configured noise. A dead axis is named only once its command stands clear of the noise its
+  /// apparent step carries: for mirror 2 of this Jacobian, `0.5 * dq >= 3.64 * 0.01 * 505`, so 36.8 steps.
+  #[test]
+  fn a_dead_axis_is_named_only_when_its_command_clears_the_noise_of_its_apparent_step() {
+    let jacobian = realistic_jacobian();
+    let row_norm = jacobian.try_inverse().unwrap().row(2).norm();
+    assert_close(row_norm, 505.0, 1.0);
+    for (steps, named) in [(36.0, None), (37.0, Some(Axis::M2H))] {
+      let commanded = Vector4::new(0.0, 0.0, steps, 0.0);
+      assert_eq!(
+        unresponsive_axis(&jacobian, &commanded, &Vector4::zeros(), FLOOR, &CONFIG),
+        named,
+        "{steps} steps"
+      );
+    }
+    // Mirror 1's apparent step carries less noise: 0.5 * dq >= 3.64 * 0.01 * 357, so 26 steps.
+    for (steps, named) in [(25.0, None), (27.0, Some(Axis::M1V))] {
+      let commanded = Vector4::new(0.0, steps, 0.0, 0.0);
+      assert_eq!(
+        unresponsive_axis(&jacobian, &commanded, &Vector4::zeros(), FLOOR, &CONFIG),
+        named,
+        "{steps} steps"
+      );
+    }
+  }
+
+  /// The command must clear the noise by the margin of the test in both directions: with a mismatch fraction of
+  /// 0.75, a dead axis is told from a healthy one only by the remaining 0.25 of its command.
+  #[test]
+  fn the_margin_is_the_smaller_side_of_the_mismatch_fraction() {
+    let jacobian = realistic_jacobian();
+    let config = Solver {
+      prediction_mismatch_frac: 0.75,
+      ..CONFIG
+    };
+    // 0.25 * dq >= 3.64 * 0.01 * 505 needs 73.5 steps on M2H.
+    for (steps, named) in [(73.0, None), (74.0, Some(Axis::M2H))] {
+      let commanded = Vector4::new(0.0, 0.0, steps, 0.0);
+      assert_eq!(
+        unresponsive_axis(&jacobian, &commanded, &Vector4::zeros(), FLOOR, &config),
+        named,
+        "{steps} steps"
+      );
+    }
+  }
+
+  /// A diagonal Jacobian of 1/256 per step: every product below is exact in `f32`, so the boundaries are too.
+  fn exact_jacobian() -> Jacobian {
+    Jacobian::identity() / 256.0
+  }
+
+  #[test]
+  fn an_axis_that_took_exactly_half_of_its_command_is_not_unresponsive() {
+    let jacobian = exact_jacobian();
+    let commanded = Vector4::new(40.0, 0.0, 0.0, 0.0);
+    let half = jacobian * Vector4::new(20.0, 0.0, 0.0, 0.0);
+    assert_eq!(unresponsive_axis(&jacobian, &commanded, &half, FLOOR, &CONFIG), None);
+    let less = jacobian * Vector4::new(19.0, 0.0, 0.0, 0.0);
+    assert_eq!(
+      unresponsive_axis(&jacobian, &commanded, &less, FLOOR, &CONFIG),
+      Some(Axis::M1H)
+    );
+  }
+
+  #[test]
+  fn of_two_axes_missing_the_same_the_first_in_axis_order_is_named() {
+    let jacobian = exact_jacobian();
+    let commanded = Vector4::new(0.0, 40.0, 40.0, 0.0);
+    assert_eq!(
+      unresponsive_axis(&jacobian, &commanded, &Vector4::zeros(), FLOOR, &CONFIG),
+      Some(Axis::M1V)
+    );
+  }
+
+  #[test]
+  fn no_axis_is_named_from_an_infinite_input() {
+    let mut jacobian = exact_jacobian();
+    jacobian[(0, 0)] = f32::INFINITY;
+    let commanded = Vector4::new(40.0, 40.0, 40.0, 40.0);
+    assert_eq!(
+      unresponsive_axis(&jacobian, &commanded, &Vector4::zeros(), FLOOR, &CONFIG),
+      None
+    );
+    let exact = exact_jacobian();
+    assert_eq!(
+      unresponsive_axis(
+        &exact,
+        &Vector4::repeat(f32::INFINITY),
+        &Vector4::zeros(),
+        FLOOR,
+        &CONFIG
+      ),
+      None
+    );
+    assert_eq!(
+      unresponsive_axis(
+        &exact,
+        &commanded,
+        &Vector4::new(f32::INFINITY, 0.0, 0.0, 0.0),
+        FLOOR,
+        &CONFIG
+      ),
       None
     );
   }

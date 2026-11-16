@@ -32,10 +32,29 @@ pub fn jacobian_from_pokes(baseline: &Vector4<f32>, poked: &[Vector4<f32>; 4], p
 /// The smallest change of the measurement vector that counts as signal: `min_column_sigmas` sigmas of one component.
 /// A component is a difference of two readings, so its sigma is `sqrt(2)` times the sigma of one normalized coordinate.
 ///
-/// The reference states this floor for calibration columns (3.1). The aligner applies the same floor before it
-/// learns from, or passes judgment on, a solver step.
+/// The reference states this floor for calibration columns (3.1).
+/// A solver step is judged against the higher [`judging_floor`].
 pub fn noise_floor(sensor: &SensorLimits, solver: &Solver) -> f32 {
   solver.min_column_sigmas * SQRT_2 * sensor.noise_sigma_norm
+}
+
+/// The sigma of one component of the change `dm` between two measurements: `2 * noise_sigma_norm`.
+/// A component of a measurement is a difference of two readings, and `dm` is a difference of two measurements,
+/// so four readings enter each component.
+pub fn change_sigma(sensor: &SensorLimits) -> f32 {
+  2.0 * sensor.noise_sigma_norm
+}
+
+/// The smallest predicted change `norm(J dq)` of a solver step that is judged against its prediction and learned from.
+///
+/// A step is a mismatch when `norm(dm - J dq) > prediction_mismatch_frac * norm(J dq)` (addendum A.5). For a step
+/// that went exactly as predicted, the left side is noise alone: the norm of four components of sigma
+/// [`change_sigma`], which stays below `judge_noise_sigmas` of them 99 times in 100. The floor is the prediction at
+/// which that noise just reaches the allowed mismatch; below it, a healthy step is too often called suspect. With the
+/// starting values it is `3.64 * 0.01 / 0.5 = 0.073`, twice the [`noise_floor`] the aligner used before the review of
+/// 2026-11-15, which counted the noise of one component of a measurement instead of the noise of the whole change.
+pub fn judging_floor(sensor: &SensorLimits, solver: &Solver) -> f32 {
+  solver.judge_noise_sigmas * change_sigma(sensor) / solver.prediction_mismatch_frac
 }
 
 /// The first axis whose poke moved the measurement by less than the [`noise_floor`], if any. Such a column is
@@ -127,6 +146,17 @@ mod tests {
     assert_eq!(weak_column(&jacobian, 45.0, &SENSOR, &SOLVER), None);
     jacobian.set_column(3, &Vector4::new(0.0, 0.0, 0.0, 0.035 / 45.0));
     assert_eq!(weak_column(&jacobian, 45.0, &SENSOR, &SOLVER), Some(Axis::M2V));
+  }
+
+  #[test]
+  fn a_step_is_judged_only_when_its_prediction_clears_the_noise_of_a_whole_change() {
+    assert_close(change_sigma(&SENSOR), 0.01, 1e-6);
+    assert_close(judging_floor(&SENSOR, &SOLVER), 0.0728, 1e-4);
+    let stricter = Solver {
+      prediction_mismatch_frac: 0.25,
+      ..SOLVER
+    };
+    assert_close(judging_floor(&SENSOR, &stricter), 0.1456, 1e-4);
   }
 
   #[test]

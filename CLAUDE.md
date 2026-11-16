@@ -77,9 +77,20 @@ Stop at the end of each milestone and report to the owner (hand-off section 6).
 These fill gaps in the documents. Each was found by a failing closed-loop test, is explained at the top of
 `crates/align-core/src/aligner.rs`, and should not be undone without a simulator run that shows why.
 
-- **A step is judged only if its predicted change is above the noise floor** (`calibration::noise_floor`, five
-  sigmas of a measurement component). Addendum A.5 as written reports a healthy axis as not responding, because
-  corrections of a few steps are inside stick-slip and noise.
+- **A step is judged only if its predicted change is above the judging floor** (`calibration::judging_floor`:
+  `judge_noise_sigmas` of the noise of the whole change `dm`, four readings to a component, over the mismatch
+  fraction; 0.073 at the placeholder noise). Addendum A.5 as written reports a healthy axis as not responding,
+  because corrections of a few steps are inside stick-slip and noise. The first floor, five sigmas of one
+  measurement component (0.035), still named a healthy axis in one run of eight at the configured noise (review of
+  2026-11-15). An axis is named only if its command clears the noise its apparent step carries, `norm(row_j(J^-1))`.
+  The floor models sensor noise only, not stick-slip: at a characterized noise of 0.002 (floor 0.029), one run in
+  300 with a two-step stick needs a recalibration.
+- **Broyden updates are not stored.** They help within one alignment; kept across sessions, their noise gathered
+  (a column 50% wrong in 479 of 1200 chained sessions, same review). The stored calibration changes only by poking.
+- **Closed-loop tests that exercise the judging configure the simulated sensor's own noise** (`characterized()`,
+  0.002). At the placeholder 0.005, most steps of an in-range misalignment are too small to judge, so a dead mirror
+  1 axis is found by the recalibration's poke (`WeakColumn`) instead of as `AxisNotResponding`. The tests about the
+  placeholder use `Config::default()`.
 - **Suspect means an axis fell short, not that the prediction was off** (`solver::unresponsive_axis`). A Jacobian
   30% too small has a plain mismatch of 43%, close to the 50% threshold; a mismatch in which no axis took less than
   half of its command is a Jacobian error, and the Broyden update corrects it.

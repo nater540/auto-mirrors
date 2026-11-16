@@ -6,12 +6,13 @@
 use align_core::aligner::{AlignFault, AlignReport, Aligner, AxisState};
 use align_core::approach::{LastDir, SoftLimits};
 use align_core::axis::{Axis, PerAxis};
+use align_core::calibration;
 use align_core::config::Config;
 use align_core::measurement::Shots;
-use align_core::solver::SolveFault;
+use align_core::solver::{self, SolveFault};
 use align_sim::block_on;
 use align_sim::rig::Rig;
-use align_sim::world::{AxisModel, Beam, Record, Scenario};
+use align_sim::world::{AxisModel, Beam, REALISTIC_POSITION_NOISE_NORM, Record, Scenario};
 use nalgebra::Vector4;
 use proptest::prelude::*;
 use rand::rngs::StdRng;
@@ -39,6 +40,18 @@ fn realistic(seed: u64, misalignment_steps: PerAxis<f64>, head_offset_um: [f64; 
   }
 }
 
+/// The starting configuration with the sensor characterized: its noise is the simulated sensor's own. With the
+/// placeholder (0.005, the largest the tolerance can see), most steps of these misalignments are too small to judge,
+/// so the suspect check, the Broyden update, and the damping would go untested. The tests that are about the
+/// placeholder use `Config::default()`.
+fn characterized() -> Config {
+  let mut config = Config::default();
+  #[expect(clippy::cast_possible_truncation, reason = "the alignment code works in f32")]
+  let noise = REALISTIC_POSITION_NOISE_NORM as f32;
+  config.sensor.noise_sigma_norm = noise;
+  config
+}
+
 /// The noise-free residual of the three-position difference vector.
 fn true_residual(rig: &Rig) -> f32 {
   rig.world().true_shots().measurement().amax()
@@ -59,7 +72,7 @@ fn align(rig: &Rig, config: &Config) -> (Result<AlignReport, AlignFault>, Aligne
 #[test]
 fn an_aligned_ideal_machine_converges_without_a_solver_step() {
   let rig = Rig::new(Scenario::IDEAL);
-  let (outcome, _) = align(&rig, &Config::default());
+  let (outcome, _) = align(&rig, &characterized());
   let report = outcome.unwrap();
   assert_eq!(report.iterations, 0);
   assert_eq!(report.recalibrations, 0);
@@ -69,7 +82,7 @@ fn an_aligned_ideal_machine_converges_without_a_solver_step() {
 #[test]
 fn calibrating_an_ideal_machine_recovers_the_model_jacobian() {
   let rig = Rig::new(Scenario::IDEAL);
-  let mut aligner = rig.aligner(Config::default()).unwrap();
+  let mut aligner = rig.aligner(characterized()).unwrap();
   let calibration = block_on(aligner.calibrate()).unwrap();
   let truth = rig.world().true_jacobian();
   let relative_error = (calibration.jacobian - truth).norm() / truth.norm();
@@ -95,7 +108,7 @@ fn an_ideal_machine_is_aligned_from_a_known_misalignment() {
   };
   let rig = Rig::new(scenario);
   assert!(true_residual(&rig) > 0.05);
-  let (outcome, aligner) = align(&rig, &Config::default());
+  let (outcome, aligner) = align(&rig, &characterized());
   let report = outcome.unwrap();
   assert!(report.iterations <= 4, "{report:?}");
   assert_eq!(report.recalibrations, 0);
@@ -191,7 +204,7 @@ fn a_seat_that_sticks_for_three_steps_costs_at_most_the_one_allowed_recalibratio
 /// just short, and the recalibration finishes the job (52 of 20000 at three steps of stick-slip, 11 at none).
 #[test]
 fn alignment_converges_with_a_jacobian_that_is_thirty_percent_wrong() {
-  let config = Config::default();
+  let config = characterized();
   let mut tally = Tally::default();
   for index in 0..1_000 {
     let (scenario, mut draw) = seeded(index, 3);
@@ -210,7 +223,7 @@ fn alignment_converges_with_a_jacobian_that_is_thirty_percent_wrong() {
 /// The worst cases of test 2 on their own: every column too large, and every column too small.
 #[test]
 fn a_jacobian_that_is_uniformly_thirty_percent_too_large_or_too_small_still_converges() {
-  let config = Config::default();
+  let config = characterized();
   for scale in [[1.3; 4], [0.7; 4]] {
     let mut tally = Tally::default();
     for index in 0..200 {
@@ -238,7 +251,7 @@ proptest! {
     limit in 125_i32..400,
   ) {
     let rig = Rig::new(realistic(seed, misalignment_steps, head_offset_um));
-    let mut config = Config::default();
+    let mut config = characterized();
     config.motion.soft_min_steps = PerAxis::splat(-limit);
     config.motion.soft_max_steps = PerAxis::splat(limit);
     let (outcome, _) = align(&rig, &config);
@@ -256,6 +269,34 @@ proptest! {
   }
 }
 
+/// Reference 3.1: the baseline of a calibration is measured with every axis in the standard direction.
+#[test]
+fn a_calibration_takes_up_the_backlash_of_every_axis_before_its_baseline() {
+  let rig = Rig::new(Scenario::IDEAL);
+  let config = characterized();
+  let mut aligner = rig.aligner(config).unwrap();
+  block_on(aligner.calibrate()).unwrap();
+  let log = rig.world().log().to_vec();
+  let overshoot = config.motion.overshoot_steps;
+  let standard: Vec<Record> = Axis::ALL
+    .into_iter()
+    .flat_map(|axis| {
+      [
+        Record::Move {
+          axis,
+          delta_steps: -overshoot
+        },
+        Record::Move {
+          axis,
+          delta_steps: overshoot
+        }
+      ]
+    })
+    .collect();
+  assert_eq!(log.get(..8), Some(standard.as_slice()));
+  assert!(matches!(log.get(8), Some(Record::Measure { .. })));
+}
+
 /// The case the 2026-11-15 review found: three axes of a step ran, then the fourth was refused at its limit.
 #[test]
 fn a_step_refused_at_a_soft_limit_moves_none_of_its_axes() {
@@ -266,7 +307,7 @@ fn a_step_refused_at_a_soft_limit_moves_none_of_its_axes() {
     m2_v: 45.0
   };
   let rig = Rig::new(realistic(0, misalignment_steps, [0.0, 0.0]));
-  let mut config = Config::default();
+  let mut config = characterized();
   config.motion.soft_min_steps = PerAxis::splat(-125);
   config.motion.soft_max_steps = PerAxis::splat(125);
   let (outcome, _) = align(&rig, &config);
@@ -279,7 +320,7 @@ fn a_step_refused_at_a_soft_limit_moves_none_of_its_axes() {
 #[test]
 fn a_calibration_that_cannot_return_from_a_poke_moves_nothing() {
   let rig = Rig::new(Scenario::IDEAL);
-  let mut config = Config::default();
+  let mut config = characterized();
   // [-10, 110] with the margin: the poke to 45 fits, the overshoot of its return (45 - 45 - 120) does not.
   config.motion.soft_min_steps = PerAxis::splat(0);
   config.motion.soft_max_steps = PerAxis::splat(100);
@@ -302,32 +343,62 @@ fn a_calibration_that_cannot_return_from_a_poke_moves_nothing() {
 /// Hand-off M2, test 3, with a stored calibration from when the axis still worked.
 #[test]
 fn a_dead_axis_is_marked_suspect_and_then_reported_as_not_responding() {
+  let config = characterized();
   for dead in Axis::ALL {
-    let mut scenario = realistic(
-      11,
-      PerAxis {
-        m1_h: 25.0,
-        m1_v: -25.0,
-        m2_h: 35.0,
-        m2_v: -35.0
-      },
-      [50.0, -50.0]
-    );
-    *scenario.axes.get_mut(dead) = AxisModel::DEAD;
-    let rig = Rig::new(scenario);
+    let rig = Rig::new(dead_axis_scenario(dead));
+    let mut aligner = rig
+      .aligner(config)
+      .unwrap()
+      .with_calibration(rig.stored_calibration([1.0; 4]));
+    let outcome = block_on(aligner.align());
+    assert_eq!(outcome, Err(AlignFault::AxisNotResponding { axis: dead }));
+    assert_only_suspect(&aligner, dead);
+  }
+}
+
+/// The same machines with the placeholder noise of 0.005 configured. Mirror 1's steps here are then too small to
+/// judge (a healthy axis would too often look dead), so a dead mirror 1 axis is found by the poke of the
+/// recalibration instead. Either way, the dead axis and only it is suspect.
+#[test]
+fn a_dead_axis_is_found_by_its_poke_when_its_steps_are_too_small_to_judge() {
+  for dead in Axis::ALL {
+    let rig = Rig::new(dead_axis_scenario(dead));
     let mut aligner = rig
       .aligner(Config::default())
       .unwrap()
       .with_calibration(rig.stored_calibration([1.0; 4]));
     let outcome = block_on(aligner.align());
-    assert_eq!(outcome, Err(AlignFault::AxisNotResponding { axis: dead }));
-    for axis in Axis::ALL {
-      assert_eq!(
-        aligner.axes().get(axis).suspect,
-        axis == dead,
-        "suspect flag of {axis:?} with {dead:?} dead"
-      );
-    }
+    assert!(
+      outcome == Err(AlignFault::AxisNotResponding { axis: dead })
+        || outcome == Err(AlignFault::WeakColumn { axis: dead }),
+      "{dead:?}: {outcome:?}"
+    );
+    assert_only_suspect(&aligner, dead);
+  }
+}
+
+fn dead_axis_scenario(dead: Axis) -> Scenario {
+  let mut scenario = realistic(
+    11,
+    PerAxis {
+      m1_h: 25.0,
+      m1_v: -25.0,
+      m2_h: 35.0,
+      m2_v: -35.0
+    },
+    [50.0, -50.0]
+  );
+  *scenario.axes.get_mut(dead) = AxisModel::DEAD;
+  scenario
+}
+
+fn assert_only_suspect(aligner: &Aligner<Rig, Rig>, dead: Axis) {
+  for axis in Axis::ALL {
+    assert_eq!(
+      aligner.axes().get(axis).suspect,
+      axis == dead,
+      "suspect flag of {axis:?} with {dead:?} dead"
+    );
   }
 }
 
@@ -338,7 +409,7 @@ fn a_dead_axis_fails_calibration_as_a_weak_column() {
     let mut scenario = realistic(12, PerAxis::splat(10.0), [0.0, 0.0]);
     *scenario.axes.get_mut(dead) = AxisModel::DEAD;
     let rig = Rig::new(scenario);
-    let (outcome, aligner) = align(&rig, &Config::default());
+    let (outcome, aligner) = align(&rig, &characterized());
     assert_eq!(outcome, Err(AlignFault::WeakColumn { axis: dead }));
     assert!(aligner.axes().get(dead).suspect);
   }
@@ -371,7 +442,7 @@ fn a_two_position_absolute_target_fails_where_the_three_position_difference_succ
   };
 
   let difference_rig = Rig::new(scenario);
-  let (outcome, _) = align(&difference_rig, &Config::default());
+  let (outcome, _) = align(&difference_rig, &characterized());
   outcome.unwrap();
   let difference_angles = difference_rig.world().angle_errors().largest_urad();
   let difference_residual = true_residual(&difference_rig);
@@ -380,7 +451,7 @@ fn a_two_position_absolute_target_fails_where_the_three_position_difference_succ
   // the same combination of the two mirrors.
   let rejected = block_on(
     Rig::new(scenario)
-      .aligner(Config::default())
+      .aligner(characterized())
       .unwrap()
       .with_target(absolute_target)
       .align()
@@ -392,7 +463,7 @@ fn a_two_position_absolute_target_fails_where_the_three_position_difference_succ
 
   // Given every chance (no conditioning gate, almost no damping, three times the iterations, and a tolerance
   // four times tighter so that it settles on its own solution) it reaches its own target.
-  let mut permissive = Config::default();
+  let mut permissive = characterized();
   permissive.solver.cond_max = 1_000.0;
   permissive.solver.lambda_frac = 0.001;
   permissive.solver.max_iterations = 12;
@@ -434,7 +505,7 @@ fn the_head_offset_is_reported_and_large_ones_ask_for_mechanical_centering() {
     head_offset_um: [100.0, 0.0],
     ..Scenario::IDEAL
   };
-  let report = align(&Rig::new(small), &Config::default()).0.unwrap();
+  let report = align(&Rig::new(small), &characterized()).0.unwrap();
   assert!(report.head_offset.h_norm > 0.03);
   assert!(!report.needs_mechanical_centering);
 
@@ -443,7 +514,7 @@ fn the_head_offset_is_reported_and_large_ones_ask_for_mechanical_centering() {
     head_offset_um: [600.0, 0.0],
     ..Scenario::IDEAL
   };
-  let report = align(&Rig::new(large), &Config::default()).0.unwrap();
+  let report = align(&Rig::new(large), &characterized()).0.unwrap();
   assert!(report.needs_mechanical_centering, "{report:?}");
 }
 
@@ -454,7 +525,7 @@ fn a_beam_off_the_sensor_is_a_reading_fault_after_three_shots() {
     ..Scenario::IDEAL
   };
   let rig = Rig::new(scenario);
-  let (outcome, _) = align(&rig, &Config::default());
+  let (outcome, _) = align(&rig, &characterized());
   assert!(matches!(outcome, Err(AlignFault::Reading(_))), "{outcome:?}");
   let world = rig.world();
   let measurements = world
@@ -483,7 +554,7 @@ fn alignment_survives_occasional_skipped_steps() {
     skip_probability: 0.02
   });
   let rig = Rig::new(scenario);
-  let (outcome, _) = align(&rig, &Config::default());
+  let (outcome, _) = align(&rig, &characterized());
   outcome.unwrap();
   assert!(true_residual(&rig) <= 0.03, "true residual {}", true_residual(&rig));
 }
@@ -501,7 +572,7 @@ fn every_axis_is_left_having_last_moved_in_the_plus_direction() {
     [0.0, 0.0]
   );
   let rig = Rig::new(scenario);
-  let (outcome, aligner) = align(&rig, &Config::default());
+  let (outcome, aligner) = align(&rig, &characterized());
   outcome.unwrap();
   for axis in Axis::ALL {
     assert_eq!(aligner.axes().get(axis).last_dir, align_core::approach::LastDir::Plus);
@@ -529,7 +600,7 @@ fn the_coordinator_position_matches_the_commands_the_rig_received() {
     [0.0, 0.0]
   );
   let rig = Rig::new(scenario);
-  let (outcome, aligner) = align(&rig, &Config::default());
+  let (outcome, aligner) = align(&rig, &characterized());
   outcome.unwrap();
   for axis in Axis::ALL {
     assert_eq!(
@@ -537,6 +608,84 @@ fn the_coordinator_position_matches_the_commands_the_rig_received() {
       rig.world().commanded_steps(axis)
     );
   }
+}
+
+/// The review of 2026-11-15 found a healthy M2H named unresponsive in 500 of 4000 trials after a step of 11 counts at
+/// the configured noise. A step under the judging floor is not judged at all; one above it must not name a healthy
+/// axis. Counted over fixed seeds, as every rate in this file.
+#[test]
+fn noise_at_the_configured_sigma_does_not_name_a_healthy_axis() {
+  let config = Config::default();
+  let floor = calibration::judging_floor(&config.sensor, &config.solver);
+  let change_sigma = calibration::change_sigma(&config.sensor);
+  let steps_tried = [
+    [0, 0, 11, 0],
+    [0, 0, 0, 16],
+    [6, -6, 8, 8],
+    [0, 0, 30, 0],
+    [0, 40, 0, 0],
+    [0, 0, 40, 0],
+    [25, -25, 35, 35]
+  ];
+  let (mut judged, mut mismatched, mut named) = (0, 0, 0);
+  for dq_steps in steps_tried {
+    for seed in 0..1_000 {
+      let rig = Rig::new(Scenario {
+        beam: Beam::PLACEHOLDER.with_position_noise(f64::from(config.sensor.noise_sigma_norm)),
+        seed,
+        ..Scenario::IDEAL
+      });
+      let jacobian = rig.world().true_jacobian();
+      let before = rig.world_mut().measure().measurement();
+      for (axis, steps) in Axis::ALL.into_iter().zip(dq_steps) {
+        rig.world_mut().move_rel(axis, steps);
+      }
+      let dm = rig.world_mut().measure().measurement() - before;
+      let dq = solver::steps_to_vector(dq_steps);
+      if (jacobian * dq).norm() < floor {
+        continue;
+      }
+      judged += 1;
+      if solver::prediction_mismatch(&jacobian, &dq, &dm, &config.solver) {
+        mismatched += 1;
+        if solver::unresponsive_axis(&jacobian, &dq, &dm, change_sigma, &config.solver).is_some() {
+          named += 1;
+        }
+      }
+    }
+  }
+  assert_eq!(
+    judged, 4_000,
+    "the four larger steps are judged, the three smaller ones are not"
+  );
+  assert!(
+    mismatched <= 40,
+    "a mismatch from noise alone at most once in a hundred: {mismatched}"
+  );
+  assert_eq!(named, 0);
+}
+
+/// The Broyden updates of an alignment correct its Jacobian while it runs, but the stored calibration is the one
+/// the pokes measured: updates kept across sessions gather the noise of every step (the review of 2026-11-15).
+#[test]
+fn an_alignment_does_not_change_the_stored_calibration() {
+  let rig = Rig::new(realistic(
+    5,
+    PerAxis {
+      m1_h: 30.0,
+      m1_v: -25.0,
+      m2_h: -40.0,
+      m2_v: 35.0
+    },
+    [0.0, 0.0]
+  ));
+  let stored = rig.stored_calibration([1.2, 0.8, 1.2, 0.8]);
+  let config = characterized();
+  let mut aligner = rig.aligner(config).unwrap().with_calibration(stored);
+  let report = block_on(aligner.align()).unwrap();
+  assert!(report.iterations > 0);
+  assert_eq!(report.recalibrations, 0);
+  assert_eq!(aligner.calibration(), Some(&stored));
 }
 
 #[test]

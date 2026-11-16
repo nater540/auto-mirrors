@@ -13,9 +13,13 @@
 //! - **A step too small to see.** Addendum A.5 compares the measured change with the prediction after every
 //!   step. For a step of a few counts the prediction is inside sensor noise and seat stick-slip, the comparison
 //!   is meaningless, and applying it reports a healthy axis as not responding (the simulator shows this). A step
-//!   whose predicted change is below [`crate::calibration::noise_floor`] is therefore taken but not judged: no
+//!   whose predicted change is below [`crate::calibration::judging_floor`] is therefore taken but not judged: no
 //!   suspect, no Broyden update, no damping change. The reference already skips the Broyden update for small
-//!   steps (3.2); this extends the same guard.
+//!   steps (3.2); this extends the same guard. The floor is the noise of the whole change `dm`, four readings to
+//!   a component, not of one measurement component: the review of 2026-11-15 showed that the smaller floor named
+//!   a healthy axis in one run of eight at the configured noise.
+//! - **The Broyden updates are not stored.** They correct the Jacobian within one alignment, where they help; kept
+//!   across sessions, the noise of each update accumulates (the same review).
 //! - **A step limited by the clamp** cannot reduce the residual by the required fraction however well it went, so
 //!   it is not judged as a poor step.
 //! - **Which axis is suspect** when four moved together, and telling a dead axis from a wrong Jacobian:
@@ -86,8 +90,8 @@ pub enum AlignFault {
     /// The commanded position the move would have reached.
     target_steps: i64
   },
-  /// A single move would have been longer than the per-move cap. Nothing of the step, poke, or approach it
-  /// belonged to was moved.
+  /// A single move would have been longer than the per-move cap.
+  /// Nothing of the step, poke, or approach it belonged to was moved.
   #[error("axis {axis:?}: a move of {steps} steps is longer than the per-move cap")]
   MoveTooLong {
     /// The axis.
@@ -239,7 +243,7 @@ impl<A: Actuator, S: BeamSensor> Aligner<A, S> {
     &self.axes
   }
 
-  /// The calibration in use, if any. After a successful alignment it carries the Broyden updates.
+  /// The calibration in use, if any: the Jacobian measured by the last poking, never one updated by Broyden.
   pub fn calibration(&self) -> Option<&Calibration> {
     self.calibration.as_ref()
   }
@@ -280,13 +284,10 @@ impl<A: Actuator, S: BeamSensor> Aligner<A, S> {
         return Err(AlignFault::SoftLimit { axis, target_steps });
       }
     }
+    // Every approach ends going plus; one with no legs starts from plus.
     Ok(Planned {
       pos_steps: target_steps,
-      last_dir: if plan.forward_steps > 0 {
-        LastDir::Plus
-      } else {
-        from.last_dir
-      }
+      last_dir: LastDir::Plus
     })
   }
 
@@ -301,14 +302,13 @@ impl<A: Actuator, S: BeamSensor> Aligner<A, S> {
   /// singular or ill-conditioned result, and any fault of a move or a measurement.
   pub async fn calibrate(&mut self) -> Result<Calibration, AlignFault> {
     let poke_steps = self.config.motion.poke_steps;
-    // Every move of the calibration is checked before the first one runs, so that a refused return leg cannot
-    // leave an axis poked.
+    // Every poke and its return are checked before the first move runs, so that a refused return leg cannot leave
+    // an axis poked. The standard approach needs no check of its own: it leaves the position where it was, and
+    // its overshoot reaches the same lowest point as the return leg's, by a shorter leg.
     for axis in Axis::ALL {
-      let state = Planned::from(self.axes.get(axis));
-      let standard = if state.last_dir == LastDir::Plus {
-        state
-      } else {
-        self.check_approach(axis, state, 0)?
+      let standard = Planned {
+        pos_steps: i64::from(self.axes.get(axis).pos_steps),
+        last_dir: LastDir::Plus
       };
       let poked = self.check_approach(axis, standard, poke_steps)?;
       self.check_approach(axis, poked, -poke_steps)?;
@@ -456,12 +456,9 @@ impl<A: Actuator, S: BeamSensor> Aligner<A, S> {
         residual_norm: current.vector.amax()
       });
     }
-    if let Some(stored) = self.calibration.as_mut() {
-      stored.jacobian = progress.jacobian;
-      if let Ok(updated) = Conditioning::of(&progress.jacobian) {
-        stored.cond = updated.cond;
-      }
-    }
+    // The Broyden updates of this attempt are not stored: each carries the noise of one step, and a stored
+    // Jacobian that gathered them over sessions drifted a column 50% wrong in 479 of 1200 sessions in the
+    // review of 2026-11-15. The stored calibration changes only when the axes are poked again.
     for axis in Axis::ALL {
       self.axes.get_mut(axis).suspect = false;
     }
@@ -482,14 +479,14 @@ impl<A: Actuator, S: BeamSensor> Aligner<A, S> {
       // A coarse step: the data is outside the linear range and teaches nothing.
       return Ok(Verdict::Continue);
     }
-    let noise_floor = calibration::noise_floor(&self.config.sensor, &solver_config);
-    if (progress.jacobian * taken).norm() < noise_floor {
-      // Too small to see: inside noise and stick-slip.
+    if (progress.jacobian * taken).norm() < calibration::judging_floor(&self.config.sensor, &solver_config) {
+      // Too small to judge: inside noise and stick-slip.
       return Ok(Verdict::Continue);
     }
     let dm = after.vector - before.vector;
     let unresponsive = if solver::prediction_mismatch(&progress.jacobian, taken, &dm, &solver_config) {
-      solver::unresponsive_axis(&progress.jacobian, taken, &dm, noise_floor, &solver_config)
+      let change_sigma = calibration::change_sigma(&self.config.sensor);
+      solver::unresponsive_axis(&progress.jacobian, taken, &dm, change_sigma, &solver_config)
     } else {
       None
     };
@@ -536,7 +533,7 @@ impl<A: Actuator, S: BeamSensor> Aligner<A, S> {
   fn looks_suspect(&self, jacobian: &Jacobian, before: &Measured, after: &Measured, taken: &Vector4<f32>) -> bool {
     before.linear
       && after.linear
-      && (jacobian * taken).norm() >= calibration::noise_floor(&self.config.sensor, &self.config.solver)
+      && (jacobian * taken).norm() >= calibration::judging_floor(&self.config.sensor, &self.config.solver)
       && solver::prediction_mismatch(jacobian, taken, &(after.vector - before.vector), &self.config.solver)
   }
 
@@ -678,7 +675,11 @@ fn check_config(config: &Config, sum_ref: f32) -> Result<(), AlignFault> {
       positive(solver.min_column_sigmas),
       "min_column_sigmas must be a positive number"
     ),
-    (solver.suspect_fault_streak > 0, "suspect_fault_streak must be positive")
+    (solver.suspect_fault_streak > 0, "suspect_fault_streak must be positive"),
+    (
+      positive(solver.judge_noise_sigmas),
+      "judge_noise_sigmas must be a positive number"
+    )
   ];
   match checks.into_iter().find(|(ok, _)| !ok) {
     Some((_, what)) => Err(AlignFault::Config(what)),
