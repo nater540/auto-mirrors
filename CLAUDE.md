@@ -115,8 +115,9 @@ One Cargo workspace, edition 2024, Rust 1.96.0 pinned. Dependencies and lints ar
 - `crates/align-core`: `no_std`, no HAL. Config, unit conversions, quadrant math, the measurement vector, the
   solver, the `Actuator` and `BeamSensor` traits, the approach planner and soft limits, calibration, and the
   `Aligner` procedure. Later: the coordinator state machine (a pure function of state and event).
-- `crates/align-proto`: `no_std`. The raw frame and identifier layout (`frame`), the ten messages and their
-  encoding through `Envelope` (`message`), and the node-side check that runs a resent MOVE_REL once (`dedup`).
+- `crates/align-proto`: `no_std`. The identifier layout (`frame`), the ten messages and their encoding through
+  `Envelope` (`message`), and the node-side check that runs a resent MOVE_REL once (`dedup`). Frames are the
+  `embedded_can::Frame` trait, so firmware passes its esp-hal TWAI frames in directly.
 - `crates/align-sim`: `std`. The model of the machine (`world`), the model behind the two traits (`rig`), the
   closed-loop tests (`tests/closed_loop.rs`), and the `align-sim` command-line runner. Every machine number in it
   is an UNVERIFIED placeholder and a scenario parameter, never configuration.
@@ -232,8 +233,12 @@ logic is in `scripts/board.sh`.
 - The esp-hal family is pinned with `=` and moves together; see `docs/VERSIONS.md` for the upgrade procedure. **Do
   not trust esp-hal, esp-rtos, or Embassy API shapes from memory or from the snippets in the reference.** Read the
   pinned source under `~/.cargo/registry` and the changelog first.
-- Prefer a well-maintained crate to hand-written infrastructure, and avoid crates that have been dormant for over a year. Do not add one for something that is a few correct lines.
-- Turn off default features and enable only what is used; put a comment above a dependency saying why it is there when that is not obvious.
+- **Search for an existing crate before writing a type or helper by hand** (crates.io, `cargo info`, and what the
+  pinned esp-hal family already pulls in), and say what was found. Prefer a well-maintained crate to hand-written
+  infrastructure, and avoid crates that have been dormant for over a year (a stable trait crate in an active
+  repository, such as `embedded-can`, is the exception). Do not add one for something that is a few correct lines.
+- Turn off default features and enable only what is used; put a comment above a dependency saying why it is there
+  when that is not obvious.
 - No `alloc` in the `crates/` libraries that firmware uses. `just check-no-std` proves it.
 - `Cargo.lock` is committed.
 
