@@ -278,7 +278,7 @@ mutants-diff base="HEAD":
     git diff --no-ext-diff {{ base }} > target/mutants.diff
     {{ mutants_env }} cargo mutants --output target --in-diff target/mutants.diff
 
-# Format, clippy, host tests, and the no_std build at every commit after `base`: `just check-commits main`
+# Format, clippy, host tests, and the no_std build at every commit after `base`, each by that commit's own justfile
 [group('quality')]
 check-commits base:
     #!/usr/bin/env bash
@@ -293,12 +293,11 @@ check-commits base:
     for commit in $(git rev-list --reverse "{{ base }}..HEAD"); do
       git -C "$tree" checkout --quiet "$commit"
       result="ok"
+      # Each commit is checked by its own justfile: the crate lists and the formatter change between commits.
       (
         cd "$tree" || exit 1
-        cargo +nightly fmt --all --check \
-          && cargo clippy --quiet --all-targets -- -D warnings \
-          && cargo test --quiet \
-          && cargo build --quiet {{ no_std_crates }} --target {{ target }}
+        # Separate calls: `test` takes an optional crate name and would swallow a recipe name after it.
+        just fmt-check && just clippy && just test && just check-no-std
       ) >"$CARGO_TARGET_DIR.log" 2>&1 || result="FAILED"
       printf '%-7s %s\n' "$result" "$(git log -1 --format='%h %s' "$commit")"
       if [ "$result" = "FAILED" ]; then
