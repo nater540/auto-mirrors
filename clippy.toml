@@ -6,5 +6,6 @@ allow-unwrap-in-tests = true
 allow-expect-in-tests = true
 allow-dbg-in-tests = true
 
-# Proper nouns that `doc_markdown` would otherwise want in backticks; ".." keeps clippy's built-in list.
-doc-valid-idents = ["ESP32", "ULN2003", "FootSW", "LightBurn", ".."]
+# Proper nouns and CAN message names (reference 5.4) that `doc_markdown` would otherwise want in backticks; ".."
+# keeps clippy's built-in list.
+doc-valid-idents = ["ESP32", "ULN2003", "FootSW", "LightBurn", "MOVE_REL", "MOVE_DONE", ".."]
