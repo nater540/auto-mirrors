@@ -7,8 +7,9 @@ Four 28BYJ-48 steppers turn adjuster screws (two per mirror), a quadrant beam se
 position over CAN, and an ESP32-C6 coordinator computes corrections with an empirical Jacobian and damped least
 squares. The Ruida RDC6445G keeps full control of gantry motion and laser firing: this system never fires the laser.
 
-Hardware is still being designed. The work so far is host-testable logic. A bare ESP32-C6 development board (no
-motors, relay, or bus attached) runs the M0 scaffold images; the owner allowed Claude to flash it on 2026-11-15.
+Hardware is still being designed. The work so far is host-testable logic. The development board on the bench is an
+Adafruit Feather ESP32-C6 (no relay or bus attached); the owner allowed Claude to flash it on 2026-11-15.
+It is not an Espressif DevKitC-1: GPIO 10, 11, and 20 are not on its headers, and 18 to 20 serve its I2C port.
 
 ## Read first
 
@@ -172,8 +173,10 @@ Reference 5.4 and addendum A.8 leave these open; `align-proto` decides them, and
   The record carries its direction sign (format 2) and is written suspect before every move. A silent or restarted
   coordinator is forgotten (inhibited, moves forgotten). An ESTOP latches until INHIBIT 0; bench moves need no
   coordinator on the bus. The TIMG1 watchdog resets the node after 1 s without feeding, so a panic cannot hold a coil.
-- **On the development board, TWAI runs on GPIO 22 alone** in self-test mode (TX and RX looped back through the
+- **On the development board, TWAI runs on GPIO 23 alone** in self-test mode (TX and RX looped back through the
   pin), so frames go out without a transceiver or a second node.
+- **The Feather has clean header pins for one motor channel only** (GPIO 3, 2, 21, 22 for IN1 to IN4); channel 1 is
+  unpopulated there (`board::CHANNELS`). Two channels on one board wait for the node board.
 
 ## What the coordinator settled (M5)
 
@@ -235,11 +238,12 @@ One Cargo workspace, edition 2024, Rust 1.96.0 pinned. Dependencies and lints ar
 - `crates/node-logic`: `no_std`. The motor node as a state machine (`node`, behind the `NodeIo` trait), its flash
   record layout (`record`), and the bench console commands (`console`). All host-tested.
 - `firmware/node` (`align-node`): wires `node-logic` to TWAI, the steppers, the arm pulse, the permit and rail
-  inputs, flash, and the USB console. Every pin is in `src/board.rs`, PROVISIONAL for a bare development board.
+  inputs, flash, and the USB console. Every pin is in `src/board.rs`, PROVISIONAL for an Adafruit Feather ESP32-C6.
 - `crates/sensor-logic`: `no_std`. The sensor node as a state machine (`node`, behind `SensorIo`, readings through
   the `ShotMethod` trait), the five bench buttons (`buttons`: debounce, chords, positions), and its console.
 - `firmware/sensor` (`align-sensor`): wires `sensor-logic` to TWAI, five button inputs, and the USB console. Drives
-  no output pin and writes no flash. Pins in `src/board.rs`, PROVISIONAL for a development board of its own.
+  no output pin and writes no flash. Pins in `src/board.rs`, PROVISIONAL for a development board of its own; they
+  assume a DevKitC-1 (GPIO 10 and 20 are not on a Feather's headers) and need a new table for the board it gets.
 - `crates/coordinator-logic`: `no_std`. The coordinator's bus side, turning traffic into the state machine's events:
   so far the watch over the nodes (`nodes`: present, lost, restarted, or another protocol version, judged from
   heartbeats the way the nodes judge the coordinator), and the sensor's readings paired with a job's shots

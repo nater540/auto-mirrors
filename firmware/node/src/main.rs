@@ -85,6 +85,8 @@ static PENDING_RECORDS: Mutex<Raw, RefCell<[Option<AxisRecord>; MAX_CHANNELS]>> 
 static RECORD_PENDING: Signal<Raw, ()> = Signal::new();
 static STOP: AtomicBool = AtomicBool::new(false);
 static RAIL_OK: AtomicBool = AtomicBool::new(false);
+/// The permit input as last sampled, for the console's `status`; the node keeps its own copy.
+static PERMIT: AtomicBool = AtomicBool::new(false);
 static MOVE_FINISHED: Signal<Raw, MoveOutcome> = Signal::new();
 
 /// The firmware side of [`NodeIo`]: queues and flags the tasks serve.
@@ -218,8 +220,7 @@ async fn main(spawner: Spawner) -> ! {
   // Outputs first, all low: no coil and no arm pulse before anything else runs.
   let pins = board_pins!(peripherals);
   let low = |pin| Output::new(pin, Level::Low, OutputConfig::default());
-  let [c0, c1, c2, c3] = pins.channel_0.map(low);
-  let [d0, d1, d2, d3] = pins.channel_1.map(low);
+  let coils = pins.channels.map(|channel| channel.map(low));
   let arm = low(pins.arm);
   let pulled_down = InputConfig::default().with_pull(Pull::Down);
   let permit = Input::new(pins.permit, pulled_down);
@@ -236,16 +237,15 @@ async fn main(spawner: Spawner) -> ! {
     Some(Restored::Valid(record)) => record.phase,
     _ => Phase::ZERO
   };
-  let steppers = [
-    Stepper::new(
-      Coils::new([c0, c1, c2, c3]).unwrap_or_else(|never| match never.0 {}),
-      phase(0)
-    ),
-    Stepper::new(
-      Coils::new([d0, d1, d2, d3]).unwrap_or_else(|never| match never.0 {}),
-      phase(1)
-    )
-  ];
+  let mut channel = 0_usize;
+  let steppers = coils.map(|coils| {
+    let stepper = Stepper::new(
+      Coils::new(coils).unwrap_or_else(|never| match never.0 {}),
+      phase(channel)
+    );
+    channel = channel.saturating_add(1);
+    stepper
+  });
 
   let mut node = Node::new(NodeSetup {
     id: board::NODE_ID,
@@ -371,9 +371,11 @@ async fn inputs(permit: Input<'static>, rail: Input<'static>, mut watchdog: Wdt<
     watchdog.feed();
     let rail_ok = rail.is_high();
     RAIL_OK.store(rail_ok, Ordering::Release);
+    let permit_present = permit.is_high();
+    PERMIT.store(permit_present, Ordering::Release);
     let now = now_ms();
     with_node(|node, io| {
-      node.set_permit(permit.is_high(), io);
+      node.set_permit(permit_present, io);
       node.set_rail_ok(rail_ok);
       node.tick(now, io);
     });
@@ -446,7 +448,7 @@ async fn can(mut twai: Twai<'static, Async>) {
 }
 
 #[embassy_executor::task]
-async fn actuator(mut steppers: [Stepper<Coil>; 2], mut records: Records, rail_up_timeout_ms: u32) {
+async fn actuator(mut steppers: [Stepper<Coil>; board::CHANNELS], mut records: Records, rail_up_timeout_ms: u32) {
   loop {
     // Records first: they are written only here, between moves.
     while let Some((channel, record)) = take_pending_record() {
@@ -595,7 +597,12 @@ async fn execute(text: &str, rx: &mut UsbSerialJtagRx<'static, Async>) {
     }
     Ok(Command::Status) => {
       with_node(|node, _| {
-        info!("state {:?}, rail {}", node.state(), RAIL_OK.load(Ordering::Acquire));
+        info!(
+          "state {:?}, permit {}, rail {}",
+          node.state(),
+          PERMIT.load(Ordering::Acquire),
+          RAIL_OK.load(Ordering::Acquire)
+        );
         for channel in (0..board::POPULATED_CHANNELS).filter_map(Channel::new) {
           if let Some(axis) = node.axis(channel) {
             info!("channel {}: {:?}", channel.get(), axis);
