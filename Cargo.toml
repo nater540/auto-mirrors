@@ -26,6 +26,10 @@ align-core = { path = "crates/align-core" }
 nalgebra = { version = "=0.35.0", default-features = false, features = ["libm"] }
 libm = "0.2.16"
 thiserror = { version = "2.0.21", default-features = false }
+# The CAN frame trait and 11-bit identifier type that the esp-hal TWAI driver implements (esp-hal already depends on
+# it). Its last release is from 2022: it is a stable trait crate maintained in the active embedded-hal repository.
+embedded-can = "0.4.1"
+bitflags = { version = "2.13.2", default-features = false }
 proptest = { version = "1.12", default-features = false, features = ["std"] }
 
 # Simulator only (host). `rand` draws the sensor noise and the skipped steps from a seed, so that a run repeats.

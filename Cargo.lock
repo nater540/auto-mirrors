@@ -53,6 +53,8 @@ dependencies = [
 name = "align-proto"
 version = "0.1.0"
 dependencies = [
+ "bitflags",
+ "embedded-can",
  "proptest",
  "thiserror",
 ]

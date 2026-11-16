@@ -1,88 +1,17 @@
-//! The raw CAN frame and the 11-bit identifier layout.
+//! The 11-bit identifier layout: message class, node address, and channel.
 //!
 //! Reference 5.4: `[10:7] class | [6:3] node_id | [2:0] axis`. A lower identifier wins arbitration, so the class
 //! sets the priority: an emergency stop (class 0) beats everything else on the bus.
 //!
-//! Only standard (11-bit) data frames carry this protocol. The firmware drops extended and remote frames before
-//! they reach [`crate::Envelope::decode`]; this crate never sees a HAL frame type.
+//! Frames and identifiers are the `embedded-can` types, which the esp-hal TWAI driver implements, so the firmware
+//! hands its own frames to [`crate::Envelope`] without converting them.
 
-/// The largest payload of a classic CAN frame, in bytes.
-pub const MAX_DATA_LEN: usize = 8;
-
-/// The largest standard (11-bit) identifier.
-pub const MAX_STANDARD_ID: u16 = 0x7FF;
+use embedded_can::StandardId;
 
 const CLASS_SHIFT: u16 = 7;
 const NODE_SHIFT: u16 = 3;
 const NODE_MASK: u16 = 0xF;
 const AXIS_MASK: u16 = 0x7;
-
-/// Why a raw frame could not be built.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
-pub enum FrameError {
-  /// The identifier needs more than 11 bits.
-  #[error("CAN identifier {id:#x} does not fit in 11 bits")]
-  IdOutOfRange {
-    /// The identifier given.
-    id: u16,
-  },
-  /// The payload is longer than a classic CAN frame allows.
-  #[error("CAN payload of {len} bytes is longer than the 8 a classic frame carries")]
-  DataTooLong {
-    /// The payload length given, in bytes.
-    len: usize,
-  },
-}
-
-/// A standard CAN data frame: an 11-bit identifier and up to eight bytes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Frame {
-  id: u16,
-  len: u8,
-  data: [u8; MAX_DATA_LEN],
-}
-
-impl Frame {
-  /// A frame from an identifier and a payload, as the bus delivered them.
-  ///
-  /// # Errors
-  ///
-  /// [`FrameError::IdOutOfRange`] above 11 bits, [`FrameError::DataTooLong`] above eight bytes.
-  pub fn new(id: u16, payload: &[u8]) -> Result<Self, FrameError> {
-    if id > MAX_STANDARD_ID {
-      return Err(FrameError::IdOutOfRange { id });
-    }
-    let len = u8::try_from(payload.len())
-      .ok()
-      .filter(|&len| usize::from(len) <= MAX_DATA_LEN)
-      .ok_or(FrameError::DataTooLong { len: payload.len() })?;
-    let mut data = [0; MAX_DATA_LEN];
-    for (slot, byte) in data.iter_mut().zip(payload) {
-      *slot = *byte;
-    }
-    Ok(Self { id, len, data })
-  }
-
-  /// The 11-bit identifier.
-  pub const fn id(&self) -> u16 {
-    self.id
-  }
-
-  /// A frame the encoder built. The identifier is masked to 11 bits and the length capped at eight, limits the
-  /// encoder never reaches.
-  pub(crate) fn from_encoder(id: u16, data: [u8; MAX_DATA_LEN], len: u8) -> Self {
-    Self {
-      id: id & MAX_STANDARD_ID,
-      len: len.min(8),
-      data,
-    }
-  }
-
-  /// The payload, `len` bytes long (the DLC).
-  pub fn data(&self) -> &[u8] {
-    self.data.get(..usize::from(self.len)).unwrap_or(&[])
-  }
-}
 
 /// A node address, the 4-bit `node_id` field of the identifier.
 ///
@@ -207,16 +136,23 @@ pub struct IdFields {
 }
 
 /// The identifier for a class, a node, and a channel.
-pub const fn compose_id(class: Class, node: NodeId, channel: Channel) -> u16 {
-  ((class as u16) << CLASS_SHIFT) | ((node.0 as u16) << NODE_SHIFT) | channel.0 as u16
+pub const fn compose_id(class: Class, node: NodeId, channel: Channel) -> StandardId {
+  let raw = ((class as u16) << CLASS_SHIFT) | ((node.0 as u16) << NODE_SHIFT) | channel.0 as u16;
+  // The largest class is 0x9, so `raw` is at most 0x4FF and always fits. Were it ever not to, the fallback 0x7FF
+  // names class 0xF, which every receiver rejects as undefined.
+  match StandardId::new(raw) {
+    Some(id) => id,
+    None => StandardId::MAX,
+  }
 }
 
-/// The fields of an 11-bit identifier. Bits above the eleventh are ignored; [`Frame::new`] never stores them.
-pub const fn split_id(id: u16) -> IdFields {
+/// The fields of an 11-bit identifier.
+pub fn split_id(id: StandardId) -> IdFields {
+  let raw = id.as_raw();
   IdFields {
-    class_bits: ((id >> CLASS_SHIFT) & 0xF) as u8,
-    node: NodeId(((id >> NODE_SHIFT) & NODE_MASK) as u8),
-    channel: Channel((id & AXIS_MASK) as u8),
+    class_bits: ((raw >> CLASS_SHIFT) & 0xF) as u8,
+    node: NodeId(((raw >> NODE_SHIFT) & NODE_MASK) as u8),
+    channel: Channel((raw & AXIS_MASK) as u8),
   }
 }
 
@@ -229,8 +165,8 @@ mod tests {
   #[test]
   fn the_identifier_packs_class_node_and_axis_as_reference_5_4_lays_them_out() {
     let id = compose_id(Class::MoveRel, NodeId::MIRROR_2, Channel::new(1).unwrap());
-    assert_eq!(id, (0x3 << 7) | (2 << 3) | 1);
-    assert_eq!(id, 0x191);
+    assert_eq!(id.as_raw(), (0x3 << 7) | (2 << 3) | 1);
+    assert_eq!(id.as_raw(), 0x191);
   }
 
   #[test]
@@ -238,7 +174,7 @@ mod tests {
     let estop = compose_id(Class::Estop, NodeId::new(15).unwrap(), Channel::new(7).unwrap());
     for bits in 1..=9 {
       let class = Class::from_bits(bits).unwrap();
-      assert!(estop < compose_id(class, NodeId::COORDINATOR, Channel::new(0).unwrap()));
+      assert!(estop < compose_id(class, NodeId::COORDINATOR, Channel::ZERO));
     }
   }
 
@@ -265,25 +201,6 @@ mod tests {
     assert_eq!(Channel::new(8), None);
   }
 
-  #[test]
-  fn a_frame_rejects_an_identifier_above_11_bits() {
-    assert_eq!(Frame::new(0x800, &[]), Err(FrameError::IdOutOfRange { id: 0x800 }));
-    assert!(Frame::new(0x7FF, &[]).is_ok());
-  }
-
-  #[test]
-  fn a_frame_rejects_a_payload_above_eight_bytes() {
-    assert_eq!(Frame::new(0, &[0; 9]), Err(FrameError::DataTooLong { len: 9 }));
-    assert_eq!(Frame::new(0, &[0; 300]), Err(FrameError::DataTooLong { len: 300 }));
-  }
-
-  #[test]
-  fn a_frame_returns_exactly_the_payload_it_was_given() {
-    let frame = Frame::new(0x123, &[1, 2, 3]).unwrap();
-    assert_eq!(frame.id(), 0x123);
-    assert_eq!(frame.data(), &[1, 2, 3]);
-  }
-
   proptest! {
     #[test]
     fn splitting_an_identifier_recovers_its_fields(class in 0_u8..=9, node in 0_u8..=15, channel in 0_u8..=7) {
@@ -292,16 +209,6 @@ mod tests {
       let channel = Channel::new(channel).unwrap();
       let fields = split_id(compose_id(class, node, channel));
       prop_assert_eq!(fields, IdFields { class_bits: class as u8, node, channel });
-    }
-
-    #[test]
-    fn every_composed_identifier_fits_in_11_bits(class in 0_u8..=9, node in 0_u8..=15, channel in 0_u8..=7) {
-      let id = compose_id(
-        Class::from_bits(class).unwrap(),
-        NodeId::new(node).unwrap(),
-        Channel::new(channel).unwrap(),
-      );
-      prop_assert!(id <= MAX_STANDARD_ID);
     }
   }
 }

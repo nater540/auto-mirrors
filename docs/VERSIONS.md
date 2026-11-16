@@ -38,6 +38,8 @@ change.
 | nalgebra | =0.35.0 | `libm`, no default features | Fixed-size `Matrix4<f32>`, Cholesky, SVD. Minimum Rust 1.89. |
 | libm | 0.2.16 | | Float functions `core` lacks (rounding). |
 | thiserror | 2.0.21 | no default features | Fault enums; works without `std`. |
+| embedded-can | 0.4.1 | | `align-proto`: the `Frame` trait and `StandardId`, which the esp-hal 1.2.2 TWAI frame implements (`EspTwaiFrame`), so firmware frames go straight into the decoder. Released 2022-09-28, past the one-year dormancy rule; kept because it is a stable trait crate in the active rust-embedded/embedded-hal repository and esp-hal already depends on it. Checked 2026-11-15. |
+| bitflags | 2.13.2 | no default features | `align-proto`: the STATUS flag byte. Released 2026-09-10; already in the tree. Checked 2026-11-15. |
 | proptest | 1.12 | `std`, no default features | Property tests, host only. |
 | rand | 0.10.4 | | Simulator only: seeded sensor noise and skipped steps. In 0.10 the convenience methods are on `RngExt`, not `Rng`. |
 | rand_distr | 0.6.0 | | Simulator only: the standard normal distribution. |
@@ -52,7 +54,6 @@ These were looked up so that later milestones start from current facts. Check th
 |---|---|---|
 | embassy-sync | 0.8.0 | M4: channels, `Signal`, `Watch` (all three modules exist in 0.8.0) |
 | embedded-hal | 1.0.0 | M4: `OutputPin` for the stepper driver |
-| embedded-can | 0.4.1 | M4: frame types (already in the tree through esp-hal) |
 | esp-storage | 0.10.0 | M4: flash persistence |
 | sequential-storage | 8.0.2 | M4: persistence map (the reference names it; `ekv` 1.0.0 is the alternative) |
 

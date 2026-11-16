@@ -6,7 +6,9 @@
 //! layout can use them. Fields whose meaning the documents leave open (stop and estop reasons, the inhibit source,
 //! the heartbeat state, the sensor kind) travel as raw bytes until the milestone that gives them meaning.
 
-use crate::frame::{Channel, Class, Frame, NodeId, compose_id, split_id};
+use embedded_can::{Frame, Id};
+
+use crate::frame::{Channel, Class, NodeId, compose_id, split_id};
 
 /// A fault code in a FAULT message. The documents define only the two codes addendum A.8 adds; any other value
 /// is carried through unchanged so that the coordinator can still report it.
@@ -72,37 +74,26 @@ pub struct MoveDone {
   pub pos_steps: i32,
 }
 
-/// The flag byte of a STATUS message, with the meanings of addendum A.8.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub struct StatusFlags(pub u8);
-
-impl StatusFlags {
-  /// Bit 0: a move is running.
-  pub const MOVING: Self = Self(0b0000_0001);
-  /// Bit 1: the last move reached its target.
-  pub const AT_TARGET: Self = Self(0b0000_0010);
-  /// Bit 2: the position is not trusted (addendum A.8; was `stalled`).
-  pub const SUSPECT: Self = Self(0b0000_0100);
-  /// Bit 3: the switched motor rail is up (addendum A.8; was `nfault`).
-  pub const RAIL_OK: Self = Self(0b0000_1000);
-  /// Bit 4: the position is at a soft limit.
-  pub const SOFT_LIMIT: Self = Self(0b0001_0000);
-  /// Bit 5: motion is inhibited.
-  pub const INHIBITED: Self = Self(0b0010_0000);
-  /// Bit 6: the position is saved to flash.
-  pub const PERSISTED: Self = Self(0b0100_0000);
-  /// Bit 7: the arm pulse is running.
-  pub const ARMED: Self = Self(0b1000_0000);
-
-  /// Every flag in `other` is set here.
-  pub const fn contains(self, other: Self) -> bool {
-    self.0 & other.0 == other.0
-  }
-
-  /// These flags with every flag in `other` set as well.
-  #[must_use]
-  pub const fn with(self, other: Self) -> Self {
-    Self(self.0 | other.0)
+bitflags::bitflags! {
+  /// The flag byte of a STATUS message, with the meanings of addendum A.8. All eight bits are defined.
+  #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+  pub struct StatusFlags: u8 {
+    /// Bit 0: a move is running.
+    const MOVING = 0b0000_0001;
+    /// Bit 1: the last move reached its target.
+    const AT_TARGET = 0b0000_0010;
+    /// Bit 2: the position is not trusted (addendum A.8; was `stalled`).
+    const SUSPECT = 0b0000_0100;
+    /// Bit 3: the switched motor rail is up (addendum A.8; was `nfault`).
+    const RAIL_OK = 0b0000_1000;
+    /// Bit 4: the position is at a soft limit.
+    const SOFT_LIMIT = 0b0001_0000;
+    /// Bit 5: motion is inhibited.
+    const INHIBITED = 0b0010_0000;
+    /// Bit 6: the position is saved to flash.
+    const PERSISTED = 0b0100_0000;
+    /// Bit 7: the arm pulse is running.
+    const ARMED = 0b1000_0000;
   }
 }
 
@@ -250,9 +241,33 @@ impl Message {
   }
 }
 
+/// Why a message could not be put in a frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum EncodeError {
+  /// The frame type refused the identifier and payload. Every payload here is at most eight bytes, so a CAN 2.0
+  /// frame type never does this; a frame type with tighter limits might.
+  #[error("the frame type refused a {class:?} frame")]
+  FrameRejected {
+    /// The class of the message.
+    class: Class,
+  },
+}
+
 /// Why a frame is not a valid message.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum DecodeError {
+  /// The frame has a 29-bit identifier. This protocol uses standard 11-bit identifiers only.
+  #[error("CAN frame has the extended identifier {raw:#x}; the protocol uses 11-bit identifiers only")]
+  ExtendedId {
+    /// The 29-bit identifier.
+    raw: u32,
+  },
+  /// The frame is a remote (RTR) frame, which carries no data. The protocol does not use them.
+  #[error("CAN frame {raw:#x} is a remote frame; the protocol uses data frames only")]
+  RemoteFrame {
+    /// The 11-bit identifier.
+    raw: u16,
+  },
   /// The identifier names a class above 0x9.
   #[error("CAN identifier names class {class_bits:#x}, which is not defined")]
   UnknownClass {
@@ -325,10 +340,15 @@ pub struct Envelope {
 }
 
 impl Envelope {
-  /// The frame that carries this message. Encoding cannot fail: every field type fits its slot.
-  pub fn encode(&self) -> Frame {
+  /// The frame that carries this message, in any `embedded-can` frame type (the esp-hal TWAI frame in firmware).
+  ///
+  /// # Errors
+  ///
+  /// [`EncodeError::FrameRejected`] if the frame type refuses the frame, which a CAN 2.0 frame type never does.
+  pub fn encode<F: Frame>(&self) -> Result<F, EncodeError> {
+    let class = self.message.class();
     let channel = self.message.channel().unwrap_or(Channel::ZERO);
-    let id = compose_id(self.message.class(), self.node, channel);
+    let id = compose_id(class, self.node, channel);
     let data: [u8; 8] = match self.message {
       Message::Estop { reason } | Message::Stop { reason } => [reason, 0, 0, 0, 0, 0, 0, 0],
       Message::Inhibit { inhibited, source } => [u8::from(inhibited), source, 0, 0, 0, 0, 0, 0],
@@ -363,7 +383,7 @@ impl Envelope {
       }) => {
         let [p0, p1, p2, p3] = pos_steps.to_le_bytes();
         let [c0, c1] = current_ma.to_le_bytes();
-        [channel.get(), flags.0, p0, p1, p2, p3, c0, c1]
+        [channel.get(), flags.bits(), p0, p1, p2, p3, c0, c1]
       }
       Message::Sensor(SensorReading {
         seq,
@@ -390,17 +410,28 @@ impl Envelope {
         [key as u8, channel.get(), 0, 0, v0, v1, v2, v3]
       }
     };
-    Frame::from_encoder(id, data, self.message.class().data_len())
+    data
+      .get(..usize::from(class.data_len()))
+      .and_then(|payload| F::new(id, payload))
+      .ok_or(EncodeError::FrameRejected { class })
   }
 
   /// The message a frame carries.
   ///
   /// # Errors
   ///
-  /// A [`DecodeError`] naming the first thing wrong: an undefined class, a payload of the wrong length, an axis
-  /// byte that disagrees with the identifier, or a byte outside the values its field defines.
-  pub fn decode(frame: &Frame) -> Result<Self, DecodeError> {
-    let fields = split_id(frame.id());
+  /// A [`DecodeError`] naming the first thing wrong: an extended identifier or a remote frame, an undefined class,
+  /// a payload of the wrong length, an axis byte that disagrees with the identifier, or a byte outside the values
+  /// its field defines.
+  pub fn decode<F: Frame>(frame: &F) -> Result<Self, DecodeError> {
+    let id = match frame.id() {
+      Id::Standard(id) => id,
+      Id::Extended(id) => return Err(DecodeError::ExtendedId { raw: id.as_raw() }),
+    };
+    if frame.is_remote_frame() {
+      return Err(DecodeError::RemoteFrame { raw: id.as_raw() });
+    }
+    let fields = split_id(id);
     let class = Class::from_bits(fields.class_bits).ok_or(DecodeError::UnknownClass {
       class_bits: fields.class_bits,
     })?;
@@ -461,7 +492,7 @@ impl Envelope {
       }),
       (Class::Status, &[axis, flags, p0, p1, p2, p3, c0, c1]) => Message::Status(Status {
         channel: channel(axis)?,
-        flags: StatusFlags(flags),
+        flags: StatusFlags::from_bits_retain(flags),
         pos_steps: i32::from_le_bytes([p0, p1, p2, p3]),
         current_ma: u16::from_le_bytes([c0, c1]),
       }),
@@ -504,13 +535,18 @@ mod tests {
   use proptest::prelude::*;
 
   use super::*;
+  use crate::test_frame::TestFrame;
 
   fn ch(value: u8) -> Channel {
     Channel::new(value).unwrap()
   }
 
-  fn frame(id: u16, payload: &[u8]) -> Frame {
-    Frame::new(id, payload).unwrap()
+  fn frame(id: u16, payload: &[u8]) -> TestFrame {
+    TestFrame::standard(id, payload)
+  }
+
+  fn encode(envelope: Envelope) -> TestFrame {
+    envelope.encode::<TestFrame>().unwrap()
   }
 
   fn decode(id: u16, payload: &[u8]) -> Result<Envelope, DecodeError> {
@@ -527,40 +563,37 @@ mod tests {
       delta_steps,
       finish_plus: true,
     };
-    let encoded = Envelope {
+    let encoded = encode(Envelope {
       node: NodeId::MIRROR_1,
       message: Message::MoveRel(move_rel),
-    }
-    .encode();
+    });
     let d = delta_steps.to_le_bytes();
     assert_eq!(encoded.data(), &[9, 1, d[0], d[1], d[2], d[3], 1]);
-    assert_eq!(encoded.id(), (0x3 << 7) | (1 << 3) | 1);
+    assert_eq!(encoded.raw_id(), (0x3 << 7) | (1 << 3) | 1);
   }
 
   #[test]
   fn multi_byte_fields_are_little_endian() {
     let status = Status {
       channel: ch(0),
-      flags: StatusFlags(0),
+      flags: StatusFlags::empty(),
       pos_steps: 0x0403_0201,
       current_ma: 0x0605,
     };
-    let encoded = Envelope {
+    let encoded = encode(Envelope {
       node: NodeId::MIRROR_2,
       message: Message::Status(status),
-    }
-    .encode();
+    });
     assert_eq!(encoded.data(), &[0, 0, 1, 2, 3, 4, 5, 6]);
   }
 
   #[test]
   fn every_encoded_payload_has_the_length_its_class_names() {
     for message in examples() {
-      let encoded = Envelope {
+      let encoded = encode(Envelope {
         node: NodeId::MIRROR_1,
         message,
-      }
-      .encode();
+      });
       assert_eq!(
         encoded.data().len(),
         usize::from(message.class().data_len()),
@@ -576,28 +609,22 @@ mod tests {
         node: NodeId::SENSOR,
         message,
       };
-      assert_eq!(Envelope::decode(&envelope.encode()), Ok(envelope));
+      assert_eq!(Envelope::decode(&encode(envelope)), Ok(envelope));
     }
   }
 
   #[test]
   fn the_status_flags_have_the_bit_meanings_of_addendum_a_8() {
-    assert_eq!(StatusFlags::MOVING.0, 0b0000_0001);
-    assert_eq!(StatusFlags::AT_TARGET.0, 0b0000_0010);
-    assert_eq!(StatusFlags::SUSPECT.0, 0b0000_0100);
-    assert_eq!(StatusFlags::RAIL_OK.0, 0b0000_1000);
-    assert_eq!(StatusFlags::SOFT_LIMIT.0, 0b0001_0000);
-    assert_eq!(StatusFlags::INHIBITED.0, 0b0010_0000);
-    assert_eq!(StatusFlags::PERSISTED.0, 0b0100_0000);
-    assert_eq!(StatusFlags::ARMED.0, 0b1000_0000);
-    let flags = StatusFlags::default()
-      .with(StatusFlags::RAIL_OK)
-      .with(StatusFlags::ARMED);
-    assert!(flags.contains(StatusFlags::RAIL_OK));
-    assert!(!flags.contains(StatusFlags::MOVING));
-    assert!(!flags.contains(StatusFlags::RAIL_OK.with(StatusFlags::MOVING)));
-    // Setting a flag that is already set leaves it set.
-    assert_eq!(flags.with(StatusFlags::RAIL_OK), flags);
+    assert_eq!(StatusFlags::MOVING.bits(), 0b0000_0001);
+    assert_eq!(StatusFlags::AT_TARGET.bits(), 0b0000_0010);
+    assert_eq!(StatusFlags::SUSPECT.bits(), 0b0000_0100);
+    assert_eq!(StatusFlags::RAIL_OK.bits(), 0b0000_1000);
+    assert_eq!(StatusFlags::SOFT_LIMIT.bits(), 0b0001_0000);
+    assert_eq!(StatusFlags::INHIBITED.bits(), 0b0010_0000);
+    assert_eq!(StatusFlags::PERSISTED.bits(), 0b0100_0000);
+    assert_eq!(StatusFlags::ARMED.bits(), 0b1000_0000);
+    // Every bit is defined, so no received flag byte loses a bit.
+    assert_eq!(StatusFlags::all().bits(), 0xFF);
   }
 
   #[test]
@@ -622,6 +649,57 @@ mod tests {
     assert_eq!(keys.map(|k| k as u8), [1, 2, 3, 4, 5]);
     assert_eq!(FaultCode::AXIS_NOT_RESPONDING.0, 0x10);
     assert_eq!(FaultCode::RAIL_LOST_DURING_MOVE.0, 0x11);
+  }
+
+  #[test]
+  fn a_frame_with_an_extended_identifier_is_rejected() {
+    let id = embedded_can::ExtendedId::new(0x180).unwrap();
+    let extended = TestFrame::new(id, &[0; 7]).unwrap();
+    assert_eq!(Envelope::decode(&extended), Err(DecodeError::ExtendedId { raw: 0x180 }));
+  }
+
+  #[test]
+  fn a_remote_frame_is_rejected() {
+    let id = embedded_can::StandardId::new(0x180).unwrap();
+    let remote = TestFrame::new_remote(id, 7).unwrap();
+    assert_eq!(Envelope::decode(&remote), Err(DecodeError::RemoteFrame { raw: 0x180 }));
+  }
+
+  #[test]
+  fn a_frame_type_that_refuses_the_frame_is_an_encode_error() {
+    /// A frame type that refuses everything, as one with tighter limits than CAN 2.0 might.
+    struct Refusing;
+    impl Frame for Refusing {
+      fn new(_: impl Into<Id>, _: &[u8]) -> Option<Self> {
+        None
+      }
+      fn new_remote(_: impl Into<Id>, _: usize) -> Option<Self> {
+        None
+      }
+      fn is_extended(&self) -> bool {
+        false
+      }
+      fn is_remote_frame(&self) -> bool {
+        false
+      }
+      fn id(&self) -> Id {
+        Id::Standard(embedded_can::StandardId::ZERO)
+      }
+      fn dlc(&self) -> usize {
+        0
+      }
+      fn data(&self) -> &[u8] {
+        &[]
+      }
+    }
+    let envelope = Envelope {
+      node: NodeId::MIRROR_1,
+      message: Message::Stop { reason: 0 },
+    };
+    assert!(matches!(
+      envelope.encode::<Refusing>(),
+      Err(EncodeError::FrameRejected { class: Class::Stop })
+    ));
   }
 
   #[test]
@@ -732,16 +810,15 @@ mod tests {
       result: MoveResult::Done,
       pos_steps: 7,
     };
-    let encoded = Envelope {
+    let encoded = encode(Envelope {
       node: NodeId::MIRROR_1,
       message: Message::MoveDone(done),
-    }
-    .encode();
+    });
     assert_eq!(encoded.data().get(3), Some(&0));
     let mut with_pad = [0_u8; 8];
     with_pad.copy_from_slice(encoded.data());
     with_pad[3] = 0xAA;
-    let decoded = Envelope::decode(&frame(encoded.id(), &with_pad)).unwrap();
+    let decoded = Envelope::decode(&frame(encoded.raw_id(), &with_pad)).unwrap();
     assert_eq!(decoded.message, Message::MoveDone(done));
   }
 
@@ -785,7 +862,7 @@ mod tests {
       }),
       Message::Status(Status {
         channel: ch(0),
-        flags: StatusFlags::SUSPECT.with(StatusFlags::RAIL_OK),
+        flags: StatusFlags::SUSPECT | StatusFlags::RAIL_OK,
         pos_steps: i32::MAX,
         current_ma: 0,
       }),
@@ -855,7 +932,7 @@ mod tests {
       (any_channel(), any::<u8>(), any::<i32>(), any::<u16>()).prop_map(|(channel, flags, pos_steps, current_ma)| {
         Message::Status(Status {
           channel,
-          flags: StatusFlags(flags),
+          flags: StatusFlags::from_bits_retain(flags),
           pos_steps,
           current_ma,
         })
@@ -884,7 +961,7 @@ mod tests {
     #[test]
     fn every_message_survives_a_round_trip(node in 0_u8..=NodeId::MAX, message in any_message()) {
       let envelope = Envelope { node: NodeId::new(node).unwrap(), message };
-      prop_assert_eq!(Envelope::decode(&envelope.encode()), Ok(envelope));
+      prop_assert_eq!(Envelope::decode(&encode(envelope)), Ok(envelope));
     }
 
     #[test]
@@ -894,8 +971,8 @@ mod tests {
       // Decoding never panics, whatever the bus delivers; and what it accepts it reproduces.
       let received = frame(id, &payload);
       if let Ok(envelope) = Envelope::decode(&received) {
-        let sent = envelope.encode();
-        prop_assert_eq!(sent.id(), received.id());
+        let sent = encode(envelope);
+        prop_assert_eq!(sent.raw_id(), received.raw_id());
         prop_assert_eq!(sent.data().len(), received.data().len());
         prop_assert_eq!(Envelope::decode(&sent), Ok(envelope));
       }

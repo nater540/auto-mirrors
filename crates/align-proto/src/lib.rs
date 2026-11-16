@@ -3,21 +3,23 @@
 //! The messages come from `docs/REFERENCE.md` section 5.4 with the field changes in `docs/ADDENDUM_A_28BYJ48.md`
 //! section A.8. There is no serde on the wire: every layout is written out by hand, little-endian.
 //!
-//! - [`frame`]: the raw frame, the 11-bit identifier layout, node addresses, and channels.
+//! - [`frame`]: the 11-bit identifier layout, node addresses, and channels.
 //! - [`message`]: the ten messages and their encoding and decoding, through [`Envelope`].
 //! - [`dedup`]: the node-side check that runs a resent MOVE_REL only once.
 //!
-//! The crate is `no_std` without `alloc` and knows no HAL: the firmware converts between [`Frame`] and its TWAI
-//! frame type.
+//! The crate is `no_std` without `alloc` and knows no HAL. Frames are the `embedded-can` [`embedded_can::Frame`]
+//! trait, which the esp-hal TWAI frame implements, so the firmware passes its frames in and gets them back.
 #![no_std]
 
 pub mod dedup;
 pub mod frame;
 pub mod message;
+#[cfg(test)]
+mod test_frame;
 
 pub use dedup::{MoveDecision, MoveRefused, MoveRelTracker};
-pub use frame::{Channel, Class, Frame, FrameError, NodeId};
+pub use frame::{Channel, Class, NodeId};
 pub use message::{
-  ConfigKey, DecodeError, Envelope, FaultCode, Message, MoveDone, MoveRel, MoveResult, SensorReading, Status,
-  StatusFlags,
+  ConfigKey, DecodeError, EncodeError, Envelope, FaultCode, Message, MoveDone, MoveRel, MoveResult, SensorReading,
+  Status, StatusFlags,
 };
