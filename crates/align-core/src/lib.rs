@@ -15,6 +15,7 @@
 //! and ASSUMED. A value that is not VERIFIED or CALCULATED lives in [`config`], never in a literal.
 #![no_std]
 
+pub mod approach;
 pub mod axis;
 pub mod config;
 pub mod measurement;
