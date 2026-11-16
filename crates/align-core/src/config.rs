@@ -266,6 +266,26 @@ impl NodeTiming {
   };
 }
 
+/// The torque margin test a node runs in bench mode (addendum A.6).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TorqueTest {
+  /// FIRM (addendum A.6): each cycle is this many full steps plus, then the same minus.
+  pub amplitude_steps: i32,
+  /// FIRM (addendum A.6): cycles per run.
+  pub cycles: u8,
+  /// FIRM (addendum A.6): the step rates the test is run at, in pulses per second.
+  pub rates_pps: [u32; 3]
+}
+
+impl TorqueTest {
+  /// The procedure of addendum A.6.
+  pub const STARTING: Self = Self {
+    amplitude_steps: 1_000,
+    cycles: 10,
+    rates_pps: [100, 200, 300]
+  };
+}
+
 /// The whole configuration.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Config {
@@ -278,7 +298,9 @@ pub struct Config {
   /// Solver thresholds.
   pub solver: Solver,
   /// Motor node guards and reporting.
-  pub node: NodeTiming
+  pub node: NodeTiming,
+  /// The bench torque margin test.
+  pub torque_test: TorqueTest
 }
 
 impl Config {
@@ -288,7 +310,8 @@ impl Config {
     motion: Motion::STARTING,
     sensor: SensorLimits::STARTING,
     solver: Solver::STARTING,
-    node: NodeTiming::STARTING
+    node: NodeTiming::STARTING,
+    torque_test: TorqueTest::STARTING
   };
 }
 
@@ -330,6 +353,15 @@ mod tests {
     assert_eq!(node.min_step_period_us, 1_000_000 / 500);
     assert!(node.min_step_period_us <= Config::default().motion.step_period_us);
     assert!(Config::default().motion.step_period_us <= node.max_step_period_us);
+  }
+
+  #[test]
+  fn the_torque_test_is_the_addendum_a6_procedure() {
+    let test = Config::default().torque_test;
+    assert_eq!(
+      (test.amplitude_steps, test.cycles, test.rates_pps),
+      (1_000, 10, [100, 200, 300])
+    );
   }
 
   #[test]

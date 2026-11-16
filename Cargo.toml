@@ -5,13 +5,14 @@ members = [
   "crates/align-proto",
   "crates/align-sim",
   "crates/stepper",
+  "crates/node-logic",
   "firmware/node",
   "firmware/coordinator"
 ]
 # The firmware crates build only for riscv32imac-unknown-none-elf. Leaving them out of `default-members` lets a
 # plain `cargo build`, `cargo test`, or `cargo clippy` at the root work on the host crates alone. `--workspace`
 # overrides this and will fail on the host; use the justfile recipes.
-default-members = ["crates/align-core", "crates/align-proto", "crates/align-sim", "crates/stepper"]
+default-members = ["crates/align-core", "crates/align-proto", "crates/align-sim", "crates/stepper", "crates/node-logic"]
 
 [workspace.package]
 version = "0.1.0"
@@ -22,6 +23,9 @@ publish = false
 
 [workspace.dependencies]
 align-core = { path = "crates/align-core" }
+align-proto = { path = "crates/align-proto" }
+stepper = { path = "crates/stepper" }
+node-logic = { path = "crates/node-logic" }
 
 nalgebra = { version = "=0.35.0", default-features = false, features = ["libm"] }
 libm = "0.2.16"

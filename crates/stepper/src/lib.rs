@@ -33,6 +33,9 @@ pub const SEQUENCE: [[bool; 4]; 4] = [
 pub struct Phase(u8);
 
 impl Phase {
+  /// The first row of the table, where a motor that was never moved is assumed to be.
+  pub const ZERO: Self = Self(0);
+
   /// The phase with this index, if it is 0 to 3.
   pub const fn new(index: u8) -> Option<Self> {
     if index < 4 { Some(Self(index)) } else { None }

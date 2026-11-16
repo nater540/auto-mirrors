@@ -1,0 +1,20 @@
+[package]
+name = "node-logic"
+description = "The motor node as a host-tested state machine: commands, guards, moves, position records, bench console"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+align-core.workspace = true
+align-proto.workspace = true
+stepper.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true
