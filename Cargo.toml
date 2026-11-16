@@ -28,6 +28,12 @@ libm = "0.2.16"
 thiserror = { version = "2.0.21", default-features = false }
 proptest = { version = "1.12", default-features = false, features = ["std"] }
 
+# Simulator only (host). `rand` draws the sensor noise and the skipped steps from a seed, so that a run repeats.
+rand = "0.10.4"
+rand_distr = "0.6.0"
+clap = { version = "4.6", features = ["derive"] }
+anyhow = "1.0.104"
+
 # Firmware only. Exact pins: these crates change API between minor releases and must move together. The reasons
 # and the upgrade procedure are in docs/VERSIONS.md.
 esp-hal = { version = "=1.2.2", features = ["esp32c6", "log-04", "unstable"] }
@@ -60,6 +66,8 @@ missing_panics_doc = "deny"
 pedantic = { level = "warn", priority = -1 }
 module_name_repetitions = "allow"
 must_use_candidate = "allow"
+# The pairs this domain is made of differ by one letter by nature: h and v, x and y, near and far legs.
+similar_names = "allow"
 
 # Firmware is always built with `--release` (see the justfile): an unoptimized esp-hal image is too large and too
 # slow. These settings follow the esp-generate 2.0.0 template. They also apply to host release builds, which is

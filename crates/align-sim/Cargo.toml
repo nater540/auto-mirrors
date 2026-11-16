@@ -7,5 +7,22 @@ rust-version.workspace = true
 authors.workspace = true
 publish.workspace = true
 
+[[bin]]
+name = "align-sim"
+path = "src/main.rs"
+
+[dependencies]
+align-core.workspace = true
+nalgebra.workspace = true
+# The error function, for the Gaussian beam on the quadrants. `std` has none.
+libm.workspace = true
+rand.workspace = true
+rand_distr.workspace = true
+clap.workspace = true
+anyhow.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
 [lints]
 workspace = true
