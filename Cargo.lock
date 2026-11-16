@@ -1741,6 +1741,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e1cf6437eb19a8f4a6cc0f7dca544973b0b78843adbfeb3683d1a94a0024a294"
 
 [[package]]
+name = "sensor-logic"
+version = "0.1.0"
+dependencies = [
+ "align-core",
+ "align-proto",
+ "bitflags",
+ "proptest",
+ "thiserror",
+]
+
+[[package]]
 name = "sequential-storage"
 version = "8.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

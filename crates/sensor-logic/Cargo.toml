@@ -1,0 +1,20 @@
+[package]
+name = "sensor-logic"
+description = "The sensor node as a host-tested state machine: SHOT handling, readings, bench buttons, console"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+align-core.workspace = true
+align-proto.workspace = true
+bitflags.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true
