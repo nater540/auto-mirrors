@@ -9,6 +9,7 @@ use align_core::aligner::AlignFault;
 use align_core::axis::{Axis, PerAxis};
 use align_core::config::Config;
 use align_core::solver::Conditioning;
+use align_core::units;
 use align_sim::block_on;
 use align_sim::rig::Rig;
 use align_sim::world::{AxisModel, Beam, Geometry, Record, Scenario};
@@ -52,6 +53,19 @@ struct Imperfections {
   coupling: f64
 }
 
+/// The test frame's optics. Without these options the placeholders apply, unchanged.
+#[derive(Args, Clone, Copy)]
+struct Optics {
+  /// Span of head travel in X, in millimeters
+  #[arg(long, default_value_t = 600.0)]
+  x_span: f64,
+  /// Gaussian 1/e^2 beam radius at the head, in micrometers. When given, the poke size is computed from it
+  /// (reference 3.1, clamped to three times the backlash as addendum A.3 says), and a sweep scales its random
+  /// misalignments and offsets by the radius over the 4 mm placeholder, so that they stay inside the linear range.
+  #[arg(long)]
+  beam_radius: Option<f64>
+}
+
 #[derive(Args)]
 struct RunArgs {
   /// Seed for the noise and the skipped steps
@@ -67,6 +81,8 @@ struct RunArgs {
   #[arg(long, default_value_t = 500.0)]
   y_span: f64,
   #[command(flatten)]
+  optics: Optics,
+  #[command(flatten)]
   imperfections: Imperfections
 }
 
@@ -75,7 +91,7 @@ struct SweepArgs {
   /// Alignments at each Y span
   #[arg(long, default_value_t = 200)]
   runs: u32,
-  /// Y spans to try, in millimeters; the X span stays at 600
+  /// Y spans to try, in millimeters; the X span is `--x-span`
   #[arg(long, num_args = 1.., default_values_t = [500.0, 200.0, 100.0, 60.0, 40.0, 25.0])]
   y_spans: Vec<f64>,
   /// Seed for the misalignments
@@ -85,6 +101,8 @@ struct SweepArgs {
   /// up or down at random, instead of calibrating first
   #[arg(long)]
   jacobian_error: Option<f32>,
+  #[command(flatten)]
+  optics: Optics,
   #[command(flatten)]
   imperfections: Imperfections
 }
@@ -98,14 +116,19 @@ fn main() -> anyhow::Result<()> {
   }
 }
 
-fn scenario(imperfections: Imperfections, y_span_mm: f64, seed: u64) -> Scenario {
+fn scenario(imperfections: Imperfections, optics: Optics, y_span_mm: f64, seed: u64) -> Scenario {
   let placeholder = Geometry::PLACEHOLDER;
+  let beam = Beam {
+    radius_um: optics.beam_radius.unwrap_or(Beam::PLACEHOLDER.radius_um),
+    ..Beam::PLACEHOLDER
+  };
   Scenario {
     geometry: Geometry {
       ly_far_mm: placeholder.ly_near_mm + y_span_mm,
+      lx_far_mm: placeholder.lx_near_mm + optics.x_span,
       ..placeholder
     },
-    beam: Beam::PLACEHOLDER.with_position_noise(imperfections.noise),
+    beam: beam.with_position_noise(imperfections.noise),
     axes: PerAxis::splat(AxisModel {
       backlash_steps: imperfections.backlash,
       stick_steps: imperfections.stick,
@@ -124,7 +147,7 @@ fn run(args: &RunArgs, out: &mut impl Write) -> anyhow::Result<()> {
   let [offset_h, offset_v] = args.offset.as_slice() else {
     anyhow::bail!("--offset takes two values");
   };
-  let mut scenario = scenario(args.imperfections, args.y_span, args.seed);
+  let mut scenario = scenario(args.imperfections, args.optics, args.y_span, args.seed);
   scenario.misalignment_steps = PerAxis {
     m1_h: *m1_h,
     m1_v: *m1_v,
@@ -138,13 +161,17 @@ fn run(args: &RunArgs, out: &mut impl Write) -> anyhow::Result<()> {
     .context("the model Jacobian is singular")?
     .cond;
   writeln!(out, "model Jacobian condition number: {model_cond:.2}")?;
+  let (config, formula) = config_for(args.optics, args.imperfections.backlash);
+  if let Some(formula) = formula {
+    writeln!(out, "poke: {} steps (formula {formula:.1})", config.motion.poke_steps)?;
+  }
   writeln!(
     out,
     "start: true residual {:.4}",
     rig.world().true_shots().measurement().amax()
   )?;
 
-  let mut aligner = rig.aligner(Config::default());
+  let mut aligner = rig.aligner(config);
   let outcome = block_on(aligner.align());
 
   for record in rig.world().log() {
@@ -195,12 +222,22 @@ fn run(args: &RunArgs, out: &mut impl Write) -> anyhow::Result<()> {
 }
 
 fn sweep(args: &SweepArgs, out: &mut impl Write) -> anyhow::Result<()> {
-  let config = Config::default();
+  let (config, formula) = config_for(args.optics, args.imperfections.backlash);
+  let scale = misalignment_scale(args.optics);
   writeln!(
     out,
     "{} runs per row, default config, random misalignment and head offset",
     args.runs
   )?;
+  if let Some(formula) = formula {
+    writeln!(
+      out,
+      "beam radius {:.0} um, X span {:.0} mm: poke {} steps (formula {formula:.1}), misalignment scaled by {scale:.2}",
+      args.optics.beam_radius.unwrap_or_default(),
+      args.optics.x_span,
+      config.motion.poke_steps
+    )?;
+  }
   writeln!(
     out,
     "y_span_mm  model_cond  converged  first_attempt  mean_steps  recalibrated  faults"
@@ -214,17 +251,22 @@ fn sweep(args: &SweepArgs, out: &mut impl Write) -> anyhow::Result<()> {
     let mut model_cond = f32::NAN;
     let mut faults = BTreeMap::new();
     for run in 0..args.runs {
-      let mut scenario = scenario(args.imperfections, y_span_mm, args.seed.wrapping_add(u64::from(run)));
+      let mut scenario = scenario(
+        args.imperfections,
+        args.optics,
+        y_span_mm,
+        args.seed.wrapping_add(u64::from(run))
+      );
       // The same range the closed-loop tests draw from: inside the sensor's linear range at every point.
       scenario.misalignment_steps = PerAxis {
-        m1_h: misalignments.random_range(-35.0..35.0),
-        m1_v: misalignments.random_range(-35.0..35.0),
-        m2_h: misalignments.random_range(-50.0..50.0),
-        m2_v: misalignments.random_range(-50.0..50.0)
+        m1_h: misalignments.random_range(-35.0..35.0) * scale,
+        m1_v: misalignments.random_range(-35.0..35.0) * scale,
+        m2_h: misalignments.random_range(-50.0..50.0) * scale,
+        m2_v: misalignments.random_range(-50.0..50.0) * scale
       };
       scenario.head_offset_um = [
-        misalignments.random_range(-200.0..200.0),
-        misalignments.random_range(-200.0..200.0)
+        misalignments.random_range(-200.0..200.0) * scale,
+        misalignments.random_range(-200.0..200.0) * scale
       ];
       let rig = Rig::new(scenario);
       if let Ok(conditioning) = Conditioning::of(&rig.world().true_jacobian()) {
@@ -272,6 +314,33 @@ fn sweep(args: &SweepArgs, out: &mut impl Write) -> anyhow::Result<()> {
   Ok(())
 }
 
+/// The default configuration, with the poke size computed for the beam when its radius is given: the formula of
+/// reference 3.1 for the configured target signal and one step's beam movement at 1 m, clamped to
+/// `[3 x backlash, poke_max_steps]` as addendum A.3 says. Returns the configuration and the unclamped poke.
+fn config_for(optics: Optics, backlash_steps: u32) -> (Config, Option<f32>) {
+  let mut config = Config::default();
+  let Some(radius_um) = optics.beam_radius else {
+    return (config, None);
+  };
+  #[expect(clippy::cast_possible_truncation, reason = "the alignment code works in f32")]
+  let radius_um = radius_um as f32;
+  let per_step_um = units::beam_displacement_um(&config.mechanics, Axis::M1H, 1.0, 1_000.0);
+  let formula = units::poke_steps(config.motion.poke_target_norm, radius_um, per_step_um);
+  #[expect(clippy::cast_precision_loss, reason = "backlash is a few hundred steps at most")]
+  let clamped = units::clamp_poke_steps(formula, backlash_steps as f32, config.motion.poke_max_steps as f32);
+  #[expect(clippy::cast_possible_truncation, reason = "a poke is a few thousand steps at most")]
+  let poke = clamped.round() as i32;
+  config.motion.poke_steps = poke;
+  (config, Some(formula))
+}
+
+/// How much to scale a sweep's random misalignments and offsets: the beam radius over the 4 mm placeholder.
+fn misalignment_scale(optics: Optics) -> f64 {
+  optics
+    .beam_radius
+    .map_or(1.0, |radius_um| radius_um / Beam::PLACEHOLDER.radius_um)
+}
+
 /// A short name for a fault, for the tally of a sweep.
 fn fault_kind(fault: &AlignFault) -> &'static str {
   match fault {
@@ -286,5 +355,69 @@ fn fault_kind(fault: &AlignFault) -> &'static str {
     AlignFault::Solve(_) => "solver",
     AlignFault::AxisNotResponding { .. } => "axis not responding",
     AlignFault::NotConverged { .. } => "not converged"
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  const NO_BEAM: Optics = Optics {
+    x_span: 600.0,
+    beam_radius: None
+  };
+
+  #[test]
+  fn without_a_beam_radius_the_configuration_and_the_misalignments_are_the_defaults() {
+    let (config, formula) = config_for(NO_BEAM, 20);
+    assert_eq!(config, Config::default());
+    assert_eq!(formula, None);
+    assert!((misalignment_scale(NO_BEAM) - 1.0).abs() < f64::EPSILON);
+  }
+
+  #[test]
+  fn a_small_beam_s_poke_is_raised_to_three_times_the_backlash() {
+    // 0.25 / ((1.596 / 1000) * 14.0) is about 11.2 steps, under 3 x 20.
+    let optics = Optics {
+      x_span: 800.0,
+      beam_radius: Some(1_000.0)
+    };
+    let (config, formula) = config_for(optics, 20);
+    let formula = formula.unwrap();
+    assert!((formula - 11.2).abs() < 0.1, "{formula}");
+    assert_eq!(config.motion.poke_steps, 60);
+    assert!((misalignment_scale(optics) - 0.25).abs() < 1e-12);
+  }
+
+  #[test]
+  fn a_large_beam_s_poke_follows_the_formula() {
+    // Twice the 4 mm placeholder radius: 0.25 / ((1.596 / 8000) * 14.0), about 89.4 steps, above the clamp.
+    let optics = Optics {
+      x_span: 800.0,
+      beam_radius: Some(8_000.0)
+    };
+    let (config, formula) = config_for(optics, 20);
+    assert!((formula.unwrap() - 89.4).abs() < 0.1);
+    assert_eq!(config.motion.poke_steps, 89);
+  }
+
+  #[test]
+  fn the_scenario_uses_the_x_span_and_the_beam_radius() {
+    let optics = Optics {
+      x_span: 800.0,
+      beam_radius: Some(1_500.0)
+    };
+    let imperfections = Imperfections {
+      backlash: 20,
+      stick: 3,
+      skip: 0.0,
+      noise: 0.0,
+      coupling: 0.0
+    };
+    let scenario = scenario(imperfections, optics, 600.0, 1);
+    let geometry = scenario.geometry;
+    assert!((geometry.lx_far_mm - geometry.lx_near_mm - 800.0).abs() < 1e-9);
+    assert!((geometry.ly_far_mm - geometry.ly_near_mm - 600.0).abs() < 1e-9);
+    assert!((scenario.beam.radius_um - 1_500.0).abs() < 1e-9);
   }
 }
