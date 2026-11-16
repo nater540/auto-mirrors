@@ -47,6 +47,18 @@ pub struct PerAxis<T> {
   pub m2_v: T,
 }
 
+impl<T> PerAxis<T> {
+  /// Mutable access to the value for one axis.
+  pub const fn get_mut(&mut self, axis: Axis) -> &mut T {
+    match axis {
+      Axis::M1H => &mut self.m1_h,
+      Axis::M1V => &mut self.m1_v,
+      Axis::M2H => &mut self.m2_h,
+      Axis::M2V => &mut self.m2_v,
+    }
+  }
+}
+
 impl<T: Copy> PerAxis<T> {
   /// The same value on every axis.
   pub const fn splat(value: T) -> Self {
@@ -98,6 +110,15 @@ mod tests {
     for axis in Axis::ALL {
       assert_eq!(values.get(axis), values.to_array()[axis.index()]);
     }
+  }
+
+  #[test]
+  fn a_per_axis_value_is_changed_through_its_axis() {
+    let mut values = PerAxis::splat(0);
+    for axis in Axis::ALL {
+      *values.get_mut(axis) = i32::try_from(axis.index()).unwrap() + 1;
+    }
+    assert_eq!(values.to_array(), [1, 2, 3, 4]);
   }
 
   #[test]
