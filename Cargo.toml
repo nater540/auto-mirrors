@@ -32,7 +32,6 @@ libm = "0.2.16"
 thiserror = { version = "2.0.21", default-features = false }
 # The CAN frame trait and 11-bit identifier type that the esp-hal TWAI driver implements (esp-hal already depends on
 # it). Its last release is from 2022: it is a stable trait crate maintained in the active embedded-hal repository.
-embedded-can = "0.4.1"
 bitflags = { version = "2.13.2", default-features = false }
 # The pin and delay traits the stepper driver is written against: esp-hal pins and embassy-time's Delay implement
 # them, and the host tests fake them.
@@ -55,6 +54,17 @@ esp-backtrace = { version = "=0.20.0", features = ["esp32c6", "panic-handler", "
 esp-println = { version = "=0.18.0", features = ["esp32c6", "log-04"] }
 embassy-executor = { version = "=0.10.0", features = ["log"] }
 embassy-time = { version = "=0.5.1", features = ["log"] }
+# The node's queues, mutex, and signal; select; the blocking-to-async flash adapter. All three are already in the
+# tree through esp-hal and esp-rtos.
+embassy-sync = "0.8.0"
+embassy-futures = "0.1.2"
+embassy-embedded-hal = { version = "0.6.0", default-features = false }
+# Position records in flash (reference 5.5): esp-storage gives the blocking flash, sequential-storage the map.
+esp-storage = { version = "=0.10.0", features = ["esp32c6", "embedded-storage"] }
+sequential-storage = { version = "8.0.2", default-features = false }
+embedded-io-async = "0.7.0"
+embedded-can = "0.4.1"
+static_cell = "2.1.1"
 log = "0.4.27"
 
 [workspace.lints.rust]

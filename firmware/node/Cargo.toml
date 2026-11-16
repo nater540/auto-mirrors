@@ -22,6 +22,18 @@ esp-println.workspace = true
 embassy-executor.workspace = true
 embassy-time.workspace = true
 log.workspace = true
+align-core.workspace = true
+align-proto.workspace = true
+node-logic.workspace = true
+stepper.workspace = true
+embassy-sync.workspace = true
+embassy-futures.workspace = true
+embassy-embedded-hal.workspace = true
+esp-storage.workspace = true
+sequential-storage.workspace = true
+embedded-io-async.workspace = true
+embedded-can.workspace = true
+static_cell.workspace = true
 
 [lints]
 workspace = true
