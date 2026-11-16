@@ -266,6 +266,24 @@ impl NodeTiming {
   };
 }
 
+/// How the sensor node treats SHOT frames (`docs/SENSOR_PLAN.md` sections 3.1 and 9).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SensorTiming {
+  /// UNVERIFIED: a SHOT whose `seq` was seen within this long is a duplicate and is ignored.
+  pub dedup_window_ms: u32,
+  /// UNVERIFIED: without a coordinator heartbeat for this long, the sensor drops its pending shots and forgets every
+  /// seen `seq`.
+  pub coordinator_loss_ms: u32
+}
+
+impl SensorTiming {
+  /// The starting values.
+  pub const STARTING: Self = Self {
+    dedup_window_ms: 2_000,
+    coordinator_loss_ms: 1_000
+  };
+}
+
 /// The torque margin test a node runs in bench mode (addendum A.6).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TorqueTest {
@@ -300,7 +318,9 @@ pub struct Config {
   /// Motor node guards and reporting.
   pub node: NodeTiming,
   /// The bench torque margin test.
-  pub torque_test: TorqueTest
+  pub torque_test: TorqueTest,
+  /// The sensor node's SHOT handling.
+  pub sensor_timing: SensorTiming
 }
 
 impl Config {
@@ -311,7 +331,8 @@ impl Config {
     sensor: SensorLimits::STARTING,
     solver: Solver::STARTING,
     node: NodeTiming::STARTING,
-    torque_test: TorqueTest::STARTING
+    torque_test: TorqueTest::STARTING,
+    sensor_timing: SensorTiming::STARTING
   };
 }
 

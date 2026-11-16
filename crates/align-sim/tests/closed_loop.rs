@@ -44,8 +44,8 @@ fn true_residual(rig: &Rig) -> f32 {
   rig.world().true_shots().measurement().amax()
 }
 
-fn align(rig: &Rig, config: Config) -> (Result<AlignReport, AlignFault>, Aligner<Rig, Rig>) {
-  let mut aligner = rig.aligner(config);
+fn align(rig: &Rig, config: &Config) -> (Result<AlignReport, AlignFault>, Aligner<Rig, Rig>) {
+  let mut aligner = rig.aligner(*config);
   let outcome = block_on(aligner.align());
   (outcome, aligner)
 }
@@ -55,7 +55,7 @@ fn align(rig: &Rig, config: Config) -> (Result<AlignReport, AlignFault>, Aligner
 #[test]
 fn an_aligned_ideal_machine_converges_without_a_solver_step() {
   let rig = Rig::new(Scenario::IDEAL);
-  let (outcome, _) = align(&rig, Config::default());
+  let (outcome, _) = align(&rig, &Config::default());
   let report = outcome.unwrap();
   assert_eq!(report.iterations, 0);
   assert_eq!(report.recalibrations, 0);
@@ -91,7 +91,7 @@ fn an_ideal_machine_is_aligned_from_a_known_misalignment() {
   };
   let rig = Rig::new(scenario);
   assert!(true_residual(&rig) > 0.05);
-  let (outcome, aligner) = align(&rig, Config::default());
+  let (outcome, aligner) = align(&rig, &Config::default());
   let report = outcome.unwrap();
   assert!(report.iterations <= 4, "{report:?}");
   assert_eq!(report.recalibrations, 0);
@@ -161,7 +161,7 @@ fn alignment_converges_within_the_iteration_cap_when_the_seat_sticks_for_two_ste
     let mut tally = Tally::default();
     for index in 0..300 {
       let rig = Rig::new(seeded(index, stick_steps).0);
-      let (outcome, _) = align(&rig, config);
+      let (outcome, _) = align(&rig, &config);
       tally.count(&rig, &outcome.unwrap(), &config);
     }
     assert_eq!(tally.within_the_cap, 300, "stick {stick_steps}: {tally:?}");
@@ -176,7 +176,7 @@ fn a_seat_that_sticks_for_three_steps_costs_at_most_the_one_allowed_recalibratio
   let mut tally = Tally::default();
   for index in 0..1_000 {
     let rig = Rig::new(seeded(index, 3).0);
-    let (outcome, _) = align(&rig, config);
+    let (outcome, _) = align(&rig, &config);
     tally.count(&rig, &outcome.unwrap(), &config);
   }
   assert!(tally.within_the_cap >= 990, "{tally:?}");
@@ -231,7 +231,7 @@ proptest! {
     let mut config = Config::default();
     config.motion.soft_min_steps = PerAxis::splat(-limit);
     config.motion.soft_max_steps = PerAxis::splat(limit);
-    let (outcome, _) = align(&rig, config);
+    let (outcome, _) = align(&rig, &config);
     for axis in Axis::ALL {
       let limits = SoftLimits::for_axis(&config.motion, axis);
       let (lowest, highest) = rig.world().commanded_range(axis);
@@ -281,7 +281,7 @@ fn a_dead_axis_fails_calibration_as_a_weak_column() {
     let mut scenario = realistic(12, PerAxis::splat(10.0), [0.0, 0.0]);
     *scenario.axes.get_mut(dead) = AxisModel::DEAD;
     let rig = Rig::new(scenario);
-    let (outcome, aligner) = align(&rig, Config::default());
+    let (outcome, aligner) = align(&rig, &Config::default());
     assert_eq!(outcome, Err(AlignFault::WeakColumn { axis: dead }));
     assert!(aligner.axes().get(dead).suspect);
   }
@@ -314,7 +314,7 @@ fn a_two_position_absolute_target_fails_where_the_three_position_difference_succ
   };
 
   let difference_rig = Rig::new(scenario);
-  let (outcome, _) = align(&difference_rig, Config::default());
+  let (outcome, _) = align(&difference_rig, &Config::default());
   outcome.unwrap();
   let difference_angles = difference_rig.world().angle_errors().largest_urad();
   let difference_residual = true_residual(&difference_rig);
@@ -376,7 +376,7 @@ fn the_head_offset_is_reported_and_large_ones_ask_for_mechanical_centering() {
     head_offset_um: [100.0, 0.0],
     ..Scenario::IDEAL
   };
-  let report = align(&Rig::new(small), Config::default()).0.unwrap();
+  let report = align(&Rig::new(small), &Config::default()).0.unwrap();
   assert!(report.head_offset.h_norm > 0.03);
   assert!(!report.needs_mechanical_centering);
 
@@ -385,7 +385,7 @@ fn the_head_offset_is_reported_and_large_ones_ask_for_mechanical_centering() {
     head_offset_um: [600.0, 0.0],
     ..Scenario::IDEAL
   };
-  let report = align(&Rig::new(large), Config::default()).0.unwrap();
+  let report = align(&Rig::new(large), &Config::default()).0.unwrap();
   assert!(report.needs_mechanical_centering, "{report:?}");
 }
 
@@ -396,7 +396,7 @@ fn a_beam_off_the_sensor_is_a_reading_fault_after_three_shots() {
     ..Scenario::IDEAL
   };
   let rig = Rig::new(scenario);
-  let (outcome, _) = align(&rig, Config::default());
+  let (outcome, _) = align(&rig, &Config::default());
   assert!(matches!(outcome, Err(AlignFault::Reading(_))), "{outcome:?}");
   let world = rig.world();
   let measurements = world
@@ -425,7 +425,7 @@ fn alignment_survives_occasional_skipped_steps() {
     skip_probability: 0.02
   });
   let rig = Rig::new(scenario);
-  let (outcome, _) = align(&rig, Config::default());
+  let (outcome, _) = align(&rig, &Config::default());
   outcome.unwrap();
   assert!(true_residual(&rig) <= 0.03, "true residual {}", true_residual(&rig));
 }
@@ -443,7 +443,7 @@ fn every_axis_is_left_having_last_moved_in_the_plus_direction() {
     [0.0, 0.0]
   );
   let rig = Rig::new(scenario);
-  let (outcome, aligner) = align(&rig, Config::default());
+  let (outcome, aligner) = align(&rig, &Config::default());
   outcome.unwrap();
   for axis in Axis::ALL {
     assert_eq!(aligner.axes().get(axis).last_dir, align_core::approach::LastDir::Plus);
@@ -471,7 +471,7 @@ fn the_coordinator_position_matches_the_commands_the_rig_received() {
     [0.0, 0.0]
   );
   let rig = Rig::new(scenario);
-  let (outcome, aligner) = align(&rig, Config::default());
+  let (outcome, aligner) = align(&rig, &Config::default());
   outcome.unwrap();
   for axis in Axis::ALL {
     assert_eq!(
@@ -490,6 +490,6 @@ fn noise_far_above_the_tolerance_ends_in_a_fault_and_not_in_a_false_success() {
     ..Scenario::IDEAL
   };
   let rig = Rig::new(scenario);
-  let (outcome, _) = align(&rig, Config::default());
+  let (outcome, _) = align(&rig, &Config::default());
   assert!(outcome.is_err(), "{outcome:?}");
 }
