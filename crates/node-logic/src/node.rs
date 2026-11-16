@@ -18,12 +18,14 @@
 //! - The suspect flag is set by a rail loss, a pin fault, or a cut-off move. Nothing clears it yet: the protocol
 //!   has no message for that, and the coordinator's convergence is what makes a position trusted again.
 //! - Soft limits are enforced on every waypoint of the standard approach, suspect or not.
+//! - A coordinator heartbeat counts only when it carries this node's protocol version. A mismatch is reported once
+//!   (FAULT 0x34) and moves are refused until the versions match.
 
 use align_core::approach::{self, LastDir, SoftLimits};
 use align_core::config::{DirSign, Motion, NodeTiming};
 use align_proto::{
   Channel, ConfigKey, Envelope, FaultCode, Message, MoveDecision, MoveRefused, MoveRel, MoveRelTracker, MoveResult,
-  NodeId, Status, StatusFlags
+  NodeId, PROTOCOL_VERSION, Status, StatusFlags
 };
 use stepper::{MoveEnd, Phase, Timing};
 
@@ -197,6 +199,9 @@ pub struct Node {
   permit: bool,
   rail_ok: bool,
   bench: bool,
+  /// The coordinator's last heartbeat carried another protocol version: its heartbeats do not count, and the
+  /// mismatch has been reported once.
+  protocol_mismatch: bool,
   last_heartbeat_ms: Option<u64>,
   tracker: MoveRelTracker,
   running: Option<Running>,
@@ -228,6 +233,7 @@ impl Node {
       permit: false,
       rail_ok: false,
       bench: false,
+      protocol_mismatch: false,
       last_heartbeat_ms: None,
       tracker: MoveRelTracker::new(),
       running: None,
@@ -313,7 +319,7 @@ impl Node {
     let from_coordinator = envelope.node == NodeId::COORDINATOR;
     let to_me = envelope.node == self.setup.id;
     match envelope.message {
-      Message::Heartbeat { .. } if from_coordinator => self.last_heartbeat_ms = Some(now_ms),
+      Message::Heartbeat { proto_version, .. } if from_coordinator => self.on_heartbeat(now_ms, proto_version, io),
       Message::Estop { .. } if from_coordinator => {
         self.inhibited = true;
         self.request_stop(io);
@@ -348,7 +354,8 @@ impl Node {
         Message::Heartbeat {
           uptime_ms,
           state,
-          fw_version: self.setup.fw_version
+          fw_version: self.setup.fw_version,
+          proto_version: PROTOCOL_VERSION
         }
       );
     }
@@ -531,6 +538,7 @@ impl Node {
       (!self.restored, FaultCode::NOT_READY),
       (self.running.is_some(), FaultCode::BUSY),
       (self.inhibited, FaultCode::INHIBITED),
+      (self.protocol_mismatch, FaultCode::PROTOCOL_MISMATCH),
       (!self.heartbeat_fresh(now_ms), FaultCode::NO_HEARTBEAT),
       (!self.permit, FaultCode::NO_PERMIT),
       (!self.is_populated(move_rel.channel), FaultCode::CHANNEL_UNAVAILABLE)
@@ -678,6 +686,27 @@ impl Node {
     {
       running.stop_requested = true;
       io.stop_move();
+    }
+  }
+
+  /// A coordinator heartbeat refreshes the watchdog only when its protocol version matches. A mismatch is
+  /// reported once when it starts, and its heartbeats then go stale, which stops a running move.
+  fn on_heartbeat(&mut self, now_ms: u64, proto_version: u8, io: &mut impl NodeIo) {
+    let mismatch = proto_version != PROTOCOL_VERSION;
+    if mismatch && !self.protocol_mismatch {
+      let detail = u16::from(proto_version);
+      self.send(
+        io,
+        Message::Fault {
+          channel: Channel::ZERO,
+          code: FaultCode::PROTOCOL_MISMATCH,
+          detail
+        }
+      );
+    }
+    self.protocol_mismatch = mismatch;
+    if !mismatch {
+      self.last_heartbeat_ms = Some(now_ms);
     }
   }
 

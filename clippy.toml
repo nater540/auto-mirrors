@@ -8,4 +8,8 @@ allow-dbg-in-tests = true
 
 # Proper nouns and CAN message names (reference 5.4) that `doc_markdown` would otherwise want in backticks;
 # ".." keeps clippy's built-in list.
-doc-valid-idents = ["ESP32", "ULN2003", "FootSW", "LightBurn", "MOVE_REL", "MOVE_DONE", ".."]
+doc-valid-idents = [
+  "ESP32", "ULN2003", "FootSW", "LightBurn",
+  "MOVE_REL", "MOVE_DONE", "SENSOR_CMD", "SENSOR_CMD_REPLY", "SENSOR_RESEND",
+  ".."
+]

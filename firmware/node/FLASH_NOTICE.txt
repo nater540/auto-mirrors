@@ -3,8 +3,9 @@ align-node: motor node (milestone M4), PROVISIONAL pins for a bare ESP32-C6 deve
 Motors:      two stepper channels. Channel 0 drives GPIO 18, 19, 20, 21; channel 1 drives GPIO 10, 11, 2, 3
              (ULN2003 IN1 to IN4). All eight start low (coils off) and stay low except during a move.
              A move needs a received command AND the permit input high AND the rail input high:
-             - from the bus: a MOVE_REL, a coordinator heartbeat under 300 ms old, an INHIBIT 0 from the
-               coordinator, and the channel's soft limits and direction sign set by CONFIG. Boots inhibited.
+             - from the bus: a MOVE_REL, a coordinator heartbeat under 300 ms old carrying protocol version 2,
+               an INHIBIT 0 from the coordinator, and the channel's soft limits and direction sign set by CONFIG.
+               Boots inhibited.
              - from the console: `bench on`, then `jog` or `torque`. No heartbeat or CONFIG is needed on the bench.
              At most 4000 steps and 25 s per move; one channel at a time; coils released after every move.
 Motor rail:  GPIO 0 carries a 1 kHz arm pulse only while a move runs; low otherwise. GPIO 7 reads the rail.

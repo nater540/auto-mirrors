@@ -68,7 +68,8 @@ impl Channel {
   }
 }
 
-/// The message class, the 4-bit priority field of the identifier (reference 5.4).
+/// The message class, the 4-bit priority field of the identifier (reference 5.4; classes 0xA to 0xD from
+/// `docs/SENSOR_PLAN.md` section 3).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Class {
   /// Emergency stop, coordinator to every node.
@@ -90,7 +91,16 @@ pub enum Class {
   /// Liveness, in both directions.
   Heartbeat = 0x8,
   /// A configuration value, coordinator to node.
-  Config = 0x9
+  Config = 0x9,
+  /// The laser fired, coordinator to every node.
+  /// Lowest priority of all: a late SHOT costs nothing, because the sensor keeps its samples.
+  Shot = 0xA,
+  /// Send a reading again, coordinator to sensor.
+  SensorResend = 0xB,
+  /// A commissioning command, coordinator to sensor.
+  SensorCmd = 0xC,
+  /// The answer to a commissioning command, sensor to coordinator.
+  SensorCmdReply = 0xD
 }
 
 impl Class {
@@ -107,19 +117,23 @@ impl Class {
       0x7 => Self::Sensor,
       0x8 => Self::Heartbeat,
       0x9 => Self::Config,
+      0xA => Self::Shot,
+      0xB => Self::SensorResend,
+      0xC => Self::SensorCmd,
+      0xD => Self::SensorCmdReply,
       _ => return None
     })
   }
 
-  /// The payload length every message of this class has (the DLC column of reference 5.4).
+  /// The payload length every message of this class has (the DLC column of reference 5.4; HEARTBEAT is 7 since
+  /// protocol version 2, which added its `proto_version` byte).
   pub const fn data_len(self) -> u8 {
     match self {
-      Self::Estop | Self::Stop => 1,
+      Self::Estop | Self::Stop | Self::SensorResend => 1,
       Self::Inhibit => 2,
-      Self::Fault => 4,
-      Self::Heartbeat => 6,
-      Self::MoveRel => 7,
-      Self::MoveDone | Self::Status | Self::Sensor | Self::Config => 8
+      Self::Fault | Self::Shot | Self::SensorCmd => 4,
+      Self::Heartbeat | Self::MoveRel => 7,
+      Self::MoveDone | Self::Status | Self::Sensor | Self::Config | Self::SensorCmdReply => 8
     }
   }
 }
@@ -138,7 +152,7 @@ pub struct IdFields {
 /// The identifier for a class, a node, and a channel.
 pub const fn compose_id(class: Class, node: NodeId, channel: Channel) -> StandardId {
   let raw = ((class as u16) << CLASS_SHIFT) | ((node.0 as u16) << NODE_SHIFT) | channel.0 as u16;
-  // The largest class is 0x9, so `raw` is at most 0x4FF and always fits. Were it ever not to, the fallback 0x7FF
+  // The largest class is 0xD, so `raw` is at most 0x6FF and always fits. Were it ever not to, the fallback 0x7FF
   // names class 0xF, which every receiver rejects as undefined.
   match StandardId::new(raw) {
     Some(id) => id,
@@ -172,23 +186,24 @@ mod tests {
   #[test]
   fn an_emergency_stop_wins_arbitration_against_every_other_message() {
     let estop = compose_id(Class::Estop, NodeId::new(15).unwrap(), Channel::new(7).unwrap());
-    for bits in 1..=9 {
+    for bits in 1..=0xD {
       let class = Class::from_bits(bits).unwrap();
       assert!(estop < compose_id(class, NodeId::COORDINATOR, Channel::ZERO));
     }
   }
 
   #[test]
-  fn the_classes_above_nine_are_not_defined() {
-    for bits in 0xA..=0xF {
+  fn the_classes_above_0xd_are_not_defined() {
+    for bits in 0xE..=0xF {
       assert_eq!(Class::from_bits(bits), None);
     }
   }
 
   #[test]
-  fn the_payload_lengths_match_the_dlc_column_of_reference_5_4() {
-    let expected = [1, 2, 4, 7, 1, 8, 8, 8, 6, 8];
-    for (bits, len) in (0..=9).zip(expected) {
+  fn the_payload_lengths_match_reference_5_4_and_the_sensor_plan() {
+    // Reference 5.4, HEARTBEAT lengthened by one byte, then SHOT, SENSOR_RESEND, SENSOR_CMD, and its reply.
+    let expected = [1, 2, 4, 7, 1, 8, 8, 8, 7, 8, 4, 1, 4, 8];
+    for (bits, len) in (0..=0xD).zip(expected) {
       assert_eq!(Class::from_bits(bits).unwrap().data_len(), len);
     }
   }
@@ -203,7 +218,7 @@ mod tests {
 
   proptest! {
     #[test]
-    fn splitting_an_identifier_recovers_its_fields(class in 0_u8..=9, node in 0_u8..=15, channel in 0_u8..=7) {
+    fn splitting_an_identifier_recovers_its_fields(class in 0_u8..=0xD, node in 0_u8..=15, channel in 0_u8..=7) {
       let class = Class::from_bits(class).unwrap();
       let node = NodeId::new(node).unwrap();
       let channel = Channel::new(channel).unwrap();

@@ -5,7 +5,7 @@ extern crate std;
 use std::vec::Vec;
 
 use align_core::config::{Motion, NodeTiming};
-use align_proto::MoveDone;
+use align_proto::{MoveDone, PROTOCOL_VERSION};
 use proptest::prelude::*;
 
 use super::*;
@@ -111,10 +111,15 @@ fn to_node(message: Message) -> Envelope {
 }
 
 fn heartbeat() -> Envelope {
+  heartbeat_version(PROTOCOL_VERSION)
+}
+
+fn heartbeat_version(proto_version: u8) -> Envelope {
   from_coordinator(Message::Heartbeat {
     uptime_ms: 0,
     state: 0,
-    fw_version: 1
+    fw_version: 1,
+    proto_version
   })
 }
 
@@ -245,7 +250,8 @@ fn a_heartbeat_from_another_node_does_not_count() {
     to_node(Message::Heartbeat {
       uptime_ms: 0,
       state: 0,
-      fw_version: 1
+      fw_version: 1,
+      proto_version: PROTOCOL_VERSION
     }),
     &mut io
   );
@@ -970,6 +976,69 @@ fn the_soft_limit_flag_is_set_at_either_limit_and_not_inside() {
     let flags = statuses(&io)[0].flags;
     assert_eq!(flags.contains(StatusFlags::SOFT_LIMIT), at_limit, "at {pos}");
   }
+}
+
+// --- protocol version ---------------------------------------------------------
+
+#[test]
+fn a_coordinator_of_another_protocol_version_is_reported_once_and_refused() {
+  let (mut node, mut io) = ready();
+  node.on_frame(50, heartbeat_version(PROTOCOL_VERSION + 1), &mut io);
+  assert_eq!(
+    io.faults(),
+    [FaultCode::PROTOCOL_MISMATCH],
+    "reported on the first mismatched heartbeat"
+  );
+  node.on_frame(150, heartbeat_version(PROTOCOL_VERSION + 1), &mut io);
+  node.on_frame(250, heartbeat_version(PROTOCOL_VERSION + 1), &mut io);
+  let faults: Vec<(FaultCode, u16)> = io
+    .events
+    .iter()
+    .filter_map(|event| match event {
+      Io::Sent(Message::Fault { code, detail, .. }) => Some((*code, *detail)),
+      _ => None
+    })
+    .collect();
+  assert_eq!(
+    faults,
+    [(FaultCode::PROTOCOL_MISMATCH, u16::from(PROTOCOL_VERSION + 1))]
+  );
+  io.take();
+  node.on_frame(160, move_rel(1, 0, 10, false), &mut io);
+  assert_eq!(io.faults(), [FaultCode::PROTOCOL_MISMATCH]);
+}
+
+#[test]
+fn a_mismatched_heartbeat_does_not_keep_a_move_armed() {
+  let (mut node, mut io) = ready();
+  node.on_frame(0, move_rel(1, 0, 1_000, false), &mut io);
+  node.on_frame(250, heartbeat_version(PROTOCOL_VERSION + 1), &mut io);
+  assert!(!node.armed(301), "the last matching heartbeat was at 0 ms");
+}
+
+#[test]
+fn a_matching_heartbeat_after_a_mismatch_restores_moves() {
+  let (mut node, mut io) = ready();
+  node.on_frame(50, heartbeat_version(PROTOCOL_VERSION + 1), &mut io);
+  node.on_frame(100, heartbeat(), &mut io);
+  io.take();
+  node.on_frame(110, move_rel(1, 0, 10, false), &mut io);
+  assert_eq!(io.starts().len(), 1);
+}
+
+#[test]
+fn the_node_s_heartbeat_carries_the_protocol_version() {
+  let (mut node, mut io) = ready();
+  node.tick(0, &mut io);
+  let versions: Vec<u8> = io
+    .events
+    .iter()
+    .filter_map(|event| match event {
+      Io::Sent(Message::Heartbeat { proto_version, .. }) => Some(*proto_version),
+      _ => None
+    })
+    .collect();
+  assert_eq!(versions, [PROTOCOL_VERSION]);
 }
 
 // --- the guard property -------------------------------------------------------

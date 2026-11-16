@@ -1,14 +1,18 @@
-//! The ten messages of reference 5.4, with the field changes of addendum A.8, and their fixed little-endian layouts.
+//! The fourteen messages and their fixed little-endian layouts: the ten of reference 5.4 with the field changes of
+//! addendum A.8, and the sensor's four of `docs/SENSOR_PLAN.md` section 3 (protocol version 2).
 //!
 //! Every payload has exactly the length its class names, and the decoder rejects any other length. Where a payload
 //! carries an `axis` byte, the identifier's 3-bit axis field must hold the same channel; where it carries none,
 //! the field must be zero. Reserved bytes (the pads) are written as zero and ignored when read, so that a later
 //! layout can use them. Fields whose meaning the documents leave open (stop and estop reasons, the inhibit source,
-//! the heartbeat state, the sensor kind) travel as raw bytes until the milestone that gives them meaning.
+//! the heartbeat state) travel as raw bytes until the milestone that gives them meaning.
 
 use embedded_can::{Frame, Id};
 
 use crate::frame::{Channel, Class, NodeId, compose_id, split_id};
+use crate::sensor::{
+  CmdStatus, EDGE_AGE_UNKNOWN, SensorCmd, SensorCmdReply, SensorOp, SensorReading, SensorStatus, Shot, ShotPoint
+};
 
 /// A fault code in a FAULT message. The documents define only the two codes addendum A.8 adds; any other value
 /// is carried through unchanged so that the coordinator can still report it.
@@ -52,6 +56,20 @@ impl FaultCode {
   pub const MOVE_TIMEOUT: Self = Self(0x2C);
   /// Writing a position record to flash failed.
   pub const PERSIST_FAILED: Self = Self(0x2D);
+
+  // The codes below are defined by the sensor plan (`docs/SENSOR_PLAN.md` section 3.5); 0x34 applies to every node.
+
+  /// The sensor's front end failed.
+  pub const FRONT_END_FAULT: Self = Self(0x30);
+  /// The sensor's sampler fell behind, or a shot's samples left the buffer before it was processed.
+  pub const BUFFER_OVERRUN: Self = Self(0x31);
+  /// The sensor runs on default calibration values.
+  pub const CALIBRATION_MISSING: Self = Self(0x32);
+  /// The sensor saw a fire with no SHOT. Evidence for the log only: the interlock does not depend on it.
+  pub const UNEXPECTED_FIRE: Self = Self(0x33);
+  /// The coordinator's heartbeat carries another protocol version; the detail is that version. The node refuses
+  /// to act until the versions match.
+  pub const PROTOCOL_MISMATCH: Self = Self(0x34);
 }
 
 /// A relative move of one channel (MOVE_REL, class 0x3).
@@ -142,22 +160,6 @@ pub struct Status {
   pub current_ma: u16
 }
 
-/// A beam reading from the sensor node (SENSOR, class 0x7). The sensor hardware is designed separately; this is
-/// only the layout of reference 5.4, with the sensor's own axes named `h` and `v`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct SensorReading {
-  /// Sequence number of the reading.
-  pub seq: u8,
-  /// What kind of reading this is. Its values are not yet defined.
-  pub kind: u8,
-  /// Normalized horizontal position, Q15 (`32767` is `+1.0`).
-  pub h_q15: i16,
-  /// Normalized vertical position, Q15.
-  pub v_q15: i16,
-  /// The quadrant sum, in sensor units.
-  pub sum: u16
-}
-
 /// A configuration key (addendum A.8). The node rejects any other key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ConfigKey {
@@ -230,7 +232,9 @@ pub enum Message {
     /// The sender's state. Values are defined with the state machines (M4, M5).
     state: u8,
     /// The sender's firmware version.
-    fw_version: u8
+    fw_version: u8,
+    /// The sender's protocol version, [`crate::PROTOCOL_VERSION`] when it matches this crate.
+    proto_version: u8
   },
   /// Set a configuration value on one channel (class 0x9).
   Config {
@@ -240,7 +244,18 @@ pub enum Message {
     channel: Channel,
     /// The value, in the unit the key names.
     value: i32
-  }
+  },
+  /// The laser fired (class 0xA).
+  Shot(Shot),
+  /// Send the reading for this shot again (class 0xB).
+  SensorResend {
+    /// The SHOT `seq` whose reading was lost.
+    seq: u8
+  },
+  /// A commissioning command for the sensor (class 0xC).
+  SensorCmd(SensorCmd),
+  /// The sensor's answer to a commissioning command (class 0xD).
+  SensorCmdReply(SensorCmdReply)
 }
 
 impl Message {
@@ -256,7 +271,11 @@ impl Message {
       Self::Status(_) => Class::Status,
       Self::Sensor(_) => Class::Sensor,
       Self::Heartbeat { .. } => Class::Heartbeat,
-      Self::Config { .. } => Class::Config
+      Self::Config { .. } => Class::Config,
+      Self::Shot(_) => Class::Shot,
+      Self::SensorResend { .. } => Class::SensorResend,
+      Self::SensorCmd(_) => Class::SensorCmd,
+      Self::SensorCmdReply(_) => Class::SensorCmdReply
     }
   }
 
@@ -268,7 +287,15 @@ impl Message {
       | Self::MoveRel(MoveRel { channel, .. })
       | Self::MoveDone(MoveDone { channel, .. })
       | Self::Status(Status { channel, .. }) => Some(*channel),
-      Self::Estop { .. } | Self::Inhibit { .. } | Self::Stop { .. } | Self::Sensor(_) | Self::Heartbeat { .. } => None
+      Self::Estop { .. }
+      | Self::Inhibit { .. }
+      | Self::Stop { .. }
+      | Self::Sensor(_)
+      | Self::Heartbeat { .. }
+      | Self::Shot(_)
+      | Self::SensorResend { .. }
+      | Self::SensorCmd(_)
+      | Self::SensorCmdReply(_) => None
     }
   }
 }
@@ -300,7 +327,7 @@ pub enum DecodeError {
     /// The 11-bit identifier.
     raw: u16
   },
-  /// The identifier names a class above 0x9.
+  /// The identifier names a class above 0xD.
   #[error("CAN identifier names class {class_bits:#x}, which is not defined")]
   UnknownClass {
     /// The class number.
@@ -357,6 +384,30 @@ pub enum DecodeError {
   UnknownConfigKey {
     /// The key received.
     key: u8
+  },
+  /// A SHOT names a point other than A, B, C, or 0xFF.
+  #[error("Shot names point {value}, which is not defined (0, 1, 2, and 0xFF are)")]
+  UnknownShotPoint {
+    /// The byte received.
+    value: u8
+  },
+  /// A SENSOR carries a result code that is not defined. The coordinator cannot judge such a reading.
+  #[error("Sensor carries result code {code}, which is not defined (0 to 4, 6, 7, and 9 are)")]
+  UnknownSensorResult {
+    /// The low five bits of the status byte.
+    code: u8
+  },
+  /// A SENSOR_CMD or its reply names an operation that is not defined.
+  #[error("SensorCmd names operation {op}, which is not defined (1 to 6 are)")]
+  UnknownSensorOp {
+    /// The byte received.
+    op: u8
+  },
+  /// A SENSOR_CMD_REPLY carries a status that is not defined.
+  #[error("SensorCmdReply carries status {value}, which is not defined (0 to 3 are)")]
+  UnknownCmdStatus {
+    /// The byte received.
+    value: u8
   }
 }
 
@@ -419,27 +470,53 @@ impl Envelope {
       }
       Message::Sensor(SensorReading {
         seq,
-        kind,
+        status,
         h_q15,
         v_q15,
-        sum
+        sum_q
       }) => {
         let [h0, h1] = h_q15.to_le_bytes();
         let [v0, v1] = v_q15.to_le_bytes();
-        let [s0, s1] = sum.to_le_bytes();
-        [seq, kind, h0, h1, v0, v1, s0, s1]
+        let [s0, s1] = sum_q.to_le_bytes();
+        [seq, status.to_byte(), h0, h1, v0, v1, s0, s1]
       }
       Message::Heartbeat {
         uptime_ms,
         state,
-        fw_version
+        fw_version,
+        proto_version
       } => {
         let [u0, u1, u2, u3] = uptime_ms.to_le_bytes();
-        [u0, u1, u2, u3, state, fw_version, 0, 0]
+        [u0, u1, u2, u3, state, fw_version, proto_version, 0]
       }
       Message::Config { key, channel, value } => {
         let [v0, v1, v2, v3] = value.to_le_bytes();
         [key as u8, channel.get(), 0, 0, v0, v1, v2, v3]
+      }
+      Message::Shot(Shot {
+        seq,
+        point,
+        edge_age_10us
+      }) => {
+        // A known age saturates one below the "unknown" value, so that it is never read back as unknown.
+        let age = edge_age_10us.map_or(EDGE_AGE_UNKNOWN, |age| age.min(EDGE_AGE_UNKNOWN - 1));
+        let [a0, a1] = age.to_le_bytes();
+        [seq, point.to_byte(), a0, a1, 0, 0, 0, 0]
+      }
+      Message::SensorResend { seq } => [seq, 0, 0, 0, 0, 0, 0, 0],
+      Message::SensorCmd(SensorCmd { op, arg }) => {
+        let [a0, a1] = arg.to_le_bytes();
+        [op as u8, 0, a0, a1, 0, 0, 0, 0]
+      }
+      Message::SensorCmdReply(SensorCmdReply {
+        op,
+        status,
+        value,
+        extra
+      }) => {
+        let [v0, v1, v2, v3] = value.to_le_bytes();
+        let [e0, e1] = extra.to_le_bytes();
+        [op as u8, status as u8, v0, v1, v2, v3, e0, e1]
       }
     };
     data
@@ -528,23 +605,20 @@ impl Envelope {
         pos_steps: i32::from_le_bytes([p0, p1, p2, p3]),
         current_ma: u16::from_le_bytes([c0, c1])
       }),
-      (Class::Sensor, &[seq, kind, h0, h1, v0, v1, s0, s1]) => Message::Sensor(SensorReading {
-        seq,
-        kind,
-        h_q15: i16::from_le_bytes([h0, h1]),
-        v_q15: i16::from_le_bytes([v0, v1]),
-        sum: u16::from_le_bytes([s0, s1])
-      }),
-      (Class::Heartbeat, &[u0, u1, u2, u3, state, fw_version]) => Message::Heartbeat {
+      (Class::Heartbeat, &[u0, u1, u2, u3, state, fw_version, proto_version]) => Message::Heartbeat {
         uptime_ms: u32::from_le_bytes([u0, u1, u2, u3]),
         state,
-        fw_version
+        fw_version,
+        proto_version
       },
       (Class::Config, &[key, axis, _pad0, _pad1, v0, v1, v2, v3]) => Message::Config {
         key: ConfigKey::from_byte(key).ok_or(DecodeError::UnknownConfigKey { key })?,
         channel: channel(axis)?,
         value: i32::from_le_bytes([v0, v1, v2, v3])
       },
+      (Class::Sensor | Class::Shot | Class::SensorResend | Class::SensorCmd | Class::SensorCmdReply, _) => {
+        decode_sensor(class, data)?.ok_or(wrong_length)?
+      }
       // The length was checked against the class above, so every class matched one arm.
       _ => return Err(wrong_length)
     };
@@ -562,11 +636,46 @@ impl Envelope {
   }
 }
 
+/// The sensor classes' payloads (`docs/SENSOR_PLAN.md` section 3). `Ok(None)` for a class or length that is not one
+/// of them, which the caller has already ruled out.
+fn decode_sensor(class: Class, data: &[u8]) -> Result<Option<Message>, DecodeError> {
+  Ok(Some(match (class, data) {
+    (Class::Sensor, &[seq, status, h0, h1, v0, v1, s0, s1]) => Message::Sensor(SensorReading {
+      seq,
+      status: SensorStatus::from_byte(status).ok_or(DecodeError::UnknownSensorResult { code: status & 0x1F })?,
+      h_q15: i16::from_le_bytes([h0, h1]),
+      v_q15: i16::from_le_bytes([v0, v1]),
+      sum_q: u16::from_le_bytes([s0, s1])
+    }),
+    (Class::Shot, &[seq, point, a0, a1]) => {
+      let age = u16::from_le_bytes([a0, a1]);
+      Message::Shot(Shot {
+        seq,
+        point: ShotPoint::from_byte(point).ok_or(DecodeError::UnknownShotPoint { value: point })?,
+        edge_age_10us: (age != EDGE_AGE_UNKNOWN).then_some(age)
+      })
+    }
+    (Class::SensorResend, &[seq]) => Message::SensorResend { seq },
+    (Class::SensorCmd, &[op, _pad, a0, a1]) => Message::SensorCmd(SensorCmd {
+      op: SensorOp::from_byte(op).ok_or(DecodeError::UnknownSensorOp { op })?,
+      arg: u16::from_le_bytes([a0, a1])
+    }),
+    (Class::SensorCmdReply, &[op, status, v0, v1, v2, v3, e0, e1]) => Message::SensorCmdReply(SensorCmdReply {
+      op: SensorOp::from_byte(op).ok_or(DecodeError::UnknownSensorOp { op })?,
+      status: CmdStatus::from_byte(status).ok_or(DecodeError::UnknownCmdStatus { value: status })?,
+      value: i32::from_le_bytes([v0, v1, v2, v3]),
+      extra: u16::from_le_bytes([e0, e1])
+    }),
+    _ => return Ok(None)
+  }))
+}
+
 #[cfg(test)]
 mod tests {
   use proptest::prelude::*;
 
   use super::*;
+  use crate::sensor::SensorResult;
   use crate::test_frame::TestFrame;
 
   fn ch(value: u8) -> Channel {
@@ -735,10 +844,156 @@ mod tests {
   }
 
   #[test]
+  fn shot_matches_the_layout_of_the_sensor_plan() {
+    let shot = Shot {
+      seq: 0x21,
+      point: ShotPoint::B,
+      edge_age_10us: Some(0x0302)
+    };
+    let encoded = encode(Envelope {
+      node: NodeId::COORDINATOR,
+      message: Message::Shot(shot)
+    });
+    assert_eq!(encoded.raw_id(), 0xA << 7);
+    assert_eq!(encoded.data(), &[0x21, 1, 0x02, 0x03]);
+  }
+
+  #[test]
+  fn an_unknown_edge_age_travels_as_0xffff_and_a_known_one_saturates_below_it() {
+    let unknown = Shot {
+      seq: 1,
+      point: ShotPoint::Other,
+      edge_age_10us: None
+    };
+    let encoded = encode(Envelope {
+      node: NodeId::COORDINATOR,
+      message: Message::Shot(unknown)
+    });
+    assert_eq!(encoded.data(), &[1, 0xFF, 0xFF, 0xFF]);
+    assert_eq!(Envelope::decode(&encoded).unwrap().message, Message::Shot(unknown));
+
+    let at_limit = Shot {
+      edge_age_10us: Some(0xFFFF),
+      ..unknown
+    };
+    let decoded = Envelope::decode(&encode(Envelope {
+      node: NodeId::COORDINATOR,
+      message: Message::Shot(at_limit)
+    }));
+    assert_eq!(
+      decoded.unwrap().message,
+      Message::Shot(Shot {
+        edge_age_10us: Some(0xFFFE),
+        ..unknown
+      })
+    );
+  }
+
+  #[test]
+  fn sensor_matches_the_layout_of_the_sensor_plan() {
+    let reading = SensorReading {
+      seq: 5,
+      status: SensorStatus {
+        result: SensorResult::Saturated,
+        calibrated: true,
+        bench: false
+      },
+      h_q15: 0x0201,
+      v_q15: -2,
+      sum_q: 0x8000
+    };
+    let encoded = encode(Envelope {
+      node: NodeId::SENSOR,
+      message: Message::Sensor(reading)
+    });
+    assert_eq!(encoded.raw_id(), (0x7 << 7) | (3 << 3));
+    assert_eq!(encoded.data(), &[5, 0b0010_0010, 0x01, 0x02, 0xFE, 0xFF, 0x00, 0x80]);
+  }
+
+  #[test]
+  fn a_sensor_reading_with_an_undefined_result_is_rejected_and_the_reserved_bit_is_not() {
+    let id = (0x7 << 7) | (3 << 3);
+    assert_eq!(
+      decode(id, &[0, 5, 0, 0, 0, 0, 0, 0]),
+      Err(DecodeError::UnknownSensorResult { code: 5 })
+    );
+    assert_eq!(
+      decode(id, &[0, 0b1010_1000, 0, 0, 0, 0, 0, 0]),
+      Err(DecodeError::UnknownSensorResult { code: 8 })
+    );
+    let with_reserved = decode(id, &[0, 0b0100_0000, 0, 0, 0, 0, 0, 0]).unwrap();
+    let expected = SensorStatus {
+      result: SensorResult::Valid,
+      calibrated: false,
+      bench: false
+    };
+    assert!(matches!(with_reserved.message, Message::Sensor(SensorReading { status, .. }) if status == expected));
+  }
+
+  #[test]
+  fn undefined_shot_points_sensor_ops_and_command_statuses_are_rejected() {
+    assert_eq!(
+      decode(0xA << 7, &[0, 3, 0, 0]),
+      Err(DecodeError::UnknownShotPoint { value: 3 })
+    );
+    let sensor = 3 << 3;
+    assert_eq!(
+      decode((0xC << 7) | sensor, &[0, 0, 0, 0]),
+      Err(DecodeError::UnknownSensorOp { op: 0 })
+    );
+    assert_eq!(
+      decode((0xC << 7) | sensor, &[7, 0, 0, 0]),
+      Err(DecodeError::UnknownSensorOp { op: 7 })
+    );
+    assert_eq!(
+      decode((0xD << 7) | sensor, &[9, 0, 0, 0, 0, 0, 0, 0]),
+      Err(DecodeError::UnknownSensorOp { op: 9 })
+    );
+    assert_eq!(
+      decode((0xD << 7) | sensor, &[1, 4, 0, 0, 0, 0, 0, 0]),
+      Err(DecodeError::UnknownCmdStatus { value: 4 })
+    );
+  }
+
+  #[test]
+  fn the_heartbeat_carries_the_protocol_version_in_its_seventh_byte() {
+    let heartbeat = Message::Heartbeat {
+      uptime_ms: 0x0403_0201,
+      state: 1,
+      fw_version: 9,
+      proto_version: 2
+    };
+    let encoded = encode(Envelope {
+      node: NodeId::MIRROR_1,
+      message: heartbeat
+    });
+    assert_eq!(encoded.data(), &[1, 2, 3, 4, 1, 9, 2]);
+    // A version-1 heartbeat, six bytes long, is now a wrong length rather than a misread.
+    let six = DecodeError::WrongLength {
+      class: Class::Heartbeat,
+      expected: 7,
+      got: 6
+    };
+    assert_eq!(decode(0x8 << 7, &[0; 6]), Err(six));
+  }
+
+  #[test]
+  fn the_sensor_fault_codes_follow_the_motor_node_s() {
+    let codes = [
+      FaultCode::FRONT_END_FAULT,
+      FaultCode::BUFFER_OVERRUN,
+      FaultCode::CALIBRATION_MISSING,
+      FaultCode::UNEXPECTED_FIRE,
+      FaultCode::PROTOCOL_MISMATCH
+    ];
+    assert_eq!(codes.map(|code| code.0), [0x30, 0x31, 0x32, 0x33, 0x34]);
+  }
+
+  #[test]
   fn an_undefined_class_is_rejected() {
     assert_eq!(
-      decode(0xA << 7, &[]),
-      Err(DecodeError::UnknownClass { class_bits: 0xA })
+      decode(0xE << 7, &[]),
+      Err(DecodeError::UnknownClass { class_bits: 0xE })
     );
     assert_eq!(
       decode(0x7FF, &[0; 8]),
@@ -867,7 +1122,7 @@ mod tests {
     );
   }
 
-  fn examples() -> [Message; 10] {
+  fn examples() -> [Message; 14] {
     [
       Message::Estop { reason: 3 },
       Message::Inhibit {
@@ -900,21 +1155,42 @@ mod tests {
       }),
       Message::Sensor(SensorReading {
         seq: 7,
-        kind: 1,
+        status: SensorStatus {
+          result: SensorResult::NoShot,
+          calibrated: true,
+          bench: false
+        },
         h_q15: i16::MIN,
         v_q15: i16::MAX,
-        sum: u16::MAX
+        sum_q: u16::MAX
       }),
       Message::Heartbeat {
         uptime_ms: u32::MAX,
         state: 4,
-        fw_version: 1
+        fw_version: 1,
+        proto_version: crate::PROTOCOL_VERSION
       },
       Message::Config {
         key: ConfigKey::DirSign,
         channel: ch(1),
         value: -1
-      }
+      },
+      Message::Shot(Shot {
+        seq: 200,
+        point: ShotPoint::C,
+        edge_age_10us: Some(1_234)
+      }),
+      Message::SensorResend { seq: 9 },
+      Message::SensorCmd(SensorCmd {
+        op: SensorOp::Report,
+        arg: 3
+      }),
+      Message::SensorCmdReply(SensorCmdReply {
+        op: SensorOp::Report,
+        status: CmdStatus::Ok,
+        value: 98_500,
+        extra: 41
+      })
     ]
   }
 
@@ -969,23 +1245,89 @@ mod tests {
           current_ma
         })
       }),
-      (any::<u8>(), any::<u8>(), any::<i16>(), any::<i16>(), any::<u16>()).prop_map(
-        |(seq, kind, h_q15, v_q15, sum)| {
-          Message::Sensor(SensorReading {
-            seq,
-            kind,
-            h_q15,
-            v_q15,
-            sum
-          })
+      (any::<u32>(), any::<u8>(), any::<u8>(), any::<u8>()).prop_map(
+        |(uptime_ms, state, fw_version, proto_version)| Message::Heartbeat {
+          uptime_ms,
+          state,
+          fw_version,
+          proto_version
         }
       ),
-      (any::<u32>(), any::<u8>(), any::<u8>()).prop_map(|(uptime_ms, state, fw_version)| Message::Heartbeat {
-        uptime_ms,
-        state,
-        fw_version
-      }),
       (key, any_channel(), any::<i32>()).prop_map(|(key, channel, value)| Message::Config { key, channel, value }),
+      any_sensor_message(),
+    ]
+  }
+
+  fn any_sensor_status() -> impl Strategy<Value = SensorStatus> {
+    let result = proptest::sample::select(
+      &[
+        SensorResult::Valid,
+        SensorResult::NoShot,
+        SensorResult::Saturated,
+        SensorResult::NegativeQuadrant,
+        SensorResult::BaselineUnstable,
+        SensorResult::Overlap,
+        SensorResult::TimedOut,
+        SensorResult::FrontEndFault
+      ][..]
+    );
+    (result, any::<bool>(), any::<bool>()).prop_map(|(result, calibrated, bench)| SensorStatus {
+      result,
+      calibrated,
+      bench
+    })
+  }
+
+  fn any_sensor_op() -> impl Strategy<Value = SensorOp> {
+    proptest::sample::select(
+      &[
+        SensorOp::Noise,
+        SensorOp::Tau,
+        SensorOp::SRef,
+        SensorOp::Save,
+        SensorOp::Report,
+        SensorOp::Bench
+      ][..]
+    )
+  }
+
+  /// The sensor's messages. A known edge age stays below the "unknown" wire value, which it can never round-trip as.
+  fn any_sensor_message() -> impl Strategy<Value = Message> {
+    let point = proptest::sample::select(&[ShotPoint::A, ShotPoint::B, ShotPoint::C, ShotPoint::Other][..]);
+    let age = proptest::option::of(0_u16..EDGE_AGE_UNKNOWN);
+    let status = proptest::sample::select(&[CmdStatus::Ok, CmdStatus::Busy, CmdStatus::Refused, CmdStatus::Failed][..]);
+    prop_oneof![
+      (
+        any::<u8>(),
+        any_sensor_status(),
+        any::<i16>(),
+        any::<i16>(),
+        any::<u16>()
+      )
+        .prop_map(|(seq, status, h_q15, v_q15, sum_q)| {
+          Message::Sensor(SensorReading {
+            seq,
+            status,
+            h_q15,
+            v_q15,
+            sum_q
+          })
+        }),
+      (any::<u8>(), point, age).prop_map(|(seq, point, edge_age_10us)| Message::Shot(Shot {
+        seq,
+        point,
+        edge_age_10us
+      })),
+      any::<u8>().prop_map(|seq| Message::SensorResend { seq }),
+      (any_sensor_op(), any::<u16>()).prop_map(|(op, arg)| Message::SensorCmd(SensorCmd { op, arg })),
+      (any_sensor_op(), status, any::<i32>(), any::<u16>()).prop_map(|(op, status, value, extra)| {
+        Message::SensorCmdReply(SensorCmdReply {
+          op,
+          status,
+          value,
+          extra
+        })
+      }),
     ]
   }
 
