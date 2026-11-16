@@ -39,6 +39,10 @@ change.
 | libm | 0.2.16 | | Float functions `core` lacks (rounding). |
 | thiserror | 2.0.21 | no default features | Fault enums; works without `std`. |
 | proptest | 1.12 | `std`, no default features | Property tests, host only. |
+| rand | 0.10.4 | | Simulator only: seeded sensor noise and skipped steps. In 0.10 the convenience methods are on `RngExt`, not `Rng`. |
+| rand_distr | 0.6.0 | | Simulator only: the standard normal distribution. |
+| clap | 4.6 | `derive` | Simulator command line. |
+| anyhow | 1.0.104 | | Simulator command line, at the top level of the binary only. |
 
 ## Checked, not yet a dependency
 

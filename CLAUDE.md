@@ -30,9 +30,9 @@ add it to the open list in the report.
 
 Stop at the end of each milestone and report to the owner (hand-off section 6).
 
-- M0 scaffold: done. M1 core math: done.
-- M2 simulator and closed loop: next. M3 protocol, M4 stepper and node firmware, M5 coordinator firmware, M6
-  bring-up tools, M7 Ruida UDP (optional, read-only): not started.
+- M0 scaffold: done. M1 core math: done. M2 simulator and closed loop: done.
+- M3 protocol: next. M4 stepper and node firmware, M5 coordinator firmware, M6 bring-up tools, M7 Ruida UDP
+  (optional, read-only): not started.
 
 ## Things that must not be done
 
@@ -58,19 +58,45 @@ Stop at the end of each milestone and report to the owner (hand-off section 6).
   (`solver::prediction_mismatch`).
 - The actuator stays behind a trait so a DC gearmotor with an encoder can replace the stepper.
 - Fixed-layout manual CAN encoding. No serde on the wire.
+- The alignment procedure is `align_core::aligner::Aligner`, generic over the `Actuator` and `BeamSensor` traits
+  (`align_core::rig`). Both traits are `async`, because a move or a measurement takes seconds on the machine. The
+  simulator and the coordinator run the same procedure.
 - Three adopted recommendations await the owner's sign-off (ESP32-C6, the three-position measurement, the
   force-guided relay as primary interlock). Build to them.
+
+## What the simulator settled (M2)
+
+These fill gaps in the documents. Each was found by a failing closed-loop test, is explained at the top of
+`crates/align-core/src/aligner.rs`, and should not be undone without a simulator run that shows why.
+
+- **A step is judged only if its predicted change is above the noise floor** (`calibration::noise_floor`, five
+  sigmas of a measurement component). Addendum A.5 as written reports a healthy axis as not responding, because
+  corrections of a few steps are inside stick-slip and noise.
+- **Suspect means an axis fell short, not that the prediction was off** (`solver::unresponsive_axis`). A Jacobian
+  30% too small has a plain mismatch of 43%, close to the 50% threshold; a mismatch in which no axis took less than
+  half of its command is a Jacobian error, and the Broyden update corrects it.
+- **The damping adapts** (reference 3.2: times 3 after a poor step, divided by 3 after a good one). With it, an
+  accepted calibration converges. The conditioning gate at 50 is applied to the measured Jacobian, whose condition
+  number noise inflates: keep the model condition number near 10 or below (a Y span of 200 mm or more against an X
+  span of 600 mm).
+- **A reading outside the solver's linear range still drives a step**, but nothing is learned from that step.
+- **Rates are tested as counts over fixed seeds**, not as properties over every seed. "Converges within the
+  iteration cap" holds for every run only while the seat sticks for two steps or less.
+- The absolute two-position target is kept out of the product and exists only in
+  `crates/align-sim/tests/closed_loop.rs`, through the `Aligner::with_target` seam.
 
 ## Workspace layout
 
 One Cargo workspace, edition 2024, Rust 1.96.0 pinned. Dependencies and lints are declared once in the root
 `Cargo.toml`.
 
-- `crates/align-core`: `no_std`, no HAL. Config, unit conversions, quadrant math, the measurement vector, the solver.
-  Later: Jacobian calibration, the approach planner, the coordinator state machine (a pure function of state and
-  event), and the `Actuator` and `BeamSensor` traits.
+- `crates/align-core`: `no_std`, no HAL. Config, unit conversions, quadrant math, the measurement vector, the
+  solver, the `Actuator` and `BeamSensor` traits, the approach planner and soft limits, calibration, and the
+  `Aligner` procedure. Later: the coordinator state machine (a pure function of state and event).
 - `crates/align-proto`: `no_std`. CAN identifiers and message encoding. Empty until M3.
-- `crates/align-sim`: `std`. Optics and mount simulator, closed-loop tests, CLI runner. Empty until M2.
+- `crates/align-sim`: `std`. The model of the machine (`world`), the model behind the two traits (`rig`), the
+  closed-loop tests (`tests/closed_loop.rs`), and the `align-sim` command-line runner. Every machine number in it
+  is an UNVERIFIED placeholder and a scenario parameter, never configuration.
 - `crates/stepper`: `no_std`. 28BYJ-48 driver over `embedded_hal::digital::OutputPin`. Empty until M4.
 - `firmware/node`, `firmware/coordinator`: ESP32-C6 binaries (`align-node`, `align-coordinator`). Scaffold only:
   they boot, log one line, and touch no pin.
@@ -94,7 +120,12 @@ just check-no-std  # build the no_std libraries for the ESP32-C6 (proves no std,
 just firmware      # build both images in release mode; never flashes
 just firmware-clippy
 cargo test -p align-core <test_name>                     # one test
+cargo run -p align-sim --release -- run                  # one simulated alignment, every move and measurement
+cargo run -p align-sim --release -- sweep --runs 5000    # convergence against conditioning; see `sweep --help`
 ```
+
+After changing the aligner, the solver, or a threshold, run the sweep before and after and compare the tables, and
+run `PROPTEST_CASES=2000 cargo test -p align-sim` once.
 
 There is no flashing recipe and no cargo runner yet, on purpose. `cargo deny` is not configured yet.
 
