@@ -714,7 +714,7 @@ fn any_event() -> impl Strategy<Value = Event> {
 proptest! {
   #[test]
   fn no_event_sequence_panics_or_answers_more_bus_shots_than_were_fired(
-    events in proptest::collection::vec(any_event(), 0..80),
+    events in proptest::collection::vec(any_event(), 0..80)
   ) {
     let (mut node, mut io) = node();
     let mut now = 0_u64;

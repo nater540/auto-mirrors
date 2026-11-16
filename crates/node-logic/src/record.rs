@@ -285,7 +285,7 @@ mod tests {
   proptest! {
     #[test]
     fn every_record_survives_a_round_trip(
-      pos_steps in any::<i32>(), dir in 0_u8..3, phase in 0_u8..4, suspect in any::<bool>(), sign in 0_u8..3,
+      pos_steps in any::<i32>(), dir in 0_u8..3, phase in 0_u8..4, suspect in any::<bool>(), sign in 0_u8..3
     ) {
       let last_dir = [LastDir::Unknown, LastDir::Plus, LastDir::Minus][usize::from(dir)];
       let dir_sign = [None, Some(DirSign::Forward), Some(DirSign::Reversed)][usize::from(sign)];

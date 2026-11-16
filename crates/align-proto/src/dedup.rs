@@ -252,7 +252,7 @@ mod tests {
     #[test]
     fn however_often_each_move_is_resent_each_runs_exactly_once(
       deltas in proptest::collection::vec(any::<i32>(), 1..40),
-      resends in proptest::collection::vec(0_usize..4, 40),
+      resends in proptest::collection::vec(0_usize..4, 40)
     ) {
       let mut tracker = MoveRelTracker::new();
       let mut runs = 0;

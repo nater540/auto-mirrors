@@ -194,7 +194,7 @@ fn run(args: &RunArgs, out: &mut impl Write) -> anyhow::Result<()> {
         ", mechanical centering required"
       } else {
         ""
-      },
+      }
     )?,
     Err(fault) => writeln!(out, "fault: {fault}")?
   }
@@ -215,7 +215,7 @@ fn run(args: &RunArgs, out: &mut impl Write) -> anyhow::Result<()> {
         ", suspect"
       } else {
         ""
-      },
+      }
     )?;
   }
   Ok(())
@@ -305,7 +305,7 @@ fn sweep(args: &SweepArgs, out: &mut impl Write) -> anyhow::Result<()> {
       out,
       "{y_span_mm:>9.0}  {model_cond:>10.1}  {converged:>9}  {first_attempt:>13}  {mean_steps:>10.2}  \
        {recalibrated:>12}  {:>6}",
-      args.runs - converged,
+      args.runs - converged
     )?;
     for (kind, count) in &faults {
       writeln!(out, "{:>9}  {count} x {kind}", "")?;

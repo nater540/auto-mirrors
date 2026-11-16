@@ -147,14 +147,14 @@ mod tests {
     fn a_constant_head_offset_does_not_change_the_measurement_vector(
       points in proptest::array::uniform6(-0.4_f32..0.4),
       offset_h in -0.3_f32..0.3,
-      offset_v in -0.3_f32..0.3,
+      offset_v in -0.3_f32..0.3
     ) {
       let [ah, av, bh, bv, ch, cv] = points;
       let plain = Shots { a: reading(ah, av), b: reading(bh, bv), c: reading(ch, cv) };
       let shifted = Shots {
         a: reading(ah + offset_h, av + offset_v),
         b: reading(bh + offset_h, bv + offset_v),
-        c: reading(ch + offset_h, cv + offset_v),
+        c: reading(ch + offset_h, cv + offset_v)
       };
       let difference = plain.measurement() - shifted.measurement();
       prop_assert!(difference.amax() <= 1e-6);

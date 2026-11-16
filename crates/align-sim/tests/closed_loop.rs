@@ -248,7 +248,7 @@ proptest! {
   fn no_move_is_ever_commanded_beyond_the_soft_limits(
     seed in any::<u64>(),
     (misalignment_steps, head_offset_um) in misalignment(),
-    limit in 125_i32..400,
+    limit in 125_i32..400
   ) {
     let rig = Rig::new(realistic(seed, misalignment_steps, head_offset_um));
     let mut config = characterized();

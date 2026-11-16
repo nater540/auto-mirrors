@@ -1276,7 +1276,7 @@ mod tests {
         }
       ),
       (key, any_channel(), any::<i32>()).prop_map(|(key, channel, value)| Message::Config { key, channel, value }),
-      any_sensor_message(),
+      any_sensor_message()
     ]
   }
 
@@ -1349,7 +1349,7 @@ mod tests {
           value,
           extra
         })
-      }),
+      })
     ]
   }
 
@@ -1362,7 +1362,7 @@ mod tests {
 
     #[test]
     fn a_frame_that_decodes_encodes_back_to_itself_up_to_reserved_bytes(
-      id in 0_u16..=0x7FF, payload in proptest::collection::vec(any::<u8>(), 0..=8),
+      id in 0_u16..=0x7FF, payload in proptest::collection::vec(any::<u8>(), 0..=8)
     ) {
       // Decoding never panics, whatever the bus delivers; and what it accepts it reproduces.
       let received = frame(id, &payload);

@@ -1352,7 +1352,7 @@ fn any_event() -> impl Strategy<Value = Event> {
 proptest! {
   #[test]
   fn no_sequence_of_events_starts_a_move_without_the_permit_a_fresh_heartbeat_and_permission(
-    events in proptest::collection::vec(any_event(), 0..60),
+    events in proptest::collection::vec(any_event(), 0..60)
   ) {
     let (mut node, mut io) = ready();
     node.on_frame(0, from_coordinator(Message::Inhibit { inhibited: true, source: 0 }), &mut io);

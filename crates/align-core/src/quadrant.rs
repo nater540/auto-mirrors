@@ -414,7 +414,7 @@ mod tests {
   proptest! {
     #[test]
     fn non_negative_quadrants_with_signal_always_normalize_inside_the_unit_square(
-      a in 0.0_f32..1.0e6, b in 0.0_f32..1.0e6, c in 0.0_f32..1.0e6, d in 0.0_f32..1.0e6,
+      a in 0.0_f32..1.0e6, b in 0.0_f32..1.0e6, c in 0.0_f32..1.0e6, d in 0.0_f32..1.0e6
     ) {
       prop_assume!(a + b + c + d > 0.0);
       let reading = Quadrants { a, b, c, d }.normalize().unwrap();
@@ -425,7 +425,7 @@ mod tests {
     #[test]
     fn the_position_does_not_depend_on_pulse_energy(
       a in 0.01_f32..100.0, b in 0.01_f32..100.0, c in 0.01_f32..100.0, d in 0.01_f32..100.0,
-      gain in 0.1_f32..10.0,
+      gain in 0.1_f32..10.0
     ) {
       let one = Quadrants { a, b, c, d }.normalize().unwrap();
       let scaled = Quadrants { a: a * gain, b: b * gain, c: c * gain, d: d * gain }.normalize().unwrap();

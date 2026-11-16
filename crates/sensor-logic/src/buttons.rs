@@ -324,7 +324,7 @@ mod tests {
 
     #[test]
     fn every_chord_is_reported_once_and_is_a_set_that_was_pressed(
-      levels in proptest::collection::vec((0_u8..32, 1_u64..40), 1..20),
+      levels in proptest::collection::vec((0_u8..32, 1_u64..40), 1..20)
     ) {
       let mut at = 0;
       let mut timeline = Vec::new();

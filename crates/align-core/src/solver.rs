@@ -890,7 +890,7 @@ mod tests {
     fn an_unclamped_step_never_increases_the_predicted_residual(
       jacobian in arbitrary_jacobian(),
       measurement in proptest::array::uniform4(-0.6_f32..0.6),
-      alpha in 0.05_f32..1.0,
+      alpha in 0.05_f32..1.0
     ) {
       let measurement = Vector4::from(measurement);
       let conditioning = Conditioning::of(&jacobian).unwrap();
@@ -905,7 +905,7 @@ mod tests {
     fn the_updated_jacobian_always_reproduces_the_measured_change(
       jacobian in arbitrary_jacobian(),
       dq in proptest::array::uniform4(-180.0_f32..180.0),
-      dm in proptest::array::uniform4(-0.6_f32..0.6),
+      dm in proptest::array::uniform4(-0.6_f32..0.6)
     ) {
       let dq = Vector4::from(dq);
       let dm = Vector4::from(dm);
@@ -918,7 +918,7 @@ mod tests {
     fn a_clamped_step_never_exceeds_its_limit(
       jacobian in arbitrary_jacobian(),
       measurement in proptest::array::uniform4(-1.0_f32..1.0),
-      limit in 1.0_f32..500.0,
+      limit in 1.0_f32..500.0
     ) {
       let dq = dls_step(&jacobian, &Vector4::from(measurement), 1e-4, 1.0, &Vector4::repeat(limit)).unwrap();
       prop_assert!(dq.amax() <= limit);

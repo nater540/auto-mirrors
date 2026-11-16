@@ -296,7 +296,7 @@ mod tests {
   proptest! {
     #[test]
     fn an_approach_always_adds_up_to_the_requested_move(
-      delta in -10_000_i32..10_000, overshoot in 0_i32..1_000, last in 0_u8..3,
+      delta in -10_000_i32..10_000, overshoot in 0_i32..1_000, last in 0_u8..3
     ) {
       let last_dir = [LastDir::Unknown, LastDir::Plus, LastDir::Minus][usize::from(last)];
       let approach = plan(delta, last_dir, overshoot);
@@ -307,7 +307,7 @@ mod tests {
     /// reverses at all it comes back by a full overshoot.
     #[test]
     fn an_approach_always_ends_in_the_plus_direction(
-      delta in -10_000_i32..10_000, overshoot in 1_i32..1_000, last in 0_u8..3,
+      delta in -10_000_i32..10_000, overshoot in 1_i32..1_000, last in 0_u8..3
     ) {
       let last_dir = [LastDir::Unknown, LastDir::Plus, LastDir::Minus][usize::from(last)];
       let approach = plan(delta, last_dir, overshoot);
