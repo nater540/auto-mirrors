@@ -292,8 +292,10 @@ pub struct CoordinatorTiming {
   pub reading_timeout_ms: u32,
   /// FIRM (reference 6.6): the start pulse on FootSW, low for at least 100 ms.
   pub start_pulse_ms: u32,
-  /// FIRM (reference 6.7): one job fires one dot at each of A, B, and C.
-  pub shots_per_job: u8,
+  /// FIRM, after the 2026-11-15 review: a move still running this long after the motor permit was given is a
+  /// fault. A backstop only: each node ends its own move after `max_move_ms` (25 s) and the actuator reports a node
+  /// that does not answer. Four axes of up to 25 s each, with margin.
+  pub move_timeout_ms: u32,
   /// UNVERIFIED: fire edges closer than this belong to one shot (a dot may be several edges with an RF tube or
   /// PWM). Settled by the Mod5 scope check (`docs/SENSOR_PLAN.md` section 14).
   pub burst_gap_ms: u32,
@@ -310,7 +312,7 @@ impl CoordinatorTiming {
     relay_feedback_timeout_ms: 100,
     reading_timeout_ms: 5_000,
     start_pulse_ms: 200,
-    shots_per_job: 3,
+    move_timeout_ms: 120_000,
     burst_gap_ms: 5,
     resend_after_ms: 1_000
   };
@@ -435,7 +437,10 @@ mod tests {
     assert_eq!(timing.fire_wait_timeout_ms, 30_000);
     assert_eq!(timing.quiet_before_move_ms, 500);
     assert!(timing.start_pulse_ms >= 100, "FootSW must stay low at least 100 ms");
-    assert_eq!(timing.shots_per_job, 3);
+    assert!(
+      timing.move_timeout_ms >= 4 * Config::default().motion.max_move_ms,
+      "a backstop to the nodes' own"
+    );
   }
 
   #[test]

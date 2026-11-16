@@ -175,6 +175,25 @@ Reference 5.4 and addendum A.8 leave these open; `align-proto` decides them, and
 - **On the development board, TWAI runs on GPIO 22 alone** in self-test mode (TX and RX looped back through the
   pin), so frames go out without a transceiver or a second node.
 
+## What the coordinator settled (M5)
+
+`crates/align-core/src/coordinator.rs` opens with the full list; the nemesis review of 2026-11-15 set these:
+
+- **No input is assumed before it is reported.** The relay feedback and the Status line start unknown; the
+  self-test passes only once the loop has read closed and the Status line has been read.
+- **The relay energizes only while the loop reads closed, and motion needs a feedback reading taken after the
+  energize.** A loop that still reads open after a release counts as armed: a fire or a job start then faults.
+- **A fire is a burst with a start (`Fire`, which counts the shot) and an end (`FireEnded`, `burst_gap_ms` after its
+  last edge).** The quiet time counts from the end; a move or a job is refused during a burst.
+- **A job ends only on a Status low after a Status high.** A job whose Status line never rose faults
+  (`StatusNeverHigh`) after the fire timeout, and no move can be armed meanwhile.
+- **Readings may complete before the job ends** and are kept until it does. The firmware must call
+  `coordinator_logic::readings::Readings::begin` when a job starts and send `ReadingsComplete` only from it, so a
+  completion always belongs to the running job. `reading_timeout_ms` counts from the Status low, not from the last
+  SHOT as `docs/SENSOR_PLAN.md` section 13 says: the more lenient of the two.
+- Time going backward, a move past `move_timeout_ms` (a backstop to the nodes' own), and a failed self-test in
+  Idle each stop everything. `Coordinator::motion_allowed` gives the level for repeating INHIBIT to the nodes.
+
 ## What the sensor settled (S1, S2)
 
 - **Five buttons are the reading until the detector exists** (owner, 2026-11-15). No detector processing is built;

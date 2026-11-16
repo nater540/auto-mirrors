@@ -5,8 +5,8 @@
 //! The firmware feeds it the Ruida's signals and the relay's feedback, and carries out the [`Actions`] it returns.
 //!
 //! The events are named for what happens, not for the Ruida's pins, so that a test frame without a Ruida can drive
-//! the same machine. A start is "start the job", a fire edge is [`Event::Fire`],
-//! and the Status line is [`Event::JobRunning`].
+//! the same machine. A start is "start the job", a burst of fire edges is [`Event::Fire`] then
+//! [`Event::FireEnded`], and the Status line is [`Event::JobRunning`].
 //!
 //! States beyond the table of reference 7.3, which leaves these steps implicit (proposed in `docs/SENSOR_PLAN.md`
 //! section 13; the owner approved the protocol that needs them):
@@ -19,12 +19,29 @@
 //!
 //! Rules that hold in every state:
 //!
-//! - A fire, or the Ruida reporting a job running, while the relay is energized or about to be, is an immediate
-//!   fault (reference 7.3: "Any fire edge in Moving is an immediate Fault"). The fault releases the relay at once.
+//! - A fire, or the Ruida reporting a job running, while the relay is energized or about to be, or while the loop
+//!   still reads open after a release, is an immediate fault (reference 7.3: "Any fire edge in Moving is an
+//!   immediate Fault"). The fault releases the relay at once.
 //! - The relay's feedback is watched all the time, not only when entering Moving. The loop reading open while the
 //!   relay is released (after its release time), or closed while it is energized and confirmed, is a fault: a
 //!   welded contact, a dropped relay, or a wiring fault.
 //! - A lost node puts the coordinator back in Inhibited, releasing the relay.
+//! - Time that goes backward is a fault: every timeout here would otherwise stop.
+//!
+//! What the review of 2026-11-15 settled:
+//!
+//! - **Nothing is assumed about an input until it is reported.** The relay feedback and the Status line start
+//!   unknown, and the self-test passes only once the loop has read closed and the Status line has been read.
+//! - **The relay is energized only while the loop reads closed, and motion is allowed only on a feedback reading
+//!   taken after it was energized.** A reading from before says nothing about this energize.
+//! - **A fire is a burst, with a start and an end.** The start counts a shot; the quiet time before a move counts
+//!   from the end, so that a burst longer than the quiet time cannot let the relay energize while it lasts. A move
+//!   or a measurement is refused while a burst is in progress.
+//! - **A job ends only on a Status low that follows a Status high.** A low read before the line rose is stale. A job
+//!   whose Status line never rose ends in a fault after the fire timeout: the line is broken, and while the machine
+//!   waits no move can be armed.
+//! - **Readings may be complete before the Status line falls** (the sensor answers about 200 ms after each shot).
+//!   They are kept, and the measurement is ready when the job ends.
 
 use crate::config::CoordinatorTiming;
 
@@ -51,6 +68,9 @@ impl Point {
   }
 }
 
+/// FIRM (reference 6.7): one job fires one dot at each of A, B, and C.
+pub const SHOTS_PER_JOB: u8 = 3;
+
 /// Why the coordinator stopped everything.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, thiserror::Error)]
 pub enum FaultReason {
@@ -66,6 +86,9 @@ pub enum FaultReason {
   /// A job kept running long after its last fire.
   #[error("the job did not end after its last fire")]
   JobDidNotEnd,
+  /// A job fired, and the Status line never reported it running: the line is broken or not wired.
+  #[error("the job fired but the Status line never reported it running")]
+  StatusNeverHigh,
   /// The relay was energized and its feedback did not confirm the laser loop open in time.
   #[error("the relay did not confirm the laser loop open")]
   RelayDidNotOpen,
@@ -75,6 +98,12 @@ pub enum FaultReason {
   /// The feedback reported the loop closed while the relay was energized and confirmed open.
   #[error("the relay dropped while the motor permit was held")]
   RelayDropped,
+  /// A move ran longer than the backstop timeout.
+  #[error("a move did not end within the timeout")]
+  MoveDidNotEnd,
+  /// The time given was earlier than the time before it.
+  #[error("the clock went backward")]
+  ClockWentBack,
   /// The alignment procedure or a node reported a fault (a stall, a soft limit, bus-off, invalid shots).
   #[error("the alignment procedure or a node reported a fault")]
   Procedure
@@ -95,7 +124,10 @@ pub enum State {
     job_seen: bool
   },
   /// The job is firing its dots.
-  Measuring,
+  Measuring {
+    /// Whether the Ruida has reported the job running yet.
+    job_seen: bool
+  },
   /// The job has ended; the sensor's readings are arriving.
   CollectingReadings {
     /// When the job ended.
@@ -103,13 +135,14 @@ pub enum State {
   },
   /// Waiting for quiet, then for the relay to confirm the laser loop open.
   ArmingMove {
-    /// When the move was asked for.
-    since_ms: u64,
     /// When the relay was energized, once it has been.
     energized_ms: Option<u64>
   },
   /// The motors may move.
-  Moving,
+  Moving {
+    /// When the motor permit was given.
+    since_ms: u64
+  },
   /// The nodes have been told to stop and the relay released; waiting for the loop to close.
   Disarming {
     /// When the relay was released.
@@ -129,8 +162,10 @@ pub enum Event {
   },
   /// The procedure wants a measurement: start the job.
   StartMeasurement,
-  /// The laser fired once (one burst of fire edges).
+  /// The laser began to fire: the first edge of a burst. Edges closer than `burst_gap_ms` are one burst, one shot.
   Fire,
+  /// The burst ended: no fire edge for `burst_gap_ms`.
+  FireEnded,
   /// The Ruida's Status input: a job is running.
   JobRunning(bool),
   /// Every reading of the job has arrived.
@@ -179,13 +214,15 @@ pub enum Outcome {
   ReadingsTimedOut,
   /// A fire came when no job was running, or after the job had ended.
   UnexpectedFire,
+  /// The Ruida started a job nobody asked for while the readings were arriving: the measurement is invalid.
+  UnexpectedJob,
   /// The request was refused in this state; nothing changed.
   Refused,
   /// The motors may move.
   MoveReady,
   /// The move has ended and the laser loop is closed again.
   MoveFinished,
-  /// Back in Inhibited after a lost node.
+  /// Back in Inhibited after a lost node or a failed self-test.
   Inhibited,
   /// Everything stopped.
   Faulted(FaultReason)
@@ -197,6 +234,7 @@ pub struct Actions {
   /// Drive the relay.
   pub relay: Option<Relay>,
   /// Tell every node that motion is allowed (`true`, INHIBIT 0) or not (`false`, INHIBIT 1).
+  /// A change only: [`Coordinator::motion_allowed`] gives the level, for repeating it.
   pub allow_motion: Option<bool>,
   /// Send ESTOP to every node.
   pub estop: bool,
@@ -215,26 +253,37 @@ pub struct Coordinator {
   state: State,
   relay_energized: bool,
   released_ms: Option<u64>,
-  loop_open: bool,
-  job_running: bool,
+  /// The last feedback reading. `None` before the first, and after each energize until the next.
+  loop_open: Option<bool>,
+  /// The Status line as last reported; `None` before it has been.
+  job_running: Option<bool>,
+  /// A burst of fire edges has started and not yet ended.
+  firing: bool,
+  /// When a burst last started or ended.
   last_fire_ms: Option<u64>,
   fires_in_job: u8,
-  next_seq: u8
+  /// Every reading of the running job arrived before it ended.
+  readings_complete: bool,
+  next_seq: u8,
+  last_now_ms: u64
 }
 
 impl Coordinator {
-  /// A coordinator after boot: Inhibited, relay released.
+  /// A coordinator after boot: Inhibited, relay released, no input read yet.
   pub const fn new(timing: CoordinatorTiming) -> Self {
     Self {
       timing,
       state: State::Inhibited,
       relay_energized: false,
       released_ms: None,
-      loop_open: false,
-      job_running: false,
+      loop_open: None,
+      job_running: None,
+      firing: false,
       last_fire_ms: None,
       fires_in_job: 0,
-      next_seq: 0
+      readings_complete: false,
+      next_seq: 0,
+      last_now_ms: 0
     }
   }
 
@@ -248,19 +297,29 @@ impl Coordinator {
     self.relay_energized
   }
 
-  /// Handles one event at `now_ms` (non-decreasing) and returns what to do.
+  /// Whether the motors may move: the level that [`Actions::allow_motion`] changes, for the firmware to repeat to
+  /// the nodes, so that a lost INHIBIT frame is sent again.
+  pub const fn motion_allowed(&self) -> bool {
+    matches!(self.state, State::Moving { .. })
+  }
+
+  /// Handles one event at `now_ms` and returns what to do. Time must not go backward; if it does, that is a fault,
+  /// and the new time becomes the reference.
   pub fn handle(&mut self, now_ms: u64, event: Event) -> Actions {
     let mut actions = Actions::default();
+    let clock_went_back = now_ms < self.last_now_ms;
+    self.last_now_ms = now_ms;
+    if clock_went_back && !matches!(self.state, State::Fault(_)) {
+      self.fault(now_ms, FaultReason::ClockWentBack, &mut actions);
+      return actions;
+    }
     if let Some(reason) = self.global_fault(now_ms, event) {
       self.fault(now_ms, reason, &mut actions);
       return actions;
     }
     match event {
       Event::NodeLost if !matches!(self.state, State::Fault(_) | State::Inhibited) => {
-        self.release(now_ms, &mut actions);
-        actions.allow_motion = Some(false);
-        self.state = State::Inhibited;
-        actions.outcome = Some(Outcome::Inhibited);
+        self.inhibit(now_ms, &mut actions);
         return actions;
       }
       Event::ProcedureFault if !matches!(self.state, State::Fault(_)) => {
@@ -275,34 +334,39 @@ impl Coordinator {
 
   /// The rules of every state: arming faults and relay feedback. Also records fires, the job line, and feedback.
   fn global_fault(&mut self, now_ms: u64, event: Event) -> Option<FaultReason> {
-    let armed = matches!(self.state, State::ArmingMove { .. } | State::Moving) || self.relay_energized;
+    // A loop that still reads open after a release is as good as armed: the laser cannot fire through it.
+    let armed = matches!(self.state, State::ArmingMove { .. } | State::Moving { .. })
+      || self.relay_energized
+      || self.loop_open == Some(true);
     match event {
-      Event::Fire => {
+      Event::Fire | Event::FireEnded => {
+        self.firing = event == Event::Fire;
         self.last_fire_ms = Some(now_ms);
         if armed {
           return Some(FaultReason::FireWhileArmed);
         }
       }
       Event::JobRunning(running) => {
-        self.job_running = running;
+        self.job_running = Some(running);
         if running && armed {
           return Some(FaultReason::JobWhileArmed);
         }
       }
-      Event::RelayFeedback { loop_open } => self.loop_open = loop_open,
+      Event::RelayFeedback { loop_open } => self.loop_open = Some(loop_open),
       _ => {}
     }
     if matches!(self.state, State::Fault(_)) {
       return None;
     }
-    if self.state == State::Moving && !self.loop_open {
+    if matches!(self.state, State::Moving { .. }) && self.loop_open != Some(true) {
       return Some(FaultReason::RelayDropped);
     }
     // After a release the loop has the feedback timeout to close; Disarming judges its own release.
     let settled = self
       .released_ms
       .is_none_or(|released| now_ms.saturating_sub(released) > u64::from(self.timing.relay_feedback_timeout_ms));
-    if !self.relay_energized && self.loop_open && settled && !matches!(self.state, State::Disarming { .. }) {
+    let open_released = !self.relay_energized && self.loop_open == Some(true);
+    if open_released && settled && !matches!(self.state, State::Disarming { .. }) {
       return Some(FaultReason::RelayDidNotClose);
     }
     None
@@ -311,44 +375,56 @@ impl Coordinator {
   fn step(&mut self, now_ms: u64, event: Event, actions: &mut Actions) {
     let handled = match self.state {
       State::Inhibited | State::Idle | State::Fault(_) => self.step_rest(now_ms, event, actions),
-      State::WaitingForFire { .. } | State::Measuring | State::CollectingReadings { .. } => {
+      State::WaitingForFire { .. } | State::Measuring { .. } | State::CollectingReadings { .. } => {
         self.step_job(now_ms, event, actions)
       }
-      State::ArmingMove { .. } | State::Moving | State::Disarming { .. } => self.step_move(now_ms, event, actions)
+      State::ArmingMove { .. } | State::Moving { .. } | State::Disarming { .. } => {
+        self.step_move(now_ms, event, actions)
+      }
     };
     if !handled && matches!(event, Event::StartMeasurement | Event::StartMove) {
       actions.outcome = Some(Outcome::Refused);
     }
   }
 
+  /// Whether a job may start or the relay may be armed:
+  /// the loop reads closed, the Status line reads low, and no burst is in progress.
+  fn ready_to_start(&self) -> bool {
+    self.loop_open == Some(false) && self.job_running == Some(false) && !self.firing
+  }
+
   /// `Inhibited`, `Idle`, and `Fault`. Returns whether the event was handled.
   fn step_rest(&mut self, now_ms: u64, event: Event, actions: &mut Actions) -> bool {
     match (self.state, event) {
       (State::Inhibited, Event::SelfTest { passed: true }) => {
-        self.state = State::Idle;
-        actions.outcome = Some(Outcome::Ready);
-      }
-      (State::Idle, Event::StartMeasurement) => {
-        if self.job_running {
-          actions.outcome = Some(Outcome::Refused);
+        // Only on inputs that have been read: the loop closed, and the Status line in either state.
+        if self.loop_open == Some(false) && self.job_running.is_some() {
+          self.state = State::Idle;
+          actions.outcome = Some(Outcome::Ready);
         } else {
+          actions.outcome = Some(Outcome::Refused);
+        }
+      }
+      (State::Idle, Event::SelfTest { passed: false }) => self.inhibit(now_ms, actions),
+      (State::Idle, Event::StartMeasurement) => {
+        if self.ready_to_start() {
           self.fires_in_job = 0;
+          self.readings_complete = false;
           self.state = State::WaitingForFire {
             since_ms: now_ms,
             job_seen: false
           };
           actions.start_job = true;
+        } else {
+          actions.outcome = Some(Outcome::Refused);
         }
       }
       (State::Idle, Event::StartMove) => {
-        if self.job_running {
-          actions.outcome = Some(Outcome::Refused);
-        } else {
-          self.state = State::ArmingMove {
-            since_ms: now_ms,
-            energized_ms: None
-          };
+        if self.ready_to_start() {
+          self.state = State::ArmingMove { energized_ms: None };
           self.arm(now_ms, actions);
+        } else {
+          actions.outcome = Some(Outcome::Refused);
         }
       }
       (State::Inhibited | State::Idle, Event::Fire) => actions.outcome = Some(Outcome::UnexpectedFire),
@@ -365,11 +441,11 @@ impl Coordinator {
   fn step_job(&mut self, now_ms: u64, event: Event, actions: &mut Actions) -> bool {
     let timing = self.timing;
     match (self.state, event) {
-      (State::WaitingForFire { .. } | State::Measuring, Event::Fire) => {
-        self.state = State::Measuring;
+      (State::WaitingForFire { job_seen, .. } | State::Measuring { job_seen }, Event::Fire) => {
+        self.state = State::Measuring { job_seen };
         let index = self.fires_in_job;
         self.fires_in_job = self.fires_in_job.saturating_add(1);
-        if let Some(point) = Point::from_index(index).filter(|_| index < timing.shots_per_job) {
+        if let Some(point) = Point::from_index(index) {
           actions.shot = Some((self.next_seq, point));
           self.next_seq = self.next_seq.wrapping_add(1);
         }
@@ -389,22 +465,22 @@ impl Coordinator {
           self.fault(now_ms, FaultReason::NoFire, actions);
         }
       }
-      (State::Measuring, Event::JobRunning(false)) => {
-        if self.fires_in_job == timing.shots_per_job {
-          self.state = State::CollectingReadings { since_ms: now_ms };
-        } else {
-          self.state = State::Idle;
-          actions.outcome = Some(Outcome::JobMismatch {
-            fires: self.fires_in_job
-          });
-        }
-      }
-      (State::Measuring, Event::Tick) => {
+      (State::Measuring { .. }, Event::JobRunning(true)) => self.state = State::Measuring { job_seen: true },
+      // A low read before the line rose is stale; the job ends on a low after a high.
+      (State::Measuring { job_seen: true }, Event::JobRunning(false)) => self.end_job(now_ms, actions),
+      (State::Measuring { job_seen }, Event::Tick) => {
         let last_fire = self.last_fire_ms.unwrap_or(now_ms);
         if elapsed(now_ms, last_fire) >= timing.fire_wait_timeout_ms {
-          self.fault(now_ms, FaultReason::JobDidNotEnd, actions);
+          let reason = if job_seen {
+            FaultReason::JobDidNotEnd
+          } else {
+            FaultReason::StatusNeverHigh
+          };
+          self.fault(now_ms, reason, actions);
         }
       }
+      // The sensor answers each shot within a few hundred milliseconds, often before the job ends.
+      (State::Measuring { .. }, Event::ReadingsComplete) => self.readings_complete = true,
       (State::CollectingReadings { .. }, Event::ReadingsComplete) => {
         self.state = State::Idle;
         actions.outcome = Some(Outcome::MeasurementReady);
@@ -419,22 +495,46 @@ impl Coordinator {
         self.state = State::Idle;
         actions.outcome = Some(Outcome::UnexpectedFire);
       }
+      (State::CollectingReadings { .. }, Event::JobRunning(true)) => {
+        self.state = State::Idle;
+        actions.outcome = Some(Outcome::UnexpectedJob);
+      }
       _ => return false
     }
     true
+  }
+
+  /// The job's Status line fell after rising: the measurement is ready, waits for its readings, or is invalid.
+  fn end_job(&mut self, now_ms: u64, actions: &mut Actions) {
+    if self.fires_in_job != SHOTS_PER_JOB {
+      self.state = State::Idle;
+      actions.outcome = Some(Outcome::JobMismatch {
+        fires: self.fires_in_job
+      });
+    } else if self.readings_complete {
+      self.state = State::Idle;
+      actions.outcome = Some(Outcome::MeasurementReady);
+    } else {
+      self.state = State::CollectingReadings { since_ms: now_ms };
+    }
   }
 
   /// `ArmingMove`, `Moving`, and `Disarming`. Returns whether the event was handled.
   fn step_move(&mut self, now_ms: u64, event: Event, actions: &mut Actions) -> bool {
     match (self.state, event) {
       (State::ArmingMove { .. }, Event::Tick | Event::RelayFeedback { .. }) => self.arm(now_ms, actions),
-      (State::Moving, Event::MovesDone) => {
+      (State::Moving { .. }, Event::MovesDone) => {
         actions.allow_motion = Some(false);
         self.release(now_ms, actions);
         self.state = State::Disarming { since_ms: now_ms };
       }
+      (State::Moving { since_ms }, Event::Tick) => {
+        if elapsed(now_ms, since_ms) >= self.timing.move_timeout_ms {
+          self.fault(now_ms, FaultReason::MoveDidNotEnd, actions);
+        }
+      }
       (State::Disarming { since_ms }, Event::Tick | Event::RelayFeedback { .. }) => {
-        if !self.loop_open {
+        if self.loop_open == Some(false) {
           self.state = State::Idle;
           actions.outcome = Some(Outcome::MoveFinished);
         } else if elapsed(now_ms, since_ms) > self.timing.relay_feedback_timeout_ms {
@@ -446,9 +546,9 @@ impl Coordinator {
     true
   }
 
-  /// In `ArmingMove`: energize once quiet, then wait for the feedback.
+  /// In `ArmingMove`: energize once quiet, then wait for a feedback reading taken after the energize.
   fn arm(&mut self, now_ms: u64, actions: &mut Actions) {
-    let State::ArmingMove { since_ms, energized_ms } = self.state else {
+    let State::ArmingMove { energized_ms } = self.state else {
       return;
     };
     let timing = self.timing;
@@ -457,19 +557,20 @@ impl Coordinator {
         let quiet = self
           .last_fire_ms
           .is_none_or(|fire| elapsed(now_ms, fire) >= timing.quiet_before_move_ms);
-        if quiet && !self.job_running {
+        // A fire or a job start here has already faulted, so only the quiet time and the loop are waited for.
+        if quiet && self.ready_to_start() {
           self.relay_energized = true;
           self.released_ms = None;
+          self.loop_open = None;
           actions.relay = Some(Relay::Energize);
           self.state = State::ArmingMove {
-            since_ms,
             energized_ms: Some(now_ms)
           };
         }
       }
       Some(energized) => {
-        if self.loop_open {
-          self.state = State::Moving;
+        if self.loop_open == Some(true) {
+          self.state = State::Moving { since_ms: now_ms };
           actions.allow_motion = Some(true);
           actions.outcome = Some(Outcome::MoveReady);
         } else if elapsed(now_ms, energized) > timing.relay_feedback_timeout_ms {
@@ -477,6 +578,14 @@ impl Coordinator {
         }
       }
     }
+  }
+
+  /// Back to `Inhibited`: the relay released and motion disallowed.
+  fn inhibit(&mut self, now_ms: u64, actions: &mut Actions) {
+    self.release(now_ms, actions);
+    actions.allow_motion = Some(false);
+    self.state = State::Inhibited;
+    actions.outcome = Some(Outcome::Inhibited);
   }
 
   fn release(&mut self, now_ms: u64, actions: &mut Actions) {

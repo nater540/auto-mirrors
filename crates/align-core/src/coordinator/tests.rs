@@ -14,12 +14,21 @@ const TIMING: CoordinatorTiming = CoordinatorTiming::STARTING;
 const QUIET: u64 = TIMING.quiet_before_move_ms as u64;
 const RELAY: u64 = TIMING.relay_feedback_timeout_ms as u64;
 
-/// A coordinator that has passed its self-test.
+/// A coordinator that has read the loop closed and the Status line low, and passed its self-test.
 fn idle() -> Coordinator {
   let mut coordinator = Coordinator::new(TIMING);
+  coordinator.handle(0, Event::RelayFeedback { loop_open: false });
+  coordinator.handle(0, Event::JobRunning(false));
   let actions = coordinator.handle(0, Event::SelfTest { passed: true });
   assert_eq!(actions.outcome, Some(Outcome::Ready));
   coordinator
+}
+
+/// A burst of fire edges at `at_ms`, ending 20 ms later. Returns what its start did.
+fn fire(coordinator: &mut Coordinator, at_ms: u64) -> Actions {
+  let actions = coordinator.handle(at_ms, Event::Fire);
+  coordinator.handle(at_ms + 20, Event::FireEnded);
+  actions
 }
 
 /// Runs a full job: start, three fires, Status high then low, readings complete. Returns the shots sent.
@@ -28,7 +37,7 @@ fn measure(coordinator: &mut Coordinator, start_ms: u64) -> Vec<(u8, Point)> {
   assert!(coordinator.handle(start_ms, Event::StartMeasurement).start_job);
   coordinator.handle(start_ms + 50, Event::JobRunning(true));
   for index in 0..3 {
-    if let Some(shot) = coordinator.handle(start_ms + 100 + index * 1_000, Event::Fire).shot {
+    if let Some(shot) = fire(coordinator, start_ms + 100 + index * 1_000).shot {
       shots.push(shot);
     }
   }
@@ -47,7 +56,7 @@ fn arm(coordinator: &mut Coordinator, at_ms: u64) -> u64 {
   let actions = coordinator.handle(at_ms + 10, Event::RelayFeedback { loop_open: true });
   assert_eq!(actions.allow_motion, Some(true));
   assert_eq!(actions.outcome, Some(Outcome::MoveReady));
-  assert_eq!(coordinator.state(), State::Moving);
+  assert!(matches!(coordinator.state(), State::Moving { .. }));
   at_ms + 10
 }
 
@@ -62,6 +71,8 @@ fn a_coordinator_boots_inhibited_and_needs_a_passed_self_test() {
     Some(Outcome::Refused)
   );
   assert_eq!(coordinator.handle(0, Event::StartMove).outcome, Some(Outcome::Refused));
+  coordinator.handle(0, Event::RelayFeedback { loop_open: false });
+  coordinator.handle(0, Event::JobRunning(false));
   coordinator.handle(0, Event::SelfTest { passed: true });
   assert_eq!(coordinator.state(), State::Idle);
 }
@@ -84,8 +95,8 @@ fn a_job_with_too_few_or_too_many_fires_is_a_mismatch() {
   let mut coordinator = idle();
   coordinator.handle(0, Event::StartMeasurement);
   coordinator.handle(10, Event::JobRunning(true));
-  coordinator.handle(100, Event::Fire);
-  coordinator.handle(200, Event::Fire);
+  fire(&mut coordinator, 100);
+  fire(&mut coordinator, 200);
   assert_eq!(
     coordinator.handle(300, Event::JobRunning(false)).outcome,
     Some(Outcome::JobMismatch { fires: 2 })
@@ -95,13 +106,9 @@ fn a_job_with_too_few_or_too_many_fires_is_a_mismatch() {
   coordinator.handle(1_000, Event::StartMeasurement);
   coordinator.handle(1_010, Event::JobRunning(true));
   for at in [1_100, 1_200, 1_300] {
-    assert!(coordinator.handle(at, Event::Fire).shot.is_some());
+    assert!(fire(&mut coordinator, at).shot.is_some());
   }
-  assert_eq!(
-    coordinator.handle(1_400, Event::Fire).shot,
-    None,
-    "no SHOT for a fourth dot"
-  );
+  assert_eq!(fire(&mut coordinator, 1_400).shot, None, "no SHOT for a fourth dot");
   assert_eq!(
     coordinator.handle(1_500, Event::JobRunning(false)).outcome,
     Some(Outcome::JobMismatch { fires: 4 })
@@ -162,15 +169,12 @@ fn readings_that_do_not_all_arrive_in_time_invalidate_the_measurement() {
 #[test]
 fn a_fire_outside_a_job_is_reported_and_one_after_the_job_invalidates_its_readings() {
   let mut coordinator = idle();
-  assert_eq!(
-    coordinator.handle(0, Event::Fire).outcome,
-    Some(Outcome::UnexpectedFire)
-  );
+  assert_eq!(fire(&mut coordinator, 0).outcome, Some(Outcome::UnexpectedFire));
   assert_eq!(coordinator.state(), State::Idle);
   coordinator.handle(1_000, Event::StartMeasurement);
   coordinator.handle(1_010, Event::JobRunning(true));
   for at in [1_100, 1_200, 1_300] {
-    coordinator.handle(at, Event::Fire);
+    fire(&mut coordinator, at);
   }
   coordinator.handle(1_400, Event::JobRunning(false));
   assert_eq!(
@@ -194,11 +198,15 @@ fn a_measurement_is_refused_while_the_ruida_runs_a_job() {
 #[test]
 fn a_move_waits_for_quiet_before_energizing_the_relay() {
   let mut coordinator = idle();
-  coordinator.handle(0, Event::Fire);
+  fire(&mut coordinator, 0);
   let actions = coordinator.handle(100, Event::StartMove);
-  assert_eq!(actions.relay, None, "a fire 100 ms ago");
-  assert_eq!(coordinator.handle(QUIET - 1, Event::Tick).relay, None);
-  assert_eq!(coordinator.handle(QUIET, Event::Tick).relay, Some(Relay::Energize));
+  assert_eq!(actions.relay, None, "a burst that ended 80 ms ago");
+  assert_eq!(coordinator.handle(QUIET + 19, Event::Tick).relay, None);
+  assert_eq!(
+    coordinator.handle(QUIET + 20, Event::Tick).relay,
+    Some(Relay::Energize),
+    "quiet from its end"
+  );
 }
 
 #[test]
@@ -209,7 +217,8 @@ fn motion_is_allowed_only_once_the_feedback_confirms_the_loop_open() {
   assert!(matches!(coordinator.state(), State::ArmingMove { .. }));
   let actions = coordinator.handle(8, Event::RelayFeedback { loop_open: true });
   assert_eq!(actions.allow_motion, Some(true));
-  assert_eq!(coordinator.state(), State::Moving);
+  assert_eq!(coordinator.state(), State::Moving { since_ms: 8 });
+  assert!(coordinator.motion_allowed());
 }
 
 #[test]
@@ -247,9 +256,9 @@ fn a_fire_while_moving_or_arming_is_an_immediate_fault_that_releases_the_relay()
 
   // Waiting for quiet, the relay not yet energized: still a fault.
   let mut coordinator = idle();
-  coordinator.handle(0, Event::Fire);
-  coordinator.handle(10, Event::StartMove);
-  let actions = coordinator.handle(20, Event::Fire);
+  fire(&mut coordinator, 0);
+  coordinator.handle(30, Event::StartMove);
+  let actions = coordinator.handle(40, Event::Fire);
   assert_eq!(actions.outcome, Some(Outcome::Faulted(FaultReason::FireWhileArmed)));
   assert_eq!(actions.relay, None, "nothing to release");
 }
@@ -393,18 +402,275 @@ fn events_with_nothing_to_do_report_nothing() {
   assert_eq!(coordinator.state(), State::Idle);
 }
 
+// --- the nemesis review of 2026-11-15 ---------------------------------------------------------------------------
+
 #[test]
-fn a_job_of_two_shots_sends_no_shot_for_a_third_fire() {
-  let timing = CoordinatorTiming {
-    shots_per_job: 2,
-    ..TIMING
-  };
-  let mut coordinator = Coordinator::new(timing);
-  coordinator.handle(0, Event::SelfTest { passed: true });
+fn readings_complete_before_the_job_ends_make_it_ready_when_it_ends() {
+  // The sensor answers about 200 ms after each shot; the Status line falls when the head is back, much later.
+  let mut coordinator = idle();
   coordinator.handle(0, Event::StartMeasurement);
-  assert_eq!(coordinator.handle(10, Event::Fire).shot, Some((0, Point::A)));
-  assert_eq!(coordinator.handle(20, Event::Fire).shot, Some((1, Point::B)));
-  assert_eq!(coordinator.handle(30, Event::Fire).shot, None);
+  coordinator.handle(50, Event::JobRunning(true));
+  for at in [100, 1_100, 2_100] {
+    fire(&mut coordinator, at);
+  }
+  assert_eq!(coordinator.handle(2_300, Event::ReadingsComplete), Actions::default());
+  assert_eq!(
+    coordinator.handle(3_500, Event::JobRunning(false)).outcome,
+    Some(Outcome::MeasurementReady)
+  );
+  assert_eq!(coordinator.state(), State::Idle);
+  // The next job starts without them.
+  coordinator.handle(5_000, Event::StartMeasurement);
+  coordinator.handle(5_050, Event::JobRunning(true));
+  for at in [5_100, 6_100, 7_100] {
+    fire(&mut coordinator, at);
+  }
+  coordinator.handle(8_000, Event::JobRunning(false));
+  assert!(matches!(coordinator.state(), State::CollectingReadings { .. }));
+}
+
+#[test]
+fn a_fire_or_a_job_while_the_loop_still_reads_open_after_a_release_is_a_fault() {
+  let at = 0;
+  for (after_release, event, reason) in [
+    (Event::MovesDone, Event::Fire, FaultReason::FireWhileArmed),
+    (Event::MovesDone, Event::JobRunning(true), FaultReason::JobWhileArmed),
+    (Event::NodeLost, Event::Fire, FaultReason::FireWhileArmed),
+    (Event::MovesDone, Event::FireEnded, FaultReason::FireWhileArmed)
+  ] {
+    let mut coordinator = idle();
+    let moving = arm(&mut coordinator, at);
+    coordinator.handle(moving + 1_000, after_release);
+    let actions = coordinator.handle(moving + 1_005, event);
+    assert_eq!(
+      actions.outcome,
+      Some(Outcome::Faulted(reason)),
+      "{event:?} after {after_release:?}"
+    );
+  }
+}
+
+#[test]
+fn after_a_release_nothing_starts_until_the_loop_reads_closed_again() {
+  for release in [Event::NodeLost, Event::ProcedureFault] {
+    let mut coordinator = idle();
+    let at = arm(&mut coordinator, 0);
+    coordinator.handle(at + 10, release);
+    coordinator.handle(at + 11, Event::ClearFault);
+    assert_eq!(
+      coordinator.handle(at + 12, Event::SelfTest { passed: true }).outcome,
+      Some(Outcome::Refused),
+      "the loop last read open"
+    );
+    assert_eq!(coordinator.state(), State::Inhibited);
+    coordinator.handle(at + 20, Event::RelayFeedback { loop_open: false });
+    coordinator.handle(at + 21, Event::SelfTest { passed: true });
+    assert_eq!(coordinator.state(), State::Idle);
+  }
+}
+
+#[test]
+fn motion_needs_a_feedback_reading_taken_after_the_energize() {
+  let mut coordinator = idle();
+  coordinator.handle(0, Event::StartMove);
+  assert!(coordinator.relay_energized());
+  assert_eq!(
+    coordinator.handle(1, Event::Tick).allow_motion,
+    None,
+    "the closed reading from before says nothing"
+  );
+  assert_eq!(
+    coordinator
+      .handle(2, Event::RelayFeedback { loop_open: false })
+      .allow_motion,
+    None
+  );
+  assert_eq!(
+    coordinator
+      .handle(3, Event::RelayFeedback { loop_open: true })
+      .allow_motion,
+    Some(true)
+  );
+}
+
+#[test]
+fn the_relay_is_energized_only_while_the_loop_reads_closed() {
+  let mut coordinator = idle();
+  let at = arm(&mut coordinator, 0);
+  coordinator.handle(at + 100, Event::MovesDone);
+  // Disarming: the loop has not closed yet, so nothing may start.
+  assert_eq!(
+    coordinator.handle(at + 105, Event::StartMove).outcome,
+    Some(Outcome::Refused)
+  );
+  coordinator.handle(at + 110, Event::RelayFeedback { loop_open: false });
+  assert_eq!(coordinator.state(), State::Idle);
+  assert_eq!(
+    coordinator.handle(at + 1_000, Event::StartMove).relay,
+    Some(Relay::Energize)
+  );
+}
+
+#[test]
+fn a_burst_holds_off_the_relay_until_quiet_after_its_end() {
+  // A panel pulse fires from 0 to 1500 ms: the burst starts at 0 and ends at 1500.
+  let mut coordinator = idle();
+  coordinator.handle(0, Event::Fire);
+  assert_eq!(
+    coordinator.handle(100, Event::StartMove).outcome,
+    Some(Outcome::Refused),
+    "no move during a burst"
+  );
+  assert_eq!(
+    coordinator.handle(200, Event::StartMeasurement).outcome,
+    Some(Outcome::Refused),
+    "nor a job"
+  );
+  coordinator.handle(1_500, Event::FireEnded);
+  coordinator.handle(1_600, Event::StartMove);
+  assert_eq!(coordinator.handle(1_500 + QUIET - 1, Event::Tick).relay, None);
+  assert_eq!(
+    coordinator.handle(1_500 + QUIET, Event::Tick).relay,
+    Some(Relay::Energize)
+  );
+}
+
+#[test]
+fn a_burst_of_many_edges_is_one_shot() {
+  let mut coordinator = idle();
+  coordinator.handle(0, Event::StartMeasurement);
+  coordinator.handle(50, Event::JobRunning(true));
+  let mut shots = Vec::new();
+  for dot in [100, 1_100, 2_100] {
+    shots.extend(coordinator.handle(dot, Event::Fire).shot);
+    coordinator.handle(dot + 30, Event::FireEnded);
+  }
+  assert_eq!(shots, [(0, Point::A), (1, Point::B), (2, Point::C)]);
+  coordinator.handle(3_000, Event::JobRunning(false));
+  assert!(matches!(coordinator.state(), State::CollectingReadings { .. }));
+}
+
+#[test]
+fn a_status_low_read_before_the_line_rose_does_not_end_the_job() {
+  let mut coordinator = idle();
+  coordinator.handle(0, Event::StartMeasurement);
+  fire(&mut coordinator, 100);
+  assert_eq!(coordinator.handle(130, Event::JobRunning(false)), Actions::default());
+  assert_eq!(coordinator.state(), State::Measuring { job_seen: false });
+  assert_eq!(
+    coordinator.handle(200, Event::StartMove).outcome,
+    Some(Outcome::Refused),
+    "no move while the job may still be running"
+  );
+  coordinator.handle(300, Event::JobRunning(true));
+  for at in [1_100, 2_100] {
+    fire(&mut coordinator, at);
+  }
+  coordinator.handle(3_000, Event::JobRunning(false));
+  assert!(matches!(coordinator.state(), State::CollectingReadings { .. }));
+}
+
+#[test]
+fn a_job_whose_status_line_never_rose_ends_in_a_fault() {
+  let mut coordinator = idle();
+  coordinator.handle(0, Event::StartMeasurement);
+  for at in [100, 1_100, 2_100] {
+    fire(&mut coordinator, at);
+  }
+  coordinator.handle(2_200, Event::ReadingsComplete);
+  let last = 2_120 + u64::from(TIMING.fire_wait_timeout_ms);
+  coordinator.handle(last - 1, Event::Tick);
+  assert_eq!(coordinator.state(), State::Measuring { job_seen: false });
+  assert_eq!(
+    coordinator.handle(last, Event::Tick).outcome,
+    Some(Outcome::Faulted(FaultReason::StatusNeverHigh))
+  );
+}
+
+#[test]
+fn time_that_goes_backward_is_a_fault_and_becomes_the_new_reference() {
+  let mut coordinator = idle();
+  coordinator.handle(10_000, Event::StartMeasurement);
+  let actions = coordinator.handle(9_999, Event::Tick);
+  assert_eq!(actions.outcome, Some(Outcome::Faulted(FaultReason::ClockWentBack)));
+  assert!(actions.estop);
+  assert_eq!(
+    coordinator.handle(10_000, Event::ClearFault).outcome,
+    Some(Outcome::Inhibited),
+    "the fault clears on the new clock"
+  );
+  // Energized, then the clock steps back: released at once.
+  let mut coordinator = idle();
+  coordinator.handle(500, Event::StartMove);
+  let actions = coordinator.handle(400, Event::Tick);
+  assert_eq!(actions.relay, Some(Relay::Release));
+  assert_eq!(actions.outcome, Some(Outcome::Faulted(FaultReason::ClockWentBack)));
+}
+
+#[test]
+fn nothing_starts_until_the_feedback_and_the_status_line_have_been_read() {
+  for reported in [
+    &[][..],
+    &[Event::RelayFeedback { loop_open: false }][..],
+    &[Event::JobRunning(false)][..]
+  ] {
+    let mut coordinator = Coordinator::new(TIMING);
+    for event in reported {
+      coordinator.handle(0, *event);
+    }
+    assert_eq!(
+      coordinator.handle(1, Event::SelfTest { passed: true }).outcome,
+      Some(Outcome::Refused),
+      "{reported:?}"
+    );
+    assert_eq!(coordinator.state(), State::Inhibited);
+  }
+  // A Status line read high is still a reading: the Idle state then refuses work until it falls.
+  let mut coordinator = Coordinator::new(TIMING);
+  coordinator.handle(0, Event::RelayFeedback { loop_open: false });
+  coordinator.handle(0, Event::JobRunning(true));
+  assert_eq!(
+    coordinator.handle(1, Event::SelfTest { passed: true }).outcome,
+    Some(Outcome::Ready)
+  );
+  assert_eq!(coordinator.handle(2, Event::StartMove).outcome, Some(Outcome::Refused));
+}
+
+#[test]
+fn a_move_that_never_ends_is_a_fault_after_the_backstop_timeout() {
+  let mut coordinator = idle();
+  let at = arm(&mut coordinator, 0);
+  let timeout = u64::from(TIMING.move_timeout_ms);
+  coordinator.handle(at + timeout - 1, Event::Tick);
+  assert!(coordinator.motion_allowed());
+  let actions = coordinator.handle(at + timeout, Event::Tick);
+  assert_eq!(actions.outcome, Some(Outcome::Faulted(FaultReason::MoveDidNotEnd)));
+  assert_eq!(actions.relay, Some(Relay::Release));
+  assert!(!coordinator.motion_allowed());
+}
+
+#[test]
+fn a_failed_self_test_in_idle_inhibits() {
+  let mut coordinator = idle();
+  let actions = coordinator.handle(10, Event::SelfTest { passed: false });
+  assert_eq!(actions.outcome, Some(Outcome::Inhibited));
+  assert_eq!(coordinator.state(), State::Inhibited);
+}
+
+#[test]
+fn a_job_nobody_asked_for_while_the_readings_arrive_voids_the_measurement() {
+  let mut coordinator = idle();
+  coordinator.handle(0, Event::StartMeasurement);
+  coordinator.handle(50, Event::JobRunning(true));
+  for at in [100, 1_100, 2_100] {
+    fire(&mut coordinator, at);
+  }
+  coordinator.handle(2_200, Event::JobRunning(false));
+  assert_eq!(
+    coordinator.handle(2_300, Event::JobRunning(true)).outcome,
+    Some(Outcome::UnexpectedJob)
+  );
+  assert_eq!(coordinator.handle(2_400, Event::ReadingsComplete), Actions::default());
 }
 
 #[test]
@@ -426,6 +692,7 @@ fn any_input() -> impl Strategy<Value = Input> {
     any::<bool>().prop_map(|passed| Event::SelfTest { passed }),
     Just(Event::StartMeasurement),
     Just(Event::Fire),
+    Just(Event::FireEnded),
     any::<bool>().prop_map(Event::JobRunning),
     Just(Event::ReadingsComplete),
     Just(Event::StartMove),
@@ -445,8 +712,12 @@ proptest! {
     let mut coordinator = Coordinator::new(TIMING);
     let mut now = 0_u64;
     let mut relay_on = false;
+    let mut firing = false;
     let mut last_fire: Option<u64> = None;
-    let mut job_running = false;
+    let mut job_running: Option<bool> = None;
+    // The last feedback reading, and whether one reading the loop open came after the last energize.
+    let mut feedback: Option<bool> = None;
+    let mut open_since_energize = false;
     let mut motion_allowed = false;
     for input in inputs {
       let event = match input {
@@ -458,17 +729,26 @@ proptest! {
       };
       let before = coordinator.state();
       let actions = coordinator.handle(now, event);
-      if let Event::Fire = event {
-        last_fire = Some(now);
-      }
-      if let Event::JobRunning(running) = event {
-        job_running = running;
+      match event {
+        Event::Fire | Event::FireEnded => {
+          firing = event == Event::Fire;
+          last_fire = Some(now);
+        }
+        Event::JobRunning(running) => job_running = Some(running),
+        Event::RelayFeedback { loop_open } => {
+          feedback = Some(loop_open);
+          open_since_energize |= loop_open;
+        }
+        _ => {}
       }
       match actions.relay {
         Some(Relay::Energize) => {
-          prop_assert!(!job_running, "energized with a job running");
+          prop_assert!(!firing, "energized during a burst");
+          prop_assert_eq!(job_running, Some(false), "energized without the Status line read low");
           prop_assert!(last_fire.is_none_or(|fire| now - fire >= QUIET), "energized within the quiet time");
+          prop_assert_eq!(feedback, Some(false), "energized without the loop read closed");
           relay_on = true;
+          open_since_energize = false;
         }
         Some(Relay::Release) => relay_on = false,
         None => {}
@@ -476,7 +756,7 @@ proptest! {
       prop_assert_eq!(relay_on, coordinator.relay_energized());
       if relay_on {
         prop_assert!(
-          matches!(coordinator.state(), State::ArmingMove { .. } | State::Moving),
+          matches!(coordinator.state(), State::ArmingMove { .. } | State::Moving { .. }),
           "energized in {:?}", coordinator.state()
         );
       }
@@ -484,19 +764,22 @@ proptest! {
         motion_allowed = allowed;
       }
       if actions.allow_motion == Some(true) {
-        prop_assert_eq!(coordinator.state(), State::Moving);
+        let moving_now = matches!(coordinator.state(), State::Moving { .. });
+        prop_assert!(moving_now);
         prop_assert!(relay_on);
+        prop_assert!(open_since_energize, "motion allowed without a feedback reading after the energize");
       }
-      if motion_allowed {
-        prop_assert_eq!(coordinator.state(), State::Moving, "motion still allowed outside Moving");
-      }
-      if before == State::Moving && coordinator.state() != State::Moving {
+      prop_assert_eq!(motion_allowed, coordinator.motion_allowed(), "the level disagrees with the changes");
+      let moving = |state: State| matches!(state, State::Moving { .. });
+      if moving(before) && !moving(coordinator.state()) {
         prop_assert_eq!(actions.allow_motion, Some(false), "left Moving without disallowing motion");
       }
-      if matches!(event, Event::Fire | Event::JobRunning(true))
-        && matches!(before, State::ArmingMove { .. } | State::Moving)
+      let armed = matches!(before, State::ArmingMove { .. } | State::Moving { .. }) || feedback == Some(true);
+      if matches!(event, Event::Fire | Event::FireEnded | Event::JobRunning(true))
+        && armed
+        && !matches!(before, State::Fault(_))
       {
-        prop_assert!(matches!(coordinator.state(), State::Fault(_)));
+        prop_assert!(matches!(coordinator.state(), State::Fault(_)), "{:?} while armed", event);
         prop_assert!(!coordinator.relay_energized());
       }
       if let Some(Outcome::Faulted(_)) = actions.outcome {
