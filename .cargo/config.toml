@@ -3,8 +3,8 @@
 #
 # Differences from the esp-generate 2.0.0 template, which assumes a firmware-only repository:
 # - no `[unstable] build-std`: riscv32imac-unknown-none-elf ships prebuilt for stable Rust;
-# - no `runner`: nothing is flashed until a board exists, and every flashing recipe must state what the image
-#   does to motors and I/O (docs/HANDOFF.md section 7).
+# - no `runner`: `just flash` is the only way to flash. It prints what the image does to motors and I/O and asks
+#   first (docs/HANDOFF.md section 7); a runner would let `cargo run` flash around that.
 [target.riscv32imac-unknown-none-elf]
 rustflags = [
   # Needed for esp-backtrace to walk the stack after a panic.
