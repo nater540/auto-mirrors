@@ -18,6 +18,11 @@
 //!   steps (3.2); this extends the same guard. The floor is the noise of the whole change `dm`, four readings to
 //!   a component, not of one measurement component: the review of 2026-11-15 showed that the smaller floor named
 //!   a healthy axis in one run of eight at the configured noise.
+//! - **A success is confirmed** by a second measurement, with no move between: the mean of the two, which has
+//!   `1 / sqrt(2)` of the noise, must be inside the tolerance as well.
+//!   The repeatability check of reference 2.3 (`Reading::check_repeat`) is not applied to the pair: it allows
+//!   `repeat_sigma` (3) sigmas of one coordinate for a difference of two readings, whose sigma is `sqrt(2)` times
+//!   larger, so noise alone would fail about one confirmation in five over the six coordinates.
 //! - **The Broyden updates are not stored.** They correct the Jacobian within one alignment, where they help; kept
 //!   across sessions, the noise of each update accumulates (the same review).
 //! - **A step limited by the clamp** cannot reduce the residual by the required fraction however well it went, so
@@ -406,10 +411,28 @@ impl<A: Actuator, S: BeamSensor> Aligner<A, S> {
     let poke = solver::steps_to_vector([self.config.motion.poke_steps; 4]).x;
     let limit = solver::step_limit(poke, &solver_config);
 
-    for _ in 0..solver_config.max_iterations {
+    let mut steps_left = solver_config.max_iterations;
+    loop {
       if solver::converged(&current.vector, &solver_config) {
+        // A success is confirmed by a second measurement, with no move between: the mean of the two must be inside
+        // the tolerance too. On one measurement, 9 alignments in 1000 stopped with the true residual above 0.03 at
+        // the configured noise (review of 2026-11-15). Requiring both inside instead tripled the recalibrations at
+        // that noise, for one false success fewer. A mean outside is the next measurement to correct from.
+        let again = self.measure().await?;
+        let mean = Measured {
+          vector: (current.vector + again.vector) / 2.0,
+          linear: current.linear && again.linear,
+          ..again
+        };
+        if solver::converged(&mean.vector, &solver_config) {
+          return Ok(self.converged(mean));
+        }
+        current = mean;
+      }
+      if steps_left == 0 {
         break;
       }
+      steps_left -= 1;
       let dq = solver::dls_step(
         &progress.jacobian,
         &current.vector,
@@ -451,18 +474,21 @@ impl<A: Actuator, S: BeamSensor> Aligner<A, S> {
       }
     }
 
-    if !solver::converged(&current.vector, &solver_config) {
-      return Ok(Attempt::Recalibrate {
-        residual_norm: current.vector.amax()
-      });
-    }
-    // The Broyden updates of this attempt are not stored: each carries the noise of one step, and a stored
-    // Jacobian that gathered them over sessions drifted a column 50% wrong in 479 of 1200 sessions in the
-    // review of 2026-11-15. The stored calibration changes only when the axes are poked again.
+    Ok(Attempt::Recalibrate {
+      residual_norm: current.vector.amax()
+    })
+  }
+
+  /// A confirmed success: every axis is trusted again.
+  ///
+  /// The Broyden updates of the attempt are not stored: each carries the noise of one step, and a stored Jacobian
+  /// that gathered them over sessions drifted a column 50% wrong in 479 of 1200 sessions in the review of
+  /// 2026-11-15. The stored calibration changes only when the axes are poked again.
+  fn converged(&mut self, last: Measured) -> Attempt {
     for axis in Axis::ALL {
       self.axes.get_mut(axis).suspect = false;
     }
-    Ok(Attempt::Converged(current))
+    Attempt::Converged(last)
   }
 
   /// Judges one completed step: suspect, learned from, or poor.

@@ -665,6 +665,56 @@ fn noise_at_the_configured_sigma_does_not_name_a_healthy_axis() {
   assert_eq!(named, 0);
 }
 
+/// A success is declared on two measurements with no move between them.
+/// The first must be inside the tolerance, and so must the mean of both.
+#[test]
+fn a_success_is_confirmed_by_a_second_measurement_with_no_move_between() {
+  let rig = Rig::new(Scenario::IDEAL);
+  let stored = rig.stored_calibration([1.0; 4]);
+  let mut aligner = rig.aligner(characterized()).unwrap().with_calibration(stored);
+  assert_eq!(block_on(aligner.align()).unwrap().iterations, 0);
+  let log = rig.world().log().to_vec();
+  assert!(
+    matches!(log.as_slice(), [Record::Measure { .. }, Record::Measure { .. }]),
+    "{log:?}"
+  );
+}
+
+/// The review of 2026-11-15: on one measurement, 9 alignments in 1000 at the configured noise stopped with the true
+/// residual above 0.03, against a tolerance of 0.02 (the worst at 0.041). Counted over fixed seeds.
+#[test]
+fn at_the_configured_noise_a_success_is_at_most_once_in_a_thousand_half_the_tolerance_beyond_it() {
+  let config = Config::default();
+  let (mut successes, mut beyond) = (0, 0);
+  let mut worst = 0.0_f32;
+  for seed in 0..1_000 {
+    let scenario = Scenario {
+      beam: Beam::PLACEHOLDER.with_position_noise(f64::from(config.sensor.noise_sigma_norm)),
+      misalignment_steps: PerAxis {
+        m1_h: 30.0,
+        m1_v: -25.0,
+        m2_h: -40.0,
+        m2_v: 35.0
+      },
+      ..Scenario::realistic(seed)
+    };
+    let rig = Rig::new(scenario);
+    let stored = rig.stored_calibration([1.0; 4]);
+    let mut aligner = rig.aligner(config).unwrap().with_calibration(stored);
+    if block_on(aligner.align()).is_ok() {
+      successes += 1;
+      let residual = true_residual(&rig);
+      worst = worst.max(residual);
+      if residual > 0.03 {
+        beyond += 1;
+      }
+    }
+  }
+  assert_eq!(successes, 1_000);
+  assert!(beyond <= 1, "{beyond} successes beyond 0.03");
+  assert!(worst < 0.035, "the worst true residual of a success was {worst}");
+}
+
 /// The Broyden updates of an alignment correct its Jacobian while it runs, but the stored calibration is the one
 /// the pokes measured: updates kept across sessions gather the noise of every step (the review of 2026-11-15).
 #[test]
