@@ -1,0 +1,51 @@
+# cargo-deny configuration: `just deny`. https://embarkstudios.github.io/cargo-deny/
+
+[graph]
+all-features = false
+# The host the tests run on, and the ESP32-C6 the firmware runs on.
+targets = [
+  "aarch64-apple-darwin",
+  "x86_64-unknown-linux-gnu",
+  "riscv32imac-unknown-none-elf",
+]
+
+[advisories]
+db-path = "~/.cargo/deny-advisory-db"
+db-urls = ["https://github.com/rustsec/advisory-db"]
+yanked = "deny"
+ignore = [
+  # Both arrive through the pinned esp-hal family and run at compile time only: neither is in a firmware image
+  # or a host binary. Neither has a known vulnerability, and neither can be upgraded from here. Look again at
+  # every esp-hal upgrade (docs/VERSIONS.md).
+  { id = "RUSTSEC-2024-0436", reason = "paste: unmaintained proc-macro crate needed by esp-hal 1.2.2 and riscv 0.15" },
+  { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml: unmaintained, in build scripts through esp-config 0.8" },
+]
+
+[licenses]
+# Exactly the licenses in the tree today. A new one fails the gate, which makes adding it a decision.
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "ISC",
+  "Zlib",
+  "Unicode-3.0",
+]
+confidence-threshold = 0.9
+
+[licenses.private]
+# The workspace crates carry no license yet and are not published. They are the thing being built, not a
+# third-party obligation.
+ignore = true
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# Workspace crates reference each other by path without a version.
+allow-wildcard-paths = true
+deny = []
+skip = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
