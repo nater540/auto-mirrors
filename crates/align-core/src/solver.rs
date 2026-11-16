@@ -16,6 +16,7 @@
 
 use nalgebra::{Matrix4, SVD, Vector4};
 
+use crate::axis::Axis;
 use crate::config::Solver;
 
 /// The empirical Jacobian: normalized sensor units per full step.
@@ -183,6 +184,65 @@ pub fn prediction_mismatch(jacobian: &Jacobian, dq: &Vector4<f32>, dm: &Vector4<
     error_norm.partial_cmp(&allowed),
     Some(core::cmp::Ordering::Less | core::cmp::Ordering::Equal)
   )
+}
+
+/// The axis that did not respond to its command, if there is one, judged from the measured change.
+///
+/// Addendum A.5 says a mismatch between the measured change and the prediction marks "the axis" suspect. It does
+/// not say which axis when four moved together, and a plain mismatch also arises from a Jacobian that is merely
+/// wrong: a Jacobian 30% too small predicts 70% of the real change, a mismatch of 43%. So the mismatch is
+/// attributed, and only an axis that fell short counts.
+///
+/// `J^-1 dm` is the step each axis appears to have taken. An axis is unresponsive when
+///
+/// - its predicted contribution, `abs(dq_j) * norm(J_j)`, is at least `noise_floor`, so that its absence could
+///   be seen at all, and
+/// - it appears to have taken less than `1 - prediction_mismatch_frac` of its command.
+///
+/// Of several such axes the one with the largest missing contribution is returned. An axis that did not move at
+/// all appears to have taken zero steps while every other axis appears to have taken its command.
+///
+/// Returns `None` when no axis qualifies, when the Jacobian cannot be inverted, or when an input is not finite.
+pub fn unresponsive_axis(
+  jacobian: &Jacobian,
+  dq: &Vector4<f32>,
+  dm: &Vector4<f32>,
+  noise_floor: f32,
+  config: &Solver,
+) -> Option<Axis> {
+  if !(all_finite(jacobian.iter()) && all_finite(dq.iter()) && all_finite(dm.iter())) {
+    return None;
+  }
+  let apparent = jacobian.try_inverse()? * dm;
+  let mut worst: Option<(Axis, f32)> = None;
+  for ((axis, column), (commanded, taken)) in Axis::ALL
+    .into_iter()
+    .zip(jacobian.column_iter())
+    .zip(dq.iter().zip(apparent.iter()))
+  {
+    let gain = column.norm();
+    let visible = commanded.abs() * gain >= noise_floor;
+    // The fraction of the command that is missing: 0 for a perfect response, 1 for none, above 1 for a reversed
+    // one. Dividing is safe: a visible command is not zero.
+    let missing_frac = (commanded - taken) / commanded;
+    if visible && missing_frac > config.prediction_mismatch_frac {
+      let missing = (commanded - taken).abs() * gain;
+      if worst.is_none_or(|(_, largest)| missing > largest) {
+        worst = Some((axis, missing));
+      }
+    }
+  }
+  worst.map(|(axis, _)| axis)
+}
+
+/// A whole-step vector as the `f32` vector the solver works in.
+pub fn steps_to_vector(steps: [i32; 4]) -> Vector4<f32> {
+  #[expect(
+    clippy::cast_precision_loss,
+    reason = "a step count is clamped to a few thousand, far inside the exact range of f32"
+  )]
+  let [m1_h, m1_v, m2_h, m2_v] = steps.map(|count| count as f32);
+  Vector4::new(m1_h, m1_v, m2_h, m2_v)
 }
 
 /// Whether the measurement vector is inside the convergence tolerance: `norm_inf(m) <= converge_tol_norm`.
@@ -525,6 +585,122 @@ mod tests {
     let jacobian = realistic_jacobian();
     let dq = Vector4::new(60.0, -45.0, 30.0, 90.0);
     assert!(prediction_mismatch(&jacobian, &dq, &Vector4::repeat(f32::NAN), &CONFIG));
+  }
+
+  /// The floor the aligner uses with the starting config: 5 * sqrt(2) * 0.005.
+  const FLOOR: f32 = 0.035_36;
+
+  #[test]
+  fn a_dead_axis_is_named_as_unresponsive_whichever_axis_it_is() {
+    let jacobian = realistic_jacobian();
+    let commanded = Vector4::new(40.0, -30.0, 60.0, 25.0);
+    for dead in Axis::ALL {
+      let mut moved = commanded;
+      moved[dead.index()] = 0.0;
+      assert_eq!(
+        unresponsive_axis(&jacobian, &commanded, &(jacobian * moved), FLOOR, &CONFIG),
+        Some(dead)
+      );
+    }
+  }
+
+  #[test]
+  fn an_axis_that_moved_backward_is_unresponsive() {
+    let jacobian = realistic_jacobian();
+    let commanded = Vector4::new(40.0, 40.0, 40.0, 40.0);
+    let moved = Vector4::new(40.0, -40.0, 40.0, 40.0);
+    assert_eq!(
+      unresponsive_axis(&jacobian, &commanded, &(jacobian * moved), FLOOR, &CONFIG),
+      Some(Axis::M1V)
+    );
+  }
+
+  #[test]
+  fn the_axis_missing_the_most_is_named_when_two_fall_short() {
+    let jacobian = realistic_jacobian();
+    let commanded = Vector4::new(40.0, 40.0, 40.0, 40.0);
+    // Mirror 1 has the larger gain (it acts over both legs), so the comparison is in measurement units: 25 steps
+    // missing on M1V weigh less than 40 missing on M2V, and more than 30.
+    let moved = Vector4::new(40.0, 15.0, 40.0, 0.0);
+    assert_eq!(
+      unresponsive_axis(&jacobian, &commanded, &(jacobian * moved), FLOOR, &CONFIG),
+      Some(Axis::M2V)
+    );
+    let moved = Vector4::new(40.0, 15.0, 40.0, 10.0);
+    assert_eq!(
+      unresponsive_axis(&jacobian, &commanded, &(jacobian * moved), FLOOR, &CONFIG),
+      Some(Axis::M1V)
+    );
+  }
+
+  #[test]
+  fn an_axis_that_took_more_than_half_of_its_command_is_not_unresponsive() {
+    let jacobian = realistic_jacobian();
+    let commanded = Vector4::new(40.0, 40.0, 40.0, 40.0);
+    let moved = Vector4::new(40.0, 21.0, 40.0, 40.0);
+    assert_eq!(
+      unresponsive_axis(&jacobian, &commanded, &(jacobian * moved), FLOOR, &CONFIG),
+      None
+    );
+    let moved = Vector4::new(40.0, 19.0, 40.0, 40.0);
+    assert_eq!(
+      unresponsive_axis(&jacobian, &commanded, &(jacobian * moved), FLOOR, &CONFIG),
+      Some(Axis::M1V)
+    );
+  }
+
+  /// A stored Jacobian that is 30% wrong in every column is a wrong Jacobian, not a dead axis, even though the
+  /// plain mismatch of a Jacobian 30% too small is 43%.
+  #[test]
+  fn a_jacobian_that_is_thirty_percent_wrong_names_no_axis() {
+    let actual = realistic_jacobian();
+    let commanded = Vector4::new(40.0, -30.0, 60.0, 25.0);
+    for scale in [0.7, 1.3] {
+      let believed = actual * scale;
+      assert_eq!(
+        unresponsive_axis(&believed, &commanded, &(actual * commanded), FLOOR, &CONFIG),
+        None
+      );
+    }
+    let too_small = actual * 0.7;
+    let mismatch = (actual * commanded - too_small * commanded).norm() / (too_small * commanded).norm();
+    assert_close(mismatch, 0.43, 0.005);
+  }
+
+  #[test]
+  fn an_axis_whose_command_is_too_small_to_see_is_never_named() {
+    let jacobian = realistic_jacobian();
+    // Two steps on M2V predict a change of about 0.006, far below the floor.
+    let commanded = Vector4::new(40.0, -30.0, 60.0, 2.0);
+    let moved = Vector4::new(40.0, -30.0, 60.0, 0.0);
+    assert_eq!(
+      unresponsive_axis(&jacobian, &commanded, &(jacobian * moved), FLOOR, &CONFIG),
+      None
+    );
+    assert_eq!(
+      unresponsive_axis(&jacobian, &Vector4::zeros(), &Vector4::zeros(), FLOOR, &CONFIG),
+      None
+    );
+  }
+
+  #[test]
+  fn no_axis_is_named_when_the_jacobian_cannot_be_inverted_or_the_data_is_not_a_number() {
+    let commanded = Vector4::new(40.0, -30.0, 60.0, 25.0);
+    let dm = Vector4::new(0.1, 0.1, 0.1, 0.1);
+    assert_eq!(
+      unresponsive_axis(&Jacobian::zeros(), &commanded, &dm, FLOOR, &CONFIG),
+      None
+    );
+    let not_a_number = Vector4::repeat(f32::NAN);
+    assert_eq!(
+      unresponsive_axis(&realistic_jacobian(), &commanded, &not_a_number, FLOOR, &CONFIG),
+      None
+    );
+  }
+
+  #[test]
+  fn whole_steps_become_the_solver_vector_in_axis_order() {
+    assert_eq!(steps_to_vector([1, -2, 3, -4]), Vector4::new(1.0, -2.0, 3.0, -4.0));
   }
 
   #[test]
