@@ -49,7 +49,8 @@ Stop at the end of each milestone and report to the owner (hand-off section 6).
 - Never write code that assumes firmware alone prevents motion during firing. Firmware checks are the last layer,
   behind the force-guided relay and the switched motor rail.
 - Never use strapping pins GPIO4, 5, 8, 9, 15 for a safety signal. Every pin lives in one `board.rs` per firmware
-  crate (none exists yet: there are no pin assignments).
+  crate: `firmware/node` and `firmware/sensor` have one, PROVISIONAL for development boards; the coordinator has no
+  pins yet (hand-off open item 7).
 - Do not expand scope into sensor hardware design or mechanical design.
 
 ## Settled decisions (do not re-propose; build each behind a seam)
