@@ -31,9 +31,9 @@ add it to the open list in the report.
 
 Stop at the end of each milestone and report to the owner (hand-off section 6).
 
-- M0 scaffold: done. M1 core math: done. M2 simulator and closed loop: done.
-- M3 protocol: next. M4 stepper and node firmware, M5 coordinator firmware, M6 bring-up tools, M7 Ruida UDP
-  (optional, read-only): not started.
+- M0 scaffold: done. M1 core math: done. M2 simulator and closed loop: done. M3 protocol: done.
+- M4 stepper and node firmware: next (needs the pin assignments, hand-off open item 7). M5 coordinator firmware,
+  M6 bring-up tools, M7 Ruida UDP (optional, read-only): not started.
 
 ## Things that must not be done
 
@@ -87,6 +87,26 @@ These fill gaps in the documents. Each was found by a failing closed-loop test, 
 - The absolute two-position target is kept out of the product and exists only in
   `crates/align-sim/tests/closed_loop.rs`, through the `Aligner::with_target` seam.
 
+## What the protocol settled (M3)
+
+Reference 5.4 and addendum A.8 leave these open; `align-proto` decides them, and its tests hold the decisions.
+
+- **Addresses:** coordinator 0, mirror 1 node 1, mirror 2 node 2, sensor node 3 (`NodeId`). The identifier's node
+  field names the node at the far end from the coordinator; a message to or from every node carries 0.
+- **The `axis` field is a channel on one node board (0 to 7), not a solver axis.** Which channel turns which screw
+  is wiring: the coordinator maps `align_core::axis::Axis` to a node and channel (M5).
+- **The identifier's axis field equals the payload's axis byte**, and is zero for a message without one; the
+  decoder rejects anything else.
+- **Decoding is strict where a value drives a move, lenient where it only reports.** A wrong length, an undefined
+  class, MOVE_REL flag bit, move result, or config key, or an inhibit byte other than 0 or 1, is an error. Pads are
+  written as zero and ignored. An unknown fault code is carried through (`FaultCode` is a newtype).
+- **Not yet defined, carried as raw bytes:** stop and estop reasons, the inhibit source, the heartbeat state, and the
+  sensor kind. Give them meaning in the milestone that uses them.
+- **Duplicate moves (`MoveRelTracker`, one per node):** the last sequence number with identical content is answered
+  (`AlreadyRunning`, or the same MOVE_DONE again) and never run twice; with different content it is refused
+  (`SeqReused`); a new move while one runs is refused (`Busy`). The tracker is RAM only: after a reboot it accepts
+  anything, so the node must restore its position before answering a move.
+
 ## Workspace layout
 
 One Cargo workspace, edition 2024, Rust 1.96.0 pinned. Dependencies and lints are declared once in the root
@@ -95,7 +115,8 @@ One Cargo workspace, edition 2024, Rust 1.96.0 pinned. Dependencies and lints ar
 - `crates/align-core`: `no_std`, no HAL. Config, unit conversions, quadrant math, the measurement vector, the
   solver, the `Actuator` and `BeamSensor` traits, the approach planner and soft limits, calibration, and the
   `Aligner` procedure. Later: the coordinator state machine (a pure function of state and event).
-- `crates/align-proto`: `no_std`. CAN identifiers and message encoding. Empty until M3.
+- `crates/align-proto`: `no_std`. The raw frame and identifier layout (`frame`), the ten messages and their
+  encoding through `Envelope` (`message`), and the node-side check that runs a resent MOVE_REL once (`dedup`).
 - `crates/align-sim`: `std`. The model of the machine (`world`), the model behind the two traits (`rig`), the
   closed-loop tests (`tests/closed_loop.rs`), and the `align-sim` command-line runner. Every machine number in it
   is an UNVERIFIED placeholder and a scenario parameter, never configuration.
