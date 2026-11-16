@@ -8,7 +8,7 @@
 //! Timing comes from `embedded_hal_async::delay::DelayNs` (embassy-time's `Delay` in firmware, a fake in tests).
 //!
 //! Safety: the coils are released whenever a move ends, including when its future is dropped part-way (a timeout,
-//! a `select` that took the other branch). [`Coils`] releases them in `Drop`. The coils are never the interlock,
+//! a `select` that took the other branch): a guard held for the length of the move releases them in its `Drop`. The coils are never the interlock,
 //! though: the switched motor rail is (addendum A.7). With the rail off, no pin state here can turn a motor.
 #![no_std]
 
@@ -100,7 +100,7 @@ pub struct MoveReport {
 #[error("a coil output pin failed ({0:?}); every coil was then set off, as far as the pins allowed")]
 pub struct PinFault<E: core::fmt::Debug>(pub E);
 
-/// The four coil outputs, IN1 to IN4. Releases every coil when dropped.
+/// The four coil outputs, IN1 to IN4. Off when made, and on only for the length of a move (see `EnergizedGuard`).
 pub struct Coils<P: OutputPin> {
   pins: [P; 4]
 }
@@ -144,28 +144,44 @@ impl<P: OutputPin> Coils<P> {
   }
 }
 
-impl<P: OutputPin> Drop for Coils<P> {
+/// Releases the coils when dropped: held for the length of a move, so that a move whose future is dropped part-way
+/// (a timeout, a `select` that took the other branch) leaves no coil energized. [`Coils`] releasing in its own `Drop`
+/// is not enough, because the stepper, and its coils, outlive a dropped move.
+struct EnergizedGuard<'a, P: OutputPin>(&'a mut Coils<P>);
+
+impl<P: OutputPin> Drop for EnergizedGuard<'_, P> {
   fn drop(&mut self) {
     // Nothing can report from here; `release` already tries every pin.
-    let _released = self.release();
+    let _released = self.0.release();
   }
 }
 
-/// One motor: its coils and the phase it is in.
+/// One motor: its coils, the phase it is in, and the steps the last move issued.
 pub struct Stepper<P: OutputPin> {
   coils: Coils<P>,
-  phase: Phase
+  phase: Phase,
+  issued: i32
 }
 
 impl<P: OutputPin> Stepper<P> {
   /// A stepper on these coils, resuming from a stored phase. The coils are off.
   pub const fn new(coils: Coils<P>, phase: Phase) -> Self {
-    Self { coils, phase }
+    Self {
+      coils,
+      phase,
+      issued: 0
+    }
   }
 
   /// The phase the motor is in: store it with the position after every move.
   pub const fn phase(&self) -> Phase {
     self.phase
+  }
+
+  /// Physical steps the last move issued, signed, counted as they go,
+  /// so that the count is still right after a move whose future was dropped part-way.
+  pub const fn steps_issued(&self) -> i32 {
+    self.issued
   }
 
   /// Turns the motor by `steps` physical full steps (positive walks [`SEQUENCE`] forward), then releases the coils.
@@ -187,6 +203,7 @@ impl<P: OutputPin> Stepper<P> {
     stop: &AtomicBool,
     mut rail_ok: impl FnMut() -> bool
   ) -> Result<MoveReport, PinFault<P::Error>> {
+    self.issued = 0;
     if steps == 0 {
       return Ok(MoveReport {
         end: MoveEnd::Done,
@@ -195,7 +212,6 @@ impl<P: OutputPin> Stepper<P> {
     }
     let forward = steps > 0;
     let unit = if forward { 1 } else { -1 };
-    let mut issued = 0_i32;
     let mut end = MoveEnd::Done;
 
     if let Some(early) = check(stop, &mut rail_ok) {
@@ -204,7 +220,9 @@ impl<P: OutputPin> Stepper<P> {
         steps_issued: 0
       });
     }
-    self.coils.energize(self.phase)?;
+    // From here until the end of the move, dropping the future releases the coils.
+    let coils = EnergizedGuard(&mut self.coils);
+    coils.0.energize(self.phase)?;
     delay.delay_ms(timing.energize_dwell_ms).await;
 
     for _ in 0..steps.unsigned_abs() {
@@ -213,18 +231,18 @@ impl<P: OutputPin> Stepper<P> {
         break;
       }
       self.phase = self.phase.step(forward);
-      issued += unit;
-      self.coils.energize(self.phase)?;
+      self.issued += unit;
+      coils.0.energize(self.phase)?;
       delay.delay_us(timing.step_period_us).await;
     }
 
     if end == MoveEnd::Done {
       delay.delay_ms(timing.hold_before_release_ms).await;
     }
-    self.coils.release()?;
+    coils.0.release()?;
     Ok(MoveReport {
       end,
-      steps_issued: issued
+      steps_issued: self.issued
     })
   }
 }
@@ -318,25 +336,30 @@ mod tests {
 
   struct FakeDelay {
     bench: Shared,
-    /// Pend forever instead of completing, to test a dropped move.
-    hang: bool
+    /// Pend forever once this many waits have completed, to test a move whose future is dropped.
+    hang_after: Option<usize>
+  }
+
+  impl FakeDelay {
+    async fn wait(&mut self, us: u64) {
+      self.bench.borrow_mut().events.push(Event::WaitUs(us));
+      match &mut self.hang_after {
+        Some(0) => core::future::pending::<()>().await,
+        Some(left) => *left -= 1,
+        None => {}
+      }
+    }
   }
 
   impl DelayNs for FakeDelay {
     async fn delay_ns(&mut self, ns: u32) {
-      self.bench.borrow_mut().events.push(Event::WaitUs(u64::from(ns) / 1000));
-      if self.hang {
-        core::future::pending::<()>().await;
-      }
+      self.wait(u64::from(ns) / 1000).await;
     }
     async fn delay_us(&mut self, us: u32) {
       self.delay_ns(us.saturating_mul(1000)).await;
     }
     async fn delay_ms(&mut self, ms: u32) {
-      self.bench.borrow_mut().events.push(Event::WaitUs(u64::from(ms) * 1000));
-      if self.hang {
-        core::future::pending::<()>().await;
-      }
+      self.wait(u64::from(ms) * 1000).await;
     }
   }
 
@@ -356,7 +379,7 @@ mod tests {
     bench.borrow_mut().events.clear();
     let delay = FakeDelay {
       bench: bench.clone(),
-      hang: false
+      hang_after: None
     };
     (bench, stepper, delay)
   }
@@ -557,12 +580,12 @@ mod tests {
   }
 
   #[test]
-  fn dropping_a_move_part_way_releases_the_coils() {
+  fn dropping_a_move_s_future_releases_the_coils_while_the_stepper_lives_on() {
     let (bench, mut stepper, _) = bench();
     let stop = AtomicBool::new(false);
     let mut hanging = FakeDelay {
       bench: bench.clone(),
-      hang: true
+      hang_after: Some(0)
     };
     {
       let mut future = pin!(stepper.run(10, TIMING, &mut hanging, &stop, || true));
@@ -570,8 +593,28 @@ mod tests {
       assert!(future.as_mut().poll(&mut context).is_pending());
       assert_eq!(bench.borrow().levels, SEQUENCE[0], "energized during the dwell");
     }
-    drop(stepper);
+    // Only the future was dropped, as `with_timeout` does; the stepper is still here.
     assert_eq!(bench.borrow().levels, OFF);
+    assert_eq!(stepper.steps_issued(), 0);
+  }
+
+  #[test]
+  fn a_move_cut_off_part_way_reports_the_steps_it_issued() {
+    let (bench, mut stepper, _) = bench();
+    let stop = AtomicBool::new(false);
+    // The dwell and two step waits complete; the third step's wait never does.
+    let mut hanging = FakeDelay {
+      bench: bench.clone(),
+      hang_after: Some(3)
+    };
+    {
+      let mut future = pin!(stepper.run(-10, TIMING, &mut hanging, &stop, || true));
+      let mut context = Context::from_waker(Waker::noop());
+      assert!(future.as_mut().poll(&mut context).is_pending());
+    }
+    assert_eq!(bench.borrow().levels, OFF);
+    assert_eq!(stepper.steps_issued(), -3);
+    assert_eq!(stepper.phase(), Phase::new(1).unwrap(), "three steps back from phase 0");
   }
 
   #[test]
