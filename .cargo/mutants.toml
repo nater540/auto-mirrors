@@ -1,0 +1,21 @@
+# cargo-mutants configuration: `just mutants`. https://mutants.rs
+#
+# The files listed here hold the decisions of the alignment logic: what a reading is worth, what step is taken,
+# when an axis is called suspect, where a move may go. A mutant that survives in one is an untested boundary: kill
+# it with a test, or, only if it cannot change any observable behavior, exclude it below with the reason. Never
+# exclude a mutant because it is hard to kill.
+
+examine_globs = [
+  "crates/align-core/src/approach.rs",
+  "crates/align-core/src/calibration.rs",
+  "crates/align-core/src/measurement.rs",
+  "crates/align-core/src/quadrant.rs",
+  "crates/align-core/src/solver.rs",
+  "crates/align-core/src/units.rs",
+  # The procedure has no unit tests of its own: the closed-loop tests in align-sim are what hold it.
+  "crates/align-core/src/aligner.rs",
+]
+
+# The firmware crates cannot build on the host, so the workspace is never tested as a whole. A mutant in
+# align-core is judged by its own tests and by the simulator's.
+test_package = ["align-core", "align-sim"]
