@@ -89,6 +89,12 @@ These fill gaps in the documents. Each was found by a failing closed-loop test, 
 - **A reading outside the solver's linear range still drives a step**, but nothing is learned from that step.
 - **Rates are tested as counts over fixed seeds**, not as properties over every seed. "Converges within the
   iteration cap" holds for every run only while the seat sticks for two steps or less.
+- **The thresholds assume a CO2-sized beam.** The poke size, the step clamp, and the 0.02 tolerance are in
+  normalized sensor units. On a 600 by 800 mm frame (`just sweep --y-spans 600 --x-span 800 --beam-radius R`),
+  2000 runs all converge at a beam radius of 3 mm or more, 83 percent at 2 mm, and none at 1 mm or 0.5 mm: a poke
+  of three times the backlash leaves a small beam's linear range, and 0.02 of a small beam is finer than the seats'
+  stick-slip. A small test beam (a laser pointer) needs expanding to about 3 mm radius or more, or the thresholds
+  need restating in physical units; the first is the recommendation (2026-11-15).
 - The absolute two-position target is kept out of the product and exists only in
   `crates/align-sim/tests/closed_loop.rs`, through the `Aligner::with_target` seam.
 
@@ -204,7 +210,7 @@ just flash node            # print the notice, need it acknowledged, flash, then
 just boot-log coordinator  # reset the board and check that its boot log holds the coordinator's whole notice
 just flash sensor          # the sensor image: five buttons instead of a detector; drives no output
 just sim --seed 7          # one simulated alignment, every move and measurement
-just sweep --runs 5000     # convergence against conditioning (the Y span)
+just sweep --runs 5000     # convergence against conditioning (the Y span); --x-span and --beam-radius for a frame
 just sweep-margins         # how much stick-slip, noise, backlash, and step loss the thresholds tolerate
 just deny                  # licenses, advisories, bans, and sources (deny.toml)
 just outdated              # the pinned crates against crates.io
