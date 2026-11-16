@@ -1,0 +1,11 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc a3dc7f07cb31a5654c9e1c20d8a8d984b94a7fcc5705d4742b115ec21bd15b86 # shrinks to seed = 9187998184184864031, (misalignment_steps, head_offset_um) = (PerAxis { m1_h: -33.158227089342674, m1_v: 0.0, m2_h: 42.10326195828774, m2_v: 0.0 }, [0.0, 0.0]), too_large = [true, false, false, false]
+cc b6d22a7357c8c323ea7369f9fd8d377eff1b534941f6e52adc330d003bc6d038 # shrinks to seed = 13650862622438391019, (misalignment_steps, head_offset_um) = (PerAxis { m1_h: 27.60992186013295, m1_v: 16.252815778592563, m2_h: -2.007444132168099, m2_v: 37.12153714071948 }, [-125.41322899792014, 0.0])
+cc fe2aa65b28885b1569bae5c29a5361686a22c6a90d18119825047f7999f579fa # shrinks to seed = 4922163392549830170, (misalignment_steps, head_offset_um) = (PerAxis { m1_h: 27.10204953443095, m1_v: 22.474484055688134, m2_h: 0.0, m2_v: -27.3473474863811 }, [-66.02730390397278, 0.0]), limit = 125
+cc 93be5f25277ff85c391ab85e0b8da8ec8a057826cba5afb5f5b1d6b2dee309de # shrinks to seed = 16985101410180412551, (misalignment_steps, head_offset_um) = (PerAxis { m1_h: 31.163516788962436, m1_v: 0.0, m2_h: 46.60750100953, m2_v: 40.56844448070811 }, [0.0, 0.0]), too_large = [true, false, true, false]
+cc 8472bced95c07c2abddc248128524d8a9cd1c435627e491164bd79f1982a7ead # shrinks to seed = 18344688001072454070, (misalignment_steps, head_offset_um) = (PerAxis { m1_h: 27.472618095218255, m1_v: 25.48256448898547, m2_h: 43.30215610901418, m2_v: -14.64844382344411 }, [-22.0236830017241, -90.7932623132173])
