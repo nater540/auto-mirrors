@@ -73,7 +73,8 @@ impl Rig {
     Calibration {
       jacobian,
       q0_steps: [0; 4],
-      cond
+      cond,
+      dir_sign: self.world().scenario().mechanics.dir_sign
     }
   }
 }

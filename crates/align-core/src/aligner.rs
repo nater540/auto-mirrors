@@ -8,8 +8,10 @@
 //! What the documents leave open, and what is done here:
 //!
 //! - **A reading outside the solver's linear range** (reference 2.2: "use sign and coarse steps only"). The step
-//!   is still taken, because the sensor response is monotonic and the step points the right way, but nothing is
-//!   learned from it: no Broyden update, no suspect judgment, no damping change.
+//!   is still taken, because the sensor response is monotonic, but nothing is learned from it: no Broyden update,
+//!   no suspect judgment. It points the right way only if the stored Jacobian has the right signs, so a step
+//!   after which the residual grew by more than noise counts as a poor step, coarse, small, or clamped (review of
+//!   2026-11-15: with one column's sign wrong, 49 runs in 50 walked the beam off the sensor).
 //! - **A step too small to see.** Addendum A.5 compares the measured change with the prediction after every
 //!   step. For a step of a few counts the prediction is inside sensor noise and seat stick-slip, the comparison
 //!   is meaningless, and applying it reports a healthy axis as not responding (the simulator shows this). A step
@@ -26,7 +28,7 @@
 //! - **The Broyden updates are not stored.** They correct the Jacobian within one alignment, where they help; kept
 //!   across sessions, the noise of each update accumulates (the same review).
 //! - **A step limited by the clamp** cannot reduce the residual by the required fraction however well it went, so
-//!   it is not judged as a poor step.
+//!   it is a poor step only if the residual grew.
 //! - **Which axis is suspect** when four moved together, and telling a dead axis from a wrong Jacobian:
 //!   [`crate::solver::unresponsive_axis`]. A mismatch in which no axis fell short is a Jacobian error, and the
 //!   Broyden update corrects it.
@@ -38,7 +40,7 @@ use nalgebra::Vector4;
 use crate::approach::{self, LastDir, SoftLimits};
 use crate::axis::{Axis, PerAxis};
 use crate::calibration::{self, Calibration};
-use crate::config::Config;
+use crate::config::{Config, Solver};
 use crate::measurement::{HeadOffset, Shots};
 use crate::quadrant::ReadingFault;
 use crate::rig::{Actuator, BeamSensor, MoveFault, SensorFault};
@@ -341,7 +343,8 @@ impl<A: Actuator, S: BeamSensor> Aligner<A, S> {
     let calibration = Calibration {
       jacobian,
       q0_steps,
-      cond: conditioning.cond
+      cond: conditioning.cond,
+      dir_sign: self.config.mechanics.dir_sign
     };
     self.calibration = Some(calibration);
     Ok(calibration)
@@ -397,7 +400,10 @@ impl<A: Actuator, S: BeamSensor> Aligner<A, S> {
         residual_norm: current.vector.amax()
       });
     };
-    let Ok(conditioning) = self.accept(&calibration.jacobian) else {
+    // A calibration measured under other direction signs has the wrong sign in those columns: every step would
+    // push those axes the wrong way (the review of 2026-11-15 walked the beam off the sensor that way).
+    let signs_match = calibration.dir_sign == self.config.mechanics.dir_sign;
+    let Some(conditioning) = self.accept(&calibration.jacobian).ok().filter(|_| signs_match) else {
       return Ok(Attempt::Recalibrate {
         residual_norm: current.vector.amax()
       });
@@ -501,13 +507,23 @@ impl<A: Actuator, S: BeamSensor> Aligner<A, S> {
     clamped: bool
   ) -> Result<Verdict, AlignFault> {
     let solver_config = self.config.solver;
-    if !(before.linear && after.linear) {
-      // A coarse step: the data is outside the linear range and teaches nothing.
-      return Ok(Verdict::Continue);
-    }
-    if (progress.jacobian * taken).norm() < calibration::judging_floor(&self.config.sensor, &solver_config) {
-      // Too small to judge: inside noise and stick-slip.
-      return Ok(Verdict::Continue);
+    // A residual that grew by more than the noise of a change says the step went the wrong way, however small
+    // the step or far the readings: the stored Jacobian has a wrong sign. That needs no judging floor and holds
+    // outside the linear range too, where the response is still monotonic. The review of 2026-11-15 saw a wrong
+    // column walk the beam off the sensor in 49 runs of 50 through steps too small or too coarse to be judged.
+    let grown = after.vector.norm() - before.vector.norm();
+    let worse = grown > solver_config.judge_noise_sigmas * calibration::change_sigma(&self.config.sensor);
+    let judgeable = before.linear
+      && after.linear
+      && (progress.jacobian * taken).norm() >= calibration::judging_floor(&self.config.sensor, &solver_config);
+    if !judgeable {
+      // A coarse step, or one too small to judge: inside noise and stick-slip, or outside the linear range.
+      // Nothing is learned from it about the Jacobian.
+      return Ok(if worse {
+        Self::poor_step(progress, &solver_config)
+      } else {
+        Verdict::Continue
+      });
     }
     let dm = after.vector - before.vector;
     let unresponsive = if solver::prediction_mismatch(&progress.jacobian, taken, &dm, &solver_config) {
@@ -526,7 +542,13 @@ impl<A: Actuator, S: BeamSensor> Aligner<A, S> {
       if streak >= solver_config.suspect_fault_streak {
         return Err(AlignFault::AxisNotResponding { axis });
       }
-      return Ok(Verdict::Continue);
+      // An axis that went backward is named too, and its column's sign is what is wrong. A dead axis leaves the
+      // residual where it was; a reversed one makes it grow, and that is a poor step besides.
+      return Ok(if worse {
+        Self::poor_step(progress, &solver_config)
+      } else {
+        Verdict::Continue
+      });
     }
     // Either the step went as predicted, or it did not and no axis fell short: then the Jacobian is wrong, and
     // the update below is how it is corrected.
@@ -542,17 +564,25 @@ impl<A: Actuator, S: BeamSensor> Aligner<A, S> {
 
     let reduced_enough =
       after.vector.norm() <= (1.0 - solver_config.min_residual_reduction_frac) * before.vector.norm();
-    if reduced_enough || clamped {
+    // A clamped step cannot reduce the residual by the required fraction however well it went, so it is good as
+    // long as the residual did not clearly grow.
+    if reduced_enough || (clamped && !worse) {
       progress.poor_steps = 0;
       progress.lambda /= solver_config.lambda_adjust_factor;
-    } else {
-      progress.poor_steps = progress.poor_steps.saturating_add(1);
-      progress.lambda *= solver_config.lambda_adjust_factor;
-      if progress.poor_steps >= solver_config.poor_steps_before_recalibration {
-        return Ok(Verdict::Recalibrate);
-      }
+      return Ok(Verdict::Continue);
     }
-    Ok(Verdict::Continue)
+    Ok(Self::poor_step(progress, &solver_config))
+  }
+
+  /// Counts a poor step: more damping, and a recalibration after `poor_steps_before_recalibration` in a row.
+  fn poor_step(progress: &mut Progress, solver_config: &Solver) -> Verdict {
+    progress.poor_steps = progress.poor_steps.saturating_add(1);
+    progress.lambda *= solver_config.lambda_adjust_factor;
+    if progress.poor_steps >= solver_config.poor_steps_before_recalibration {
+      Verdict::Recalibrate
+    } else {
+      Verdict::Continue
+    }
   }
 
   /// Whether a step can be judged at all and, if so, whether the beam disagreed with the prediction.

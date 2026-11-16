@@ -16,6 +16,7 @@ use std::vec::Vec;
 
 use super::*;
 use crate::approach::LastDir;
+use crate::config::DirSign;
 use crate::quadrant::Reading;
 
 /// A machine that is never reached: these tests stop before anything moves or measures.
@@ -387,7 +388,8 @@ fn on(machine: &Machine, config: &Config) -> Aligner<Machine, Machine> {
   let calibration = Calibration {
     jacobian,
     q0_steps: [0; 4],
-    cond: 1.0
+    cond: 1.0,
+    dir_sign: config.mechanics.dir_sign
   };
   let standard = AxisState {
     last_dir: LastDir::Plus,
@@ -532,6 +534,100 @@ fn a_step_whose_prediction_is_exactly_the_judging_floor_is_judged() {
   let outcome = run(on(&machine, &config).align());
   assert_eq!(machine.steps().first(), Some(&[-8, 0, 0, 0]));
   assert_eq!(outcome, Err(AlignFault::AxisNotResponding { axis: Axis::M1H }));
+}
+
+// --- a step that went the wrong way ---------------------------------------------------------------------------
+
+/// The quiet configuration, with one poor step enough for a recalibration: a step's verdict shows in what follows
+/// it, a recalibration's poke of M1H or another solver step.
+fn one_poor_step() -> Config {
+  let mut config = quiet();
+  config.solver.poor_steps_before_recalibration = 1;
+  config
+}
+
+/// The run of moves right after the first step: the recalibration's poke of M1H, or a second solver step.
+fn after_the_first_step(machine: &Machine) -> Option<[i32; 4]> {
+  machine.steps().get(1).copied()
+}
+
+const POKE: [i32; 4] = [45, 0, 0, 0];
+
+#[test]
+fn a_calibration_measured_under_other_direction_signs_is_measured_again() {
+  let mut config = quiet();
+  config.mechanics.dir_sign.m2_v = DirSign::Reversed;
+  let machine = Machine::new([0.2, 0.0, 0.0, 0.0]);
+  let forward = Calibration {
+    jacobian: Jacobian::identity() / 256.0,
+    q0_steps: [0; 4],
+    cond: 1.0,
+    dir_sign: PerAxis::splat(DirSign::Forward)
+  };
+  let mut aligner = Aligner::new(machine.clone(), machine.clone(), config, SUM_REF)
+    .unwrap()
+    .with_calibration(forward);
+  let report = run(aligner.align()).unwrap();
+  assert_eq!(report.recalibrations, 1);
+  assert_eq!(
+    aligner.calibration().map(|calibration| calibration.dir_sign),
+    Some(config.mechanics.dir_sign)
+  );
+}
+
+#[test]
+fn a_step_too_small_to_judge_is_poor_if_the_residual_grew_by_more_than_noise() {
+  // M1H runs backward. Binary-exact thresholds: the noise of a change is 1/64, and so is the growth after the
+  // first step (4 steps of 1/256), which is therefore not poor. The second step, 6 steps, is.
+  let mut config = one_poor_step();
+  config.sensor.noise_sigma_norm = 1.0 / 128.0;
+  config.solver.judge_noise_sigmas = 1.0;
+  let machine =
+    Machine::new([6.75 / 256.0, 0.0, 0.0, 0.0]).with(|script| script.response = vec![[-1.0, 1.0, 1.0, 1.0]]);
+  let _outcome = run(on(&machine, &config).align());
+  assert_eq!(
+    machine.steps().get(..3),
+    Some([[-4, 0, 0, 0], [-6, 0, 0, 0], POKE].as_slice())
+  );
+}
+
+#[test]
+fn a_coarse_step_is_poor_if_the_residual_grew() {
+  // M1H runs backward, and every reading is shifted just past the linear range.
+  let machine = Machine::new([0.03, 0.0, 0.0, 0.0]).with(|script| {
+    script.response = vec![[-1.0, 1.0, 1.0, 1.0]];
+    script.offset = vec![0.62; 40];
+  });
+  let _outcome = run(on(&machine, &one_poor_step()).align());
+  assert_eq!(after_the_first_step(&machine), Some(POKE));
+}
+
+#[test]
+fn a_clamped_step_is_poor_if_the_residual_grew() {
+  // The clamp holds every step to 4.5 steps. The first one goes as commanded, but both looks after it read M1V
+  // 0.08 further out: no axis fell short, and the residual grew.
+  let mut config = one_poor_step();
+  config.solver.step_clamp_pokes = 0.1;
+  let machine = Machine::new([0.1, 0.0, 0.0, 0.0])
+    .with(|script| script.noise = vec![[0.0; 4], [0.0, 0.08, 0.0, 0.0], [0.0, 0.08, 0.0, 0.0]]);
+  let _outcome = run(on(&machine, &config).align());
+  assert_eq!(machine.steps().first(), Some(&[-5, 0, 0, 0]));
+  assert_eq!(after_the_first_step(&machine), Some(POKE));
+}
+
+#[test]
+fn a_suspect_step_that_grew_the_residual_is_poor_as_well() {
+  // M1H runs backward: the judged step names it, and the residual grew, so the recalibration comes before a
+  // second suspect could make it a fault.
+  let machine = Machine::new([0.2, 0.0, 0.0, 0.0]).with(|script| script.response = vec![[-1.0, 1.0, 1.0, 1.0]]);
+  let outcome = run(on(&machine, &one_poor_step()).align());
+  // After the step: its measurement, the repeat that a suspect step gets, and the recalibration's baseline.
+  assert_eq!(machine.measure_runs().get(..2), Some([1, 3].as_slice()));
+  assert_eq!(after_the_first_step(&machine), Some(POKE));
+  assert!(
+    !matches!(outcome, Err(AlignFault::AxisNotResponding { .. })),
+    "{outcome:?}"
+  );
 }
 
 // --- confirming a success --------------------------------------------------------------------------------------

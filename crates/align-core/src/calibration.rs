@@ -8,8 +8,8 @@ use core::f32::consts::SQRT_2;
 
 use nalgebra::Vector4;
 
-use crate::axis::Axis;
-use crate::config::{SensorLimits, Solver};
+use crate::axis::{Axis, PerAxis};
+use crate::config::{DirSign, SensorLimits, Solver};
 use crate::solver::Jacobian;
 
 /// An accepted Jacobian and where it was measured. This is the record that is persisted after calibration.
@@ -20,7 +20,10 @@ pub struct Calibration {
   /// Commanded position of every axis when the baseline was measured, in steps.
   pub q0_steps: [i32; 4],
   /// Condition number of the Jacobian when it was accepted.
-  pub cond: f32
+  pub cond: f32,
+  /// The direction sign of every axis when the Jacobian was measured. A column measured under one sign is the
+  /// negative of the column under the other, so a calibration whose signs differ from the configuration is not used.
+  pub dir_sign: PerAxis<DirSign>
 }
 
 /// The Jacobian from a baseline measurement and the measurement after poking each axis by `poke_steps`:

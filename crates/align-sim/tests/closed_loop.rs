@@ -715,6 +715,28 @@ fn at_the_configured_noise_a_success_is_at_most_once_in_a_thousand_half_the_tole
   assert!(worst < 0.035, "the worst true residual of a success was {worst}");
 }
 
+/// The review of 2026-11-15: with the sign of one stored column wrong, every step pushed M1H further the wrong
+/// way, too small or too coarse to be judged, and 49 runs in 50 walked the beam off the sensor. A step that grows
+/// the residual by more than noise is now poor, and two in a row recalibrate.
+#[test]
+fn a_stored_column_with_the_wrong_sign_is_recalibrated_before_the_beam_leaves_the_sensor() {
+  let config = Config::default();
+  for seed in 0..200 {
+    let mut scenario = Scenario::realistic(seed);
+    scenario.misalignment_steps = PerAxis {
+      m1_h: 40.0,
+      m1_v: 0.0,
+      m2_h: -40.0,
+      m2_v: 0.0
+    };
+    let rig = Rig::new(scenario);
+    let stored = rig.stored_calibration([-1.0, 1.0, 1.0, 1.0]);
+    let mut aligner = rig.aligner(config).unwrap().with_calibration(stored);
+    let report = block_on(aligner.align()).unwrap();
+    assert_eq!(report.recalibrations, 1, "seed {seed}");
+  }
+}
+
 /// The Broyden updates of an alignment correct its Jacobian while it runs, but the stored calibration is the one
 /// the pokes measured: updates kept across sessions gather the noise of every step (the review of 2026-11-15).
 #[test]
