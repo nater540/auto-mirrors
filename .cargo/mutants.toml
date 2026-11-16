@@ -29,12 +29,14 @@ examine_globs = [
   # What the sensor answers, when, and to whom.
   "crates/sensor-logic/src/node.rs",
   "crates/sensor-logic/src/buttons.rs",
-  "crates/sensor-logic/src/console.rs"
+  "crates/sensor-logic/src/console.rs",
+  # Whether the coordinator counts a node as present, lost, or restarted.
+  "crates/coordinator-logic/src/nodes.rs"
 ]
 
 # The firmware crates cannot build on the host, so the workspace is never tested as a whole. A mutant in
 # align-core is judged by its own tests and by the simulator's; one in another crate by that crate's own.
-test_package = ["align-core", "align-sim", "align-proto", "stepper", "node-logic", "sensor-logic"]
+test_package = ["align-core", "align-sim", "align-proto", "stepper", "node-logic", "sensor-logic", "coordinator-logic"]
 
 # The three fields of an identifier occupy disjoint bits, so combining them with `^` instead of `|` gives the same
 # identifier for every input: these mutants cannot change behavior.

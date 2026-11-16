@@ -1,0 +1,18 @@
+[package]
+name = "coordinator-logic"
+description = "The coordinator's bus side as host-tested logic: node supervision, shots and readings, moves"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+align-core.workspace = true
+align-proto.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

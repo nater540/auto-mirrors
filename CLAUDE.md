@@ -35,7 +35,10 @@ Stop at the end of each milestone and report to the owner (hand-off section 6).
 - M0 scaffold: done. M1 core math: done. M2 simulator and closed loop: done. M3 protocol: done.
 - M4 stepper and node firmware: code done and running on the development board with PROVISIONAL pins. The motor
   bench test (a 28BYJ-48 on a ULN2003, wired as the node's `FLASH_NOTICE.txt` says) is pending.
-- M5 coordinator firmware, M6 bring-up tools, M7 Ruida UDP (optional, read-only): not started.
+- M5 coordinator: started. Host-tested so far: the state machine of reference 7.3 (`align_core::coordinator`, whose
+  extra states await the owner's sign-off) and the watch over the nodes (`coordinator_logic::nodes`). The firmware
+  is still the M0 scaffold.
+- M6 bring-up tools, M7 Ruida UDP (optional, read-only): not started.
 - Sensor track (`docs/SENSOR_PLAN.md`): S0 protocol, S1 `sensor-logic`, and S2 `firmware/sensor` done, with five
   buttons instead of a detector (owner, 2026-11-15). S3, the detector's method, waits for the detector, which is
   likely a pyroelectric quad; do not build detector processing before then.
@@ -215,11 +218,14 @@ One Cargo workspace, edition 2024, Rust 1.96.0 pinned. Dependencies and lints ar
   the `ShotMethod` trait), the five bench buttons (`buttons`: debounce, chords, positions), and its console.
 - `firmware/sensor` (`align-sensor`): wires `sensor-logic` to TWAI, five button inputs, and the USB console. Drives
   no output pin and writes no flash. Pins in `src/board.rs`, PROVISIONAL for a development board of its own.
+- `crates/coordinator-logic`: `no_std`. The coordinator's bus side, turning traffic into the state machine's events:
+  so far the watch over the nodes (`nodes`: present, lost, restarted, or another protocol version, judged from
+  heartbeats the way the nodes judge the coordinator).
 - `firmware/coordinator` (`align-coordinator`): scaffold only. It boots, logs its notice, and touches no pin.
 
-Dependency direction: firmware and `align-sim` depend on `align-core`, `align-proto`, `stepper`, `node-logic`, and
-`sensor-logic`; `node-logic` depends on the first three, `sensor-logic` on the first two; `align-core` depends on
-none of them.
+Dependency direction: firmware and `align-sim` depend on `align-core`, `align-proto`, `stepper`, `node-logic`,
+`sensor-logic`, and `coordinator-logic`; `node-logic` depends on the first three, `sensor-logic` and
+`coordinator-logic` on the first two; `align-core` depends on none of them.
 HAL types never enter the `crates/` libraries.
 
 The firmware crates are workspace members but not `default-members`: a plain `cargo build`, `cargo test`, or
