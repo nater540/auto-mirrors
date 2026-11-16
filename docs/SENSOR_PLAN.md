@@ -1,6 +1,6 @@
 # Sensor node firmware: plan
 
-Status: PLAN, revision 3, 2026-11-15. Nothing here is built.
+Status: PLAN, revision 3, 2026-11-15. The protocol (section 3) is approved and built (S0, protocol version 2).
 Revision 3 answers an adversarial review of revision 2; section 15 maps each finding to its resolution.
 The owner decided that the sensor firmware belongs in this repository, written here; that the CAN protocol may change
 as needed; and that five push buttons stand in for the detector until it exists.
@@ -127,9 +127,10 @@ Commissioning from the coordinator console, since the drag chain has no USB (R10
 | 5 Report | quadrant index | Replies with that quadrant's tau and sigma |
 | 6 Bench | 0 or 1 | Leaves or enters bench mode |
 
-Reply: `op u8, status u8 (0 ok, 1 busy, 2 refused, 3 failed), value_a i32` and two spare bytes, one reply per
-command; Report replies carry tau in microseconds and, in a second reply, sigma in counts. The USB console offers the
-same commands for the bench.
+Reply: `op u8, status u8 (0 ok, 1 busy, 2 refused, 3 failed), value i32, extra u16`, one reply per command.
+Report puts the quadrant's tau in microseconds in `value` and its sigma in counts in `extra`; the other operations
+leave `extra` at 0. Byte 1 of SENSOR_CMD is reserved and ignored. The USB console offers the same commands for the
+bench.
 
 ### 3.5 Existing messages
 
@@ -403,12 +404,23 @@ They do not block M5: the coordinator can be built against the simulated sensor.
 
 ## 14. Questions for the owner
 
-1. Sign-off on section 3 and section 13.
-2. Sign-off on the DC-coupled thermal detector assumption, or anything known that contradicts it.
-3. A second ESP32-C6 development board for the sensor (recommended), or the one-board fallback.
-4. How should `S_ref` scale with laser power? Proposal: store it with its power, and let the coordinator scale it
-   linearly above the lasing threshold (UNVERIFIED until measured).
-5. On the Mod5, with a scope: how many edges does one Ruida dot produce on the fire line?
+Answered on 2026-11-15:
+
+- **Section 3, the protocol: approved.** S0 builds it.
+- **`S_ref` and power: approved as proposed.** `S_ref` is stored with the power it was taken at, and the coordinator
+  scales it linearly above the lasing threshold (UNVERIFIED until measured).
+- **Architecture: confirmed.** The sensor is its own node on the laser tool head (third mirror and focusing lens),
+  talking to the coordinator, which talks to the two motor nodes.
+
+Still open:
+
+1. Section 13 (the reference 7.3 state CollectingReadings, the `align-core` changes): implied by the protocol, not
+   yet explicitly signed off. Needed by M5, not before.
+2. The DC-coupled thermal detector assumption. S1 builds `ThermalIntegration` behind the `ShotMethod` trait either
+   way, so a different detector costs a new method, not a rewrite.
+3. Bench hardware for S3: a second ESP32-C6 development board for the sensor and its five buttons (recommended), or
+   reflashing the one board between the motor node and the sensor.
+4. On the Mod5, with a scope: how many edges does one Ruida dot produce on the fire line?
 
 ## 15. Review disposition (revision 2 review, 17 findings)
 

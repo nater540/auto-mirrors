@@ -36,6 +36,8 @@ Stop at the end of each milestone and report to the owner (hand-off section 6).
 - M4 stepper and node firmware: code done and running on the development board with PROVISIONAL pins. The motor
   bench test (a 28BYJ-48 on a ULN2003, wired as the node's `FLASH_NOTICE.txt` says) is pending.
 - M5 coordinator firmware, M6 bring-up tools, M7 Ruida UDP (optional, read-only): not started.
+- Sensor track (`docs/SENSOR_PLAN.md`): S0 protocol done. S1 (`sensor-logic`) is next, pending the owner's word on
+  the DC-coupled thermal detector assumption.
 
 ## Things that must not be done
 
@@ -102,8 +104,13 @@ Reference 5.4 and addendum A.8 leave these open; `align-proto` decides them, and
 - **Decoding is strict where a value drives a move, lenient where it only reports.** A wrong length, an undefined
   class, MOVE_REL flag bit, move result, or config key, or an inhibit byte other than 0 or 1, is an error. Pads are
   written as zero and ignored. An unknown fault code is carried through (`FaultCode` is a newtype).
-- **Not yet defined, carried as raw bytes:** stop and estop reasons, the inhibit source, the heartbeat state, and the
-  sensor kind. Give them meaning in the milestone that uses them.
+- **Not yet defined, carried as raw bytes:** stop and estop reasons, the inhibit source, and the heartbeat state.
+  Give them meaning in the milestone that uses them.
+- **Protocol version 2 (S0, 2026-11-15):** the sensor classes 0xA SHOT, 0xB SENSOR_RESEND, 0xC SENSOR_CMD, and
+  0xD SENSOR_CMD_REPLY; SENSOR's status byte (result code, calibrated bit, bench bit); HEARTBEAT lengthened to 7
+  bytes by `proto_version`. A node ignores a coordinator heartbeat of another version, reports FAULT 0x34 once, and
+  refuses to act. Bump `align_proto::PROTOCOL_VERSION` with any layout change, and rebuild every image together.
+  The layouts and their reasons are `docs/SENSOR_PLAN.md` section 3.
 - **Duplicate moves (`MoveRelTracker`, one per node):** the last sequence number with identical content is answered
   (`AlreadyRunning`, or the same MOVE_DONE again) and never run twice; with different content it is refused
   (`SeqReused`); a new move while one runs is refused (`Busy`). The tracker is RAM only: after a reboot it accepts
