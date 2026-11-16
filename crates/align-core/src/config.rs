@@ -231,6 +231,41 @@ impl Solver {
   };
 }
 
+/// How a motor node guards and reports its moves (hand-off 3.3, reference 5.4, addendum A.2 and A.7).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NodeTiming {
+  /// FIRM: a node stops and disarms when the last coordinator heartbeat is older than this (hand-off 3.3).
+  pub heartbeat_timeout_ms: u32,
+  /// FIRM: the coordinator sends a heartbeat this often (reference 5.4); a node sends its own at the same period.
+  pub heartbeat_period_ms: u32,
+  /// FIRM, chosen in M4: a node reports the STATUS of each motor this often, besides after every move.
+  pub status_period_ms: u32,
+  /// UNVERIFIED: the time the switched motor rail takes to come up after the arm pulse starts.
+  /// The charge pump and the load switch are not designed yet (addendum A.7).
+  /// A move whose rail is not up by then ends as a rail loss.
+  pub rail_up_timeout_ms: u32,
+  /// CALCULATED: the shortest step period a CONFIG may set, 1 / 500 pulses per second.
+  /// The input is the VERIFIED no-load starting rate of more than 500 pulses per second (addendum A.2).
+  pub min_step_period_us: u32,
+  /// UNVERIFIED: the longest step period a CONFIG may set (10 pulses per second), a sanity bound only.
+  pub max_step_period_us: u32,
+  /// FIRM, chosen in M4: a move still running this long after its computed duration is cut off as a fault.
+  pub move_timeout_margin_ms: u32,
+}
+
+impl NodeTiming {
+  /// The starting values.
+  pub const STARTING: Self = Self {
+    heartbeat_timeout_ms: 300,
+    heartbeat_period_ms: 100,
+    status_period_ms: 1_000,
+    rail_up_timeout_ms: 50,
+    min_step_period_us: 2_000,
+    max_step_period_us: 100_000,
+    move_timeout_margin_ms: 1_000,
+  };
+}
+
 /// The whole configuration.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Config {
@@ -242,6 +277,8 @@ pub struct Config {
   pub sensor: SensorLimits,
   /// Solver thresholds.
   pub solver: Solver,
+  /// Motor node guards and reporting.
+  pub node: NodeTiming,
 }
 
 impl Config {
@@ -251,6 +288,7 @@ impl Config {
     motion: Motion::STARTING,
     sensor: SensorLimits::STARTING,
     solver: Solver::STARTING,
+    node: NodeTiming::STARTING,
   };
 }
 
@@ -281,6 +319,17 @@ mod tests {
     assert_close(mechanics.deflect_k.get(Axis::M1V), 1.414, 1e-3);
     assert_close(mechanics.deflect_k.get(Axis::M2H), 2.0, 0.0);
     assert_close(mechanics.deflect_k.get(Axis::M2V), 1.414, 1e-3);
+  }
+
+  #[test]
+  fn the_node_timing_follows_the_hand_off_and_the_no_load_start_rate() {
+    let node = Config::default().node;
+    assert_eq!(node.heartbeat_timeout_ms, 300);
+    assert_eq!(node.heartbeat_period_ms, 100);
+    // 500 pulses per second is a 2000 us period.
+    assert_eq!(node.min_step_period_us, 1_000_000 / 500);
+    assert!(node.min_step_period_us <= Config::default().motion.step_period_us);
+    assert!(Config::default().motion.step_period_us <= node.max_step_period_us);
   }
 
   #[test]

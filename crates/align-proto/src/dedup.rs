@@ -68,8 +68,23 @@ impl MoveRelTracker {
   /// [`MoveRefused::SeqReused`] for the last sequence number with different content, [`MoveRefused::Busy`] for a
   /// new move while one runs. Either way the node must not move.
   pub fn on_move_rel(&mut self, received: MoveRel) -> Result<MoveDecision, MoveRefused> {
+    let decision = self.check(received)?;
+    if decision == MoveDecision::Run {
+      self.accept(received);
+    }
+    Ok(decision)
+  }
+
+  /// Decide what to do with a received MOVE_REL without remembering it. A node that may still refuse a new move
+  /// for its own reasons (inhibited, no permit) checks first and calls [`Self::accept`] only when it runs the move,
+  /// so that a resend after the reason is gone is a new move rather than a repeat of a refused one.
+  ///
+  /// # Errors
+  ///
+  /// As [`Self::on_move_rel`].
+  pub fn check(&self, received: MoveRel) -> Result<MoveDecision, MoveRefused> {
     let Some(accepted) = self.last else {
-      return Ok(self.accept(received));
+      return Ok(MoveDecision::Run);
     };
     if received.seq == accepted.seq {
       if received != accepted {
@@ -91,7 +106,14 @@ impl MoveRelTracker {
         received: received.seq,
       });
     }
-    Ok(self.accept(received))
+    Ok(MoveDecision::Run)
+  }
+
+  /// Remember a move as the one now running. Call it only for a move that [`Self::check`]
+  /// answered with [`MoveDecision::Run`].
+  pub fn accept(&mut self, received: MoveRel) {
+    self.last = Some(received);
+    self.done = None;
   }
 
   /// Record that the running move ended, and return the MOVE_DONE to send. `None` when no move is running.
@@ -110,12 +132,6 @@ impl MoveRelTracker {
   /// The move that is running, if one is.
   pub fn running(&self) -> Option<MoveRel> {
     self.last.filter(|_| self.done.is_none())
-  }
-
-  fn accept(&mut self, received: MoveRel) -> MoveDecision {
-    self.last = Some(received);
-    self.done = None;
-    MoveDecision::Run
   }
 }
 
@@ -209,6 +225,18 @@ mod tests {
     tracker.on_move_rel(move_rel(255, 100)).unwrap();
     tracker.finish(MoveResult::Stopped, 40).unwrap();
     assert_eq!(tracker.on_move_rel(move_rel(0, 100)), Ok(MoveDecision::Run));
+  }
+
+  #[test]
+  fn a_checked_move_is_not_remembered_until_it_is_accepted() {
+    let mut tracker = MoveRelTracker::new();
+    assert_eq!(tracker.check(move_rel(4, 100)), Ok(MoveDecision::Run));
+    assert_eq!(tracker.running(), None);
+    // Refused for a reason of the node's own, then resent: still a new move.
+    assert_eq!(tracker.check(move_rel(4, 100)), Ok(MoveDecision::Run));
+    tracker.accept(move_rel(4, 100));
+    assert_eq!(tracker.running(), Some(move_rel(4, 100)));
+    assert_eq!(tracker.check(move_rel(4, 100)), Ok(MoveDecision::AlreadyRunning));
   }
 
   #[test]

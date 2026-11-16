@@ -20,6 +20,38 @@ impl FaultCode {
   pub const AXIS_NOT_RESPONDING: Self = Self(0x10);
   /// The switched motor rail dropped while a move was running (addendum A.8, 0x11).
   pub const RAIL_LOST_DURING_MOVE: Self = Self(0x11);
+
+  // The codes below are defined by milestone M4, for the reasons a node refuses a command. For a refused MOVE_REL
+  // the detail is its sequence number; for a refused CONFIG, its key.
+
+  /// The node has not restored its positions from flash yet.
+  pub const NOT_READY: Self = Self(0x20);
+  /// Motion is inhibited (after boot, an INHIBIT, or an ESTOP) until the coordinator allows it.
+  pub const INHIBITED: Self = Self(0x21);
+  /// No coordinator heartbeat within the timeout.
+  pub const NO_HEARTBEAT: Self = Self(0x22);
+  /// The hardware motor permit is not present.
+  pub const NO_PERMIT: Self = Self(0x23);
+  /// The channel has no motor on this node.
+  pub const CHANNEL_UNAVAILABLE: Self = Self(0x24);
+  /// The channel lacks its soft limits or direction sign: CONFIG them first.
+  pub const NOT_CONFIGURED: Self = Self(0x25);
+  /// The move exceeds the step or time cap of one move (addendum A.5).
+  pub const MOVE_TOO_LONG: Self = Self(0x26);
+  /// A different move is running.
+  pub const BUSY: Self = Self(0x27);
+  /// The sequence number of the last move arrived with different content.
+  pub const SEQ_REUSED: Self = Self(0x28);
+  /// A CONFIG value is out of range, or arrived while a move runs.
+  pub const CONFIG_REJECTED: Self = Self(0x29);
+  /// A coil output failed; the position is suspect.
+  pub const PIN_FAULT: Self = Self(0x2A);
+  /// The node is in bench mode, driven from its console, and refuses bus moves.
+  pub const BENCH_MODE: Self = Self(0x2B);
+  /// A move outlasted its time cap and was cut off; the steps it issued are unknown.
+  pub const MOVE_TIMEOUT: Self = Self(0x2C);
+  /// Writing a position record to flash failed.
+  pub const PERSIST_FAILED: Self = Self(0x2D);
 }
 
 /// A relative move of one channel (MOVE_REL, class 0x3).
@@ -420,9 +452,9 @@ impl Envelope {
   ///
   /// # Errors
   ///
-  /// A [`DecodeError`] naming the first thing wrong: an extended identifier or a remote frame, an undefined class,
-  /// a payload of the wrong length, an axis byte that disagrees with the identifier, or a byte outside the values
-  /// its field defines.
+  /// A [`DecodeError`] naming the first thing wrong: an extended identifier or a remote frame,
+  /// an undefined class, a payload of the wrong length, an axis byte that disagrees with the identifier,
+  /// or a byte outside the values its field defines.
   pub fn decode<F: Frame>(frame: &F) -> Result<Self, DecodeError> {
     let id = match frame.id() {
       Id::Standard(id) => id,
