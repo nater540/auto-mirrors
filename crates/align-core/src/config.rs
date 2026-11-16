@@ -98,6 +98,11 @@ pub struct Motion {
   pub max_move_steps: i32,
   /// UNVERIFIED: cap on the duration of one move.
   pub max_move_ms: u32,
+  /// UNVERIFIED placeholder: lowest commanded position of each axis, in steps from the commissioning position. The
+  /// usable screw range has not been measured (reference 9.1, item 5); the placeholder is one capped move.
+  pub soft_min_steps: PerAxis<i32>,
+  /// UNVERIFIED placeholder: highest commanded position of each axis; see `soft_min_steps`.
+  pub soft_max_steps: PerAxis<i32>,
   /// UNVERIFIED: the soft limits are widened by this fraction of travel, the largest plausible step loss. They are
   /// a runaway guard, not a position truth.
   pub soft_limit_margin_frac: f32,
@@ -116,6 +121,8 @@ impl Motion {
     poke_max_steps: 2_000,
     max_move_steps: 4_000,
     max_move_ms: 25_000,
+    soft_min_steps: PerAxis::splat(-4_000),
+    soft_max_steps: PerAxis::splat(4_000),
     soft_limit_margin_frac: 0.10,
   };
 }
@@ -141,6 +148,13 @@ pub struct SensorLimits {
   /// UNVERIFIED: a head offset above this fraction of the solver range means mechanical centering is required
   /// (reference 1.4).
   pub offset_warn_frac: f32,
+  /// UNVERIFIED placeholder: noise of one normalized coordinate, one sigma. The sensor has not been characterized
+  /// (hand-off open item 6). The placeholder is the largest noise at which the convergence tolerance can still be
+  /// seen: a component of the measurement vector is a difference of two readings, and `3 * sqrt(2) * 0.005` is
+  /// about `0.02`.
+  pub noise_sigma_norm: f32,
+  /// FIRM starting value: invalid shots in a row before a fault (reference 7.3).
+  pub max_invalid_shots: u8,
 }
 
 impl SensorLimits {
@@ -154,6 +168,8 @@ impl SensorLimits {
     repeat_sigma: 3.0,
     energy_tolerance_frac: 0.3,
     offset_warn_frac: 0.3,
+    noise_sigma_norm: 0.005,
+    max_invalid_shots: 3,
   };
 }
 
@@ -178,6 +194,23 @@ pub struct Solver {
   /// reference asks for twice the minimum reliable move, which has not been measured for the stepper; `1.0`
   /// reproduces the reference sketch (any whole-step move updates).
   pub broyden_min_step_norm_steps: f32,
+  /// FIRM starting value: the damping is multiplied by this after a poor step and divided by it after a good one
+  /// (reference 3.2).
+  pub lambda_adjust_factor: f32,
+  /// FIRM starting value: a step that reduces the residual norm by less than this fraction is a poor step
+  /// (reference 3.2).
+  pub min_residual_reduction_frac: f32,
+  /// FIRM starting value: poor steps in a row before a recalibration (reference 3.2: raise the damping, retry
+  /// once, then recalibrate).
+  pub poor_steps_before_recalibration: u8,
+  /// FIRM starting value: recalibrations in one alignment before a fault (hand-off 3.2).
+  pub max_recalibrations: u8,
+  /// FIRM starting value: a calibration is rejected when a poke changed the measurement by less than this many
+  /// sigmas of a measurement component (reference 3.1).
+  pub min_column_sigmas: f32,
+  /// FIRM starting value: suspect steps in a row on one axis before the "axis not responding" fault (addendum
+  /// A.5).
+  pub suspect_fault_streak: u8,
 }
 
 impl Solver {
@@ -191,6 +224,12 @@ impl Solver {
     step_clamp_pokes: 4.0,
     prediction_mismatch_frac: 0.5,
     broyden_min_step_norm_steps: 1.0,
+    lambda_adjust_factor: 3.0,
+    min_residual_reduction_frac: 0.3,
+    poor_steps_before_recalibration: 2,
+    max_recalibrations: 1,
+    min_column_sigmas: 5.0,
+    suspect_fault_streak: 2,
   };
 }
 
