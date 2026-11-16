@@ -22,10 +22,9 @@
 mod board;
 
 use core::cell::RefCell;
-use core::sync::atomic::{AtomicU8, Ordering};
 
 use align_core::config::Config;
-use align_proto::{Envelope, Message, NodeId, Shot};
+use align_proto::{Envelope, Message, NodeId};
 use embassy_executor::Spawner;
 use embassy_futures::select::{Either, select};
 use embassy_sync::blocking_mutex::Mutex;
@@ -63,10 +62,34 @@ type Raw = CriticalSectionRawMutex;
 
 static NODE: Mutex<Raw, RefCell<Option<SensorNode>>> = Mutex::new(RefCell::new(None));
 static FRAMES_OUT: Queue<Raw, Envelope, 16> = Queue::new();
-/// Buttons the console holds, added to the physical ones.
-static CONSOLE_HELD: AtomicU8 = AtomicU8::new(0);
-/// Sequence numbers of SHOT frames the console injects.
-static CONSOLE_SEQ: AtomicU8 = AtomicU8::new(0);
+
+/// Longest console line; a longer one is discarded rather than run truncated.
+const LINE_LEN: usize = 80;
+
+/// A warning that repeats, logged at most once a second with a count of what it held back.
+struct RateLimited {
+  last_ms: Option<u64>,
+  held_back: u32
+}
+
+impl RateLimited {
+  const fn new() -> Self {
+    Self {
+      last_ms: None,
+      held_back: 0
+    }
+  }
+
+  /// Whether to log now, and how many were held back since the last one.
+  fn admit(&mut self, now_ms: u64) -> Option<u32> {
+    if self.last_ms.is_some_and(|last| now_ms.saturating_sub(last) < 1_000) {
+      self.held_back = self.held_back.saturating_add(1);
+      return None;
+    }
+    self.last_ms = Some(now_ms);
+    Some(core::mem::take(&mut self.held_back))
+  }
+}
 
 /// The firmware side of [`SensorIo`]: the transmit queue.
 struct Outbox;
@@ -161,9 +184,8 @@ async fn buttons_task(buttons: [Input<'static>; 5]) {
     let now = now_ms();
     let stable = debouncer.sample(raw, now, bench.debounce_ms);
     let chord = chords.update(stable, now, bench.chord_ms);
-    let held = stable | ButtonSet::from_bits_truncate(CONSOLE_HELD.load(Ordering::Acquire));
     with_node(|node, io| {
-      node.set_held(held);
+      node.set_held(stable);
       if let Some(chord) = chord {
         info!("buttons: {chord:?}");
         node.on_chord(now, chord, io);
@@ -185,12 +207,22 @@ async fn clock() {
 
 #[embassy_executor::task]
 async fn can(mut twai: Twai<'static, Async>) {
+  let mut rejected = RateLimited::new();
   loop {
     if twai.is_bus_off() {
-      // Reference 5.3: wait 100 ms, then recover.
+      // Reference 5.3: wait 100 ms, then recover once, and wait for the recovery (128 runs of 11 recessive bits)
+      // to finish rather than starting it again.
       warn!("CAN bus-off: recovering in 100 ms");
       Timer::after(Duration::from_millis(100)).await;
       twai.initiate_recovery();
+      let recovered = with_timeout(Duration::from_secs(1), async {
+        while twai.is_bus_off() {
+          Timer::after(Duration::from_millis(5)).await;
+        }
+      });
+      if recovered.await.is_err() {
+        warn!("CAN bus-off: no recovery within 1 s; trying again");
+      }
       continue;
     }
     match select(twai.receive_async(), FRAMES_OUT.receive()).await {
@@ -201,7 +233,11 @@ async fn can(mut twai: Twai<'static, Async>) {
               let now = now_ms();
               with_node(|node, io| node.on_frame(now, envelope, io));
             }
-            Err(error) => warn!("CAN frame rejected: {error}")
+            Err(error) => {
+              if let Some(held_back) = rejected.admit(now_ms()) {
+                warn!("CAN frame rejected: {error} ({held_back} more held back)");
+              }
+            }
           }
         }
       }
@@ -225,9 +261,10 @@ async fn can(mut twai: Twai<'static, Async>) {
 
 #[embassy_executor::task]
 async fn console_task(mut rx: UsbSerialJtagRx<'static, Async>) {
-  static LINE: StaticCell<[u8; 80]> = StaticCell::new();
-  let line = LINE.init([0; 80]);
+  static LINE: StaticCell<[u8; LINE_LEN]> = StaticCell::new();
+  let line = LINE.init([0; LINE_LEN]);
   let mut len = 0_usize;
+  let mut overlong = false;
   loop {
     let mut byte = [0_u8; 1];
     if !matches!(rx.read(&mut byte).await, Ok(1)) {
@@ -239,16 +276,21 @@ async fn console_task(mut rx: UsbSerialJtagRx<'static, Async>) {
           .get(..len)
           .and_then(|bytes| core::str::from_utf8(bytes).ok())
           .unwrap_or("");
-        if !text.trim().is_empty() {
+        if overlong {
+          warn!("line longer than {LINE_LEN} characters: discarded");
+        } else if !text.trim().is_empty() {
           info!("> {text}");
           execute(text);
         }
         len = 0;
+        overlong = false;
       }
       other => {
         if let Some(slot) = line.get_mut(len) {
           *slot = other;
           len += 1;
+        } else {
+          overlong = true;
         }
       }
     }
@@ -295,25 +337,18 @@ fn execute(text: &str) {
       info!("press {set:?}");
     }
     Command::Hold(set) => {
-      CONSOLE_HELD.store(set.bits(), Ordering::Release);
+      with_node(|node, _| node.set_console_held(set));
       info!("holding {set:?}");
     }
     Command::Release => {
-      CONSOLE_HELD.store(0, Ordering::Release);
+      with_node(|node, _| node.set_console_held(ButtonSet::empty()));
       info!("released");
     }
     Command::Shot { point, edge_age_10us } => {
-      let seq = CONSOLE_SEQ.fetch_add(1, Ordering::AcqRel);
-      let shot = Envelope {
-        node: NodeId::COORDINATOR,
-        message: Message::Shot(Shot {
-          seq,
-          point,
-          edge_age_10us
-        })
-      };
-      with_node(|node, io| node.on_frame(now, shot, io));
-      info!("injected SHOT seq {seq} at {point:?}");
+      // A console shot is reported as a bench reading, so that it can neither block nor impersonate a coordinator
+      // shot. The point and age are only logged.
+      with_node(|node, io| node.console_shot(now, io));
+      info!("console shot at {point:?}, edge age {edge_age_10us:?}");
     }
     Command::Delay(ms) => {
       with_node(|node, _| node.set_reply_delay_ms(ms));

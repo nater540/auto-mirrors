@@ -156,7 +156,13 @@ Reference 5.4 and addendum A.8 leave these open; `align-proto` decides them, and
 - **Bench mode** (console or SENSOR_CMD Bench) makes a chord fire a bench shot and ignores SHOT frames; outside it,
   a reading always needs a SHOT. Calibration commands answer Refused until a detector exists.
 - **The console can do everything the bus and the buttons can** (`hold`, `press`, `shot`, `sim next`, `sim sum`,
-  `sim delay`), so the sensor is testable over USB alone. The motor node's tests use the same approach.
+  `sim delay`), so the sensor is testable over USB alone. A console shot is reported as a bench reading, so that it
+  can neither block nor impersonate a coordinator shot; console-held buttons apply at once.
+- **Readings go out strictly in shot order**, a later shot waiting behind an earlier one. SENSOR_RESEND serves the
+  newest bus reading for a seq (bench readings are never kept), and a coordinator reboot forgets them all.
+- **A coordinator reboot is an uptime that disagrees with the local clock** by more than the loss window, so the
+  49.7-day wrap of the u32 uptime is not one. The coordinator must judge node reboots the same way (M5).
+- **Each button debounces on its own timer**, so one chattering input cannot freeze the rest.
 
 ## Workspace layout
 
