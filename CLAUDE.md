@@ -142,6 +142,11 @@ Reference 5.4 and addendum A.8 leave these open; `align-proto` decides them, and
   sequence number or the config key.
 - **The bench console** (`just monitor node`, then `help`) drives motors only in bench mode with the permit present.
   On the bench there is no switched rail: the firmware checks are the only layer, which the flash notice says.
+- **After the 2026-11-15 nemesis review:** a move's coils are released by a guard held for the move, so a timed
+  out or dropped move cannot leave them on, and the stepper counts its steps so a cut-off move still reports them.
+  The record carries its direction sign (format 2) and is written suspect before every move. A silent or restarted
+  coordinator is forgotten (inhibited, moves forgotten). An ESTOP latches until INHIBIT 0; bench moves need no
+  coordinator on the bus. The TIMG1 watchdog resets the node after 1 s without feeding, so a panic cannot hold a coil.
 - **On the development board, TWAI runs on GPIO 22 alone** in self-test mode (TX and RX looped back through the
   pin), so frames go out without a transceiver or a second node.
 

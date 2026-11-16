@@ -282,9 +282,9 @@ impl SensorNode {
     self.schedule(now_ms, seq, true, reading, io);
   }
 
-  /// A shot from the console, at the held position: reported with the bench bit and the bench counter, never as an
-  /// answer to the coordinator, so that it can neither block nor impersonate a real shot. The console's injection
-  /// applies to it.
+  /// A shot from the console, at the held position, reported with the bench bit and the bench counter.
+  /// It is never an answer to the coordinator, so it can neither block nor impersonate a real shot.
+  /// The console's injection applies to it.
   pub fn console_shot(&mut self, now_ms: u64, io: &mut impl SensorIo) {
     let reading = self.method.read();
     let seq = self.bench_seq;
