@@ -4,9 +4,10 @@
 #
 # - Plain cargo commands at the repository root see only the host crates (the workspace `default-members`). The
 #   firmware crates build for the ESP32-C6 only, so every firmware recipe names its packages and the target.
-# - Nothing reaches a board without a person. `flash` prints what the image does to motors and I/O and asks for
-#   the crate name to be typed, and it refuses to run without a terminal (docs/HANDOFF.md, section 7). There is
-#   no cargo runner, so `cargo run` cannot flash around it.
+# - Nothing reaches a board unless what it does was stated and acknowledged (docs/HANDOFF.md, section 7). `flash`
+#   prints the crate's FLASH_NOTICE.txt and needs either the crate name typed at a terminal or
+#   ALIGN_FLASH_ACK=<crate>:<hash of that notice>, so an acknowledgement goes stale when the notice changes. There
+#   is no cargo runner, so `cargo run` cannot flash around it.
 
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
@@ -16,6 +17,12 @@ chip := "esp32c6"
 firmware_crates := "-p align-node -p align-coordinator"
 no_std_crates := "-p align-core -p align-proto -p stepper"
 release_dir := "target" / target / "release"
+
+# The board actions: port selection, the flash gate, flashing, and the boot log check.
+board := "scripts/board.sh"
+
+# The update check is a network call on every espflash run, and its banner clutters captured boot logs.
+export ESPFLASH_SKIP_UPDATE_CHECK := "true"
 
 # The simulator binary, built by `_sim`.
 sim_bin := "target/release/align-sim"
@@ -145,55 +152,44 @@ image crate: (_firmware-crate crate)
     @echo "target/images/align-{{ crate }}.bin: $(wc -c < target/images/align-{{ crate }}.bin | tr -d ' ') bytes"
 
 # --- board (each of these talks to hardware) --------------------------------
+#
+# With no port named, each recipe uses the only Espressif USB serial port attached, and stops when there are none
+# or several. Other boards are often attached to this machine, so a port is never guessed. scripts/board.sh holds
+# the logic.
 
-# Serial ports espflash recognizes
+# Serial ports, the Espressif ones (which the recipes pick automatically) apart from the rest
 [group('board')]
 ports:
-    espflash list-ports
+    {{ board }} ports
 
 # Chip type, revision, flash size, and MAC address of the connected board
 [group('board')]
-board-info *args:
-    espflash board-info --chip {{ chip }} {{ args }}
+board-info port="":
+    espflash board-info --chip {{ chip }} --port "$({{ board }} port "{{ port }}")"
 
-# Flash `node` or `coordinator` and open the monitor. Prints what the image does to motors and I/O and asks first
+# Flash `node` or `coordinator` after its notice is acknowledged; without a terminal, check the boot log after
 [group('board')]
-flash crate port="": (_firmware-crate crate)
-    #!/usr/bin/env bash
-    set -euo pipefail
-    notice="firmware/{{ crate }}/FLASH_NOTICE.txt"
-    echo "About to flash align-{{ crate }}. What this image does to motors and I/O:"
-    echo
-    sed 's/^/    /' "$notice"
-    echo
-    if [ ! -t 0 ]; then
-      echo "Not flashed: flashing needs a person at a terminal to confirm." >&2
-      exit 1
-    fi
-    read -r -p "Type '{{ crate }}' to flash it, anything else to stop: " answer
-    if [ "$answer" != "{{ crate }}" ]; then
-      echo "Not flashed." >&2
-      exit 1
-    fi
-    cargo build -p align-{{ crate }} --target {{ target }} --release
-    port_args=()
-    if [ -n "{{ port }}" ]; then port_args=(--port "{{ port }}"); fi
-    espflash flash --chip {{ chip }} --monitor "${port_args[@]}" {{ release_dir }}/align-{{ crate }}
+flash crate port="" secs="15":
+    {{ board }} flash {{ crate }} "{{ port }}" {{ secs }}
+
+# Reset the board and check its boot log against the crate's notice: proves which image is running
+[group('board')]
+boot-log crate="node" port="" secs="10":
+    {{ board }} boot-log {{ crate }} "{{ port }}" {{ secs }}
 
 # Attach the serial monitor to a running board without flashing; the crate names the ELF used to decode addresses
 [group('board')]
 monitor crate="node" port="": (_firmware-crate crate)
     #!/usr/bin/env bash
     set -euo pipefail
-    args=(--chip {{ chip }})
-    if [ -n "{{ port }}" ]; then args+=(--port "{{ port }}"); fi
+    args=(--chip {{ chip }} --port "$({{ board }} port "{{ port }}")")
     if [ -f "{{ release_dir }}/align-{{ crate }}" ]; then args+=(--elf "{{ release_dir }}/align-{{ crate }}"); fi
     espflash monitor "${args[@]}"
 
 # Reset the connected board over its serial line. The image restarts from boot: read its flash notice first
 [group('board')]
-reset *args:
-    espflash reset {{ args }}
+reset port="":
+    espflash reset --chip {{ chip }} --port "$({{ board }} port "{{ port }}")"
 
 # Fail with a clear message unless the argument is a firmware crate
 [private]
@@ -255,6 +251,8 @@ doctor:
     fi
     have "just" "cargo install just" just --version
     have "espflash" "cargo install espflash --locked (image, flash, monitor)" espflash --version
+    have "perl" "ships with macOS and most Linux systems (the board recipes)" perl -e 'print "perl $^V\n"'
+    have "shasum" "ships with macOS and perl (the flash acknowledgement)" shasum --version
     have "cargo-deny" "cargo install cargo-deny --locked (deny, ci)" cargo deny --version
     have "cargo-mutants" "cargo install cargo-mutants --locked (mutants)" cargo mutants --version
     have "esp-generate" "cargo install esp-generate --locked (to regenerate the skeleton)" esp-generate --version
