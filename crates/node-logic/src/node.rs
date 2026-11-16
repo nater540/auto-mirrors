@@ -20,6 +20,12 @@
 //! - Soft limits are enforced on every waypoint of the standard approach, suspect or not.
 //! - A coordinator heartbeat counts only when it carries this node's protocol version. A mismatch is reported once
 //!   (FAULT 0x34) and moves are refused until the versions match.
+//! - A coordinator that goes silent or restarts (its uptime disagreeing with the local clock) is forgotten: the
+//!   node inhibits and forgets the moves it sent, so that a restarted coordinator's first move is a new move.
+//! - The record carries the direction sign its position is in; a different sign converts it. The record is
+//!   written marked suspect before every move, so a reset mid-move restores a position known not to be trusted.
+//!   A failed write refuses moves until a write succeeds.
+//! - An ESTOP latches until an INHIBIT 0, and bench moves run only while no coordinator is heard.
 
 use align_core::approach::{self, LastDir, SoftLimits};
 use align_core::config::{DirSign, Motion, NodeTiming};
@@ -103,8 +109,10 @@ pub enum MoveOutcome {
     /// The phase the stepper last applied.
     phase: Phase
   },
-  /// The move ran past its timeout and was dropped; the steps issued are not known.
+  /// The move ran past its timeout and was dropped. The coils were released; the steps were counted as they went.
   TimedOut {
+    /// Physical steps issued over all legs before the cut.
+    steps_issued: i32,
     /// The phase the stepper last applied.
     phase: Phase
   }
@@ -156,7 +164,16 @@ pub enum BenchRefused {
   },
   /// The move exceeds the step or time cap, or the step period is outside its bounds.
   #[error("the move exceeds the step or time cap, or its step period is out of bounds")]
-  OutOfBounds
+  OutOfBounds,
+  /// A coordinator is on the bus: it drives the motors, not the console.
+  #[error("a coordinator is on the bus; bench moves need it silent")]
+  CoordinatorPresent,
+  /// An ESTOP has been received and not cleared by an INHIBIT 0 from the coordinator.
+  #[error("an ESTOP is latched")]
+  EstopLatched,
+  /// The last position record could not be written.
+  #[error("the last position record could not be written")]
+  PersistFailed
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -188,7 +205,7 @@ struct Running {
 #[derive(Clone, Debug)]
 #[expect(
   clippy::struct_excessive_bools,
-  reason = "independent inputs and latches (restored, inhibited, permit, rail, bench), not one state in disguise"
+  reason = "independent inputs and latches (restored, inhibited, permit, rail, bench, estop, persist), not one state"
 )]
 pub struct Node {
   setup: NodeSetup,
@@ -202,7 +219,13 @@ pub struct Node {
   /// The coordinator's last heartbeat carried another protocol version: its heartbeats do not count, and the
   /// mismatch has been reported once.
   protocol_mismatch: bool,
+  /// An ESTOP was received; cleared only by an INHIBIT 0. Blocks bench moves too.
+  estop_latched: bool,
+  /// The last flash write failed: moves are refused until one succeeds, so the record cannot fall behind.
+  persist_failed: bool,
   last_heartbeat_ms: Option<u64>,
+  /// The coordinator's uptime in its last heartbeat, to tell a reboot from the passing of time.
+  coordinator_uptime_ms: Option<u32>,
   tracker: MoveRelTracker,
   running: Option<Running>,
   next_heartbeat_ms: u64,
@@ -234,7 +257,10 @@ impl Node {
       rail_ok: false,
       bench: false,
       protocol_mismatch: false,
+      estop_latched: false,
+      persist_failed: false,
       last_heartbeat_ms: None,
+      coordinator_uptime_ms: None,
       tracker: MoveRelTracker::new(),
       running: None,
       next_heartbeat_ms: 0,
@@ -296,6 +322,7 @@ impl Node {
       return false;
     }
     match running.origin {
+      // An ESTOP stops a bench move through `request_stop`, like any other.
       Origin::Bench => self.bench,
       Origin::Bus => !self.bench && !self.inhibited && self.heartbeat_fresh(now_ms)
     }
@@ -319,15 +346,22 @@ impl Node {
     let from_coordinator = envelope.node == NodeId::COORDINATOR;
     let to_me = envelope.node == self.setup.id;
     match envelope.message {
-      Message::Heartbeat { proto_version, .. } if from_coordinator => self.on_heartbeat(now_ms, proto_version, io),
+      Message::Heartbeat {
+        uptime_ms,
+        proto_version,
+        ..
+      } if from_coordinator => self.on_heartbeat(now_ms, uptime_ms, proto_version, io),
       Message::Estop { .. } if from_coordinator => {
         self.inhibited = true;
+        self.estop_latched = true;
         self.request_stop(io);
       }
       Message::Inhibit { inhibited, .. } if from_coordinator => {
         self.inhibited = inhibited;
         if inhibited {
           self.request_stop(io);
+        } else {
+          self.estop_latched = false;
         }
       }
       Message::Stop { .. } if to_me => self.request_stop(io),
@@ -344,6 +378,9 @@ impl Node {
       && !self.heartbeat_fresh(now_ms)
     {
       self.request_stop(io);
+    }
+    if self.last_heartbeat_ms.is_some() && !self.heartbeat_fresh(now_ms) {
+      self.forget_coordinator();
     }
     if now_ms >= self.next_heartbeat_ms {
       self.next_heartbeat_ms = now_ms.saturating_add(u64::from(self.setup.timing.heartbeat_period_ms));
@@ -381,7 +418,8 @@ impl Node {
         steps_issued,
         phase
       } => (Some(end), steps_issued, phase),
-      MoveOutcome::PinFault { phase } | MoveOutcome::TimedOut { phase } => (None, 0, phase)
+      MoveOutcome::PinFault { phase } => (None, 0, phase),
+      MoveOutcome::TimedOut { steps_issued, phase } => (None, steps_issued, phase)
     };
     let record = &mut axis.record;
     record.pos_steps = record
@@ -393,7 +431,12 @@ impl Node {
     } else {
       LastDir::Unknown
     };
-    record.suspect |= end != Some(MoveEnd::Done) && end != Some(MoveEnd::Stopped);
+    // A rail lost before the first step energized nothing, so nothing was lost.
+    record.suspect |= match end {
+      Some(MoveEnd::Done | MoveEnd::Stopped) => false,
+      Some(MoveEnd::RailLost) => steps_issued != 0,
+      None => true
+    };
     axis.at_target = end == Some(MoveEnd::Done);
     axis.persisted = false;
     let record = *record;
@@ -430,6 +473,7 @@ impl Node {
 
   /// Takes the result of a flash write.
   pub fn on_persisted(&mut self, channel: Channel, ok: bool, io: &mut impl NodeIo) {
+    self.persist_failed = !ok;
     if ok {
       if let Some(axis) = self.axes.get_mut(usize::from(channel.get())) {
         axis.persisted = true;
@@ -455,6 +499,11 @@ impl Node {
   pub fn set_bench(&mut self, on: bool) -> Result<(), BenchRefused> {
     if self.running.is_some() {
       return Err(BenchRefused::Busy);
+    }
+    if on {
+      // The coordinator must allow motion again after a bench session, and nothing it sent before is remembered.
+      self.inhibited = true;
+      self.tracker = MoveRelTracker::new();
     }
     self.bench = on;
     Ok(())
@@ -482,6 +531,15 @@ impl Node {
     if self.running.is_some() {
       return Err(BenchRefused::Busy);
     }
+    if self.estop_latched {
+      return Err(BenchRefused::EstopLatched);
+    }
+    if self.last_heartbeat_ms.is_some() {
+      return Err(BenchRefused::CoordinatorPresent);
+    }
+    if self.persist_failed {
+      return Err(BenchRefused::PersistFailed);
+    }
     if !self.permit {
       return Err(BenchRefused::NoPermit);
     }
@@ -492,9 +550,10 @@ impl Node {
     if !(timing.min_step_period_us..=timing.max_step_period_us).contains(&step_period_us) {
       return Err(BenchRefused::OutOfBounds);
     }
-    let dir_sign = self
-      .config(channel)
-      .and_then(|config| config.dir_sign)
+    // The sign the record is already expressed in, else the configured one, else forward; then kept in the record.
+    let record_sign = self.axis(channel).and_then(|axis| axis.record.dir_sign);
+    let dir_sign = record_sign
+      .or_else(|| self.config(channel).and_then(|config| config.dir_sign))
       .unwrap_or(DirSign::Forward);
     let request = self
       .request(channel, [0, steps], step_period_us, dir_sign)
@@ -506,7 +565,7 @@ impl Node {
       dir_sign,
       stop_requested: false
     });
-    io.start_move(request);
+    self.start(channel, dir_sign, request, io);
     Ok(())
   }
 
@@ -539,6 +598,7 @@ impl Node {
       (self.running.is_some(), FaultCode::BUSY),
       (self.inhibited, FaultCode::INHIBITED),
       (self.protocol_mismatch, FaultCode::PROTOCOL_MISMATCH),
+      (self.persist_failed, FaultCode::PERSIST_FAILED),
       (!self.heartbeat_fresh(now_ms), FaultCode::NO_HEARTBEAT),
       (!self.permit, FaultCode::NO_PERMIT),
       (!self.is_populated(move_rel.channel), FaultCode::CHANNEL_UNAVAILABLE)
@@ -587,6 +647,23 @@ impl Node {
       dir_sign,
       stop_requested: false
     });
+    self.start(move_rel.channel, dir_sign, request, io);
+  }
+
+  /// Starts a move. First the record goes to flash marked suspect, written while the motor is still stopped,
+  /// so that a reset during the move restores a position the node knows not to trust.
+  /// The record written after the move replaces it.
+  fn start(&mut self, channel: Channel, dir_sign: DirSign, request: MoveRequest, io: &mut impl NodeIo) {
+    if let Some(axis) = self.axes.get_mut(usize::from(channel.get())) {
+      axis.record.dir_sign = Some(dir_sign);
+      io.persist(
+        channel,
+        AxisRecord {
+          suspect: true,
+          ..axis.record
+        }
+      );
+    }
     io.start_move(request);
   }
 
@@ -606,7 +683,8 @@ impl Node {
             .filter(|period| (timing.min_step_period_us..=timing.max_step_period_us).contains(period))
             .map(|period| config.step_period_us = period)
             .is_some(),
-          ConfigKey::OvershootSteps => (0..=max_move_steps)
+          // At least one step, or a finish-plus move from minus would end minus.
+          ConfigKey::OvershootSteps => (1..=max_move_steps)
             .contains(&value)
             .then(|| config.overshoot_steps = value)
             .is_some(),
@@ -630,6 +708,12 @@ impl Node {
             _ => false
           }
         });
+    if accepted
+      && key == ConfigKey::DirSign
+      && let Some(dir_sign) = self.config(channel).and_then(|config| config.dir_sign)
+    {
+      self.adopt_sign(channel, dir_sign, io);
+    }
     if !accepted {
       let code = if populated {
         FaultCode::CONFIG_REJECTED
@@ -647,6 +731,36 @@ impl Node {
     }
   }
 
+  /// Expresses a channel's record in `dir_sign`. A record kept under the other sign is converted (the position
+  /// negated, the last direction swapped) and written; a record with no sign takes this one, and is suspect if it
+  /// already counted steps under a sign nobody recorded.
+  fn adopt_sign(&mut self, channel: Channel, dir_sign: DirSign, io: &mut impl NodeIo) {
+    let Some(axis) = self.axes.get_mut(usize::from(channel.get())) else {
+      return;
+    };
+    match axis.record.dir_sign {
+      Some(current) if current == dir_sign => {}
+      Some(_) => {
+        axis.record = axis.record.flipped(dir_sign);
+        axis.persisted = false;
+        io.persist(channel, axis.record);
+      }
+      None => {
+        axis.record.suspect |= axis.record.pos_steps != 0;
+        axis.record.dir_sign = Some(dir_sign);
+      }
+    }
+  }
+
+  /// The coordinator went silent or restarted: inhibit, and forget the moves it sent, so that its first move after
+  /// a restart is a new move and not answered from the last one.
+  fn forget_coordinator(&mut self) {
+    self.inhibited = true;
+    self.tracker = MoveRelTracker::new();
+    self.last_heartbeat_ms = None;
+    self.coordinator_uptime_ms = None;
+  }
+
   /// The firmware request for logical legs, or `None` when the move exceeds the step or time cap (addendum A.5).
   fn request(
     &self,
@@ -661,12 +775,14 @@ impl Node {
       return None;
     }
     let legs_run = legs_steps.iter().filter(|leg| **leg != 0).count();
-    let overhead_ms = u64::from(motion.energize_dwell_ms + motion.hold_before_release_ms) * legs_run as u64;
+    let overhead_ms =
+      (u64::from(motion.energize_dwell_ms) + u64::from(motion.hold_before_release_ms)) * legs_run as u64;
     let duration_ms = total_steps * u64::from(step_period_us) / 1_000 + overhead_ms;
     if duration_ms > u64::from(motion.max_move_ms) {
       return None;
     }
-    let margin_ms = u64::from(self.setup.timing.move_timeout_margin_ms + self.setup.timing.rail_up_timeout_ms);
+    let margin_ms =
+      u64::from(self.setup.timing.move_timeout_margin_ms) + u64::from(self.setup.timing.rail_up_timeout_ms);
     let timeout_ms = u32::try_from(duration_ms + margin_ms).unwrap_or(u32::MAX);
     Some(MoveRequest {
       channel,
@@ -691,7 +807,7 @@ impl Node {
 
   /// A coordinator heartbeat refreshes the watchdog only when its protocol version matches. A mismatch is
   /// reported once when it starts, and its heartbeats then go stale, which stops a running move.
-  fn on_heartbeat(&mut self, now_ms: u64, proto_version: u8, io: &mut impl NodeIo) {
+  fn on_heartbeat(&mut self, now_ms: u64, uptime_ms: u32, proto_version: u8, io: &mut impl NodeIo) {
     let mismatch = proto_version != PROTOCOL_VERSION;
     if mismatch && !self.protocol_mismatch {
       let detail = u16::from(proto_version);
@@ -705,9 +821,21 @@ impl Node {
       );
     }
     self.protocol_mismatch = mismatch;
-    if !mismatch {
-      self.last_heartbeat_ms = Some(now_ms);
+    if mismatch {
+      return;
     }
+    // A restart is an uptime that disagrees with the local clock by more than the heartbeat timeout; comparing with
+    // wrapping arithmetic keeps the 49.7-day wrap of the u32 uptime from looking like one.
+    if let (Some(previous), Some(seen_ms)) = (self.coordinator_uptime_ms, self.last_heartbeat_ms) {
+      let remote = i64::from(uptime_ms.wrapping_sub(previous));
+      let local = i64::try_from(now_ms.saturating_sub(seen_ms)).unwrap_or(i64::MAX);
+      if remote.abs_diff(local) > u64::from(self.setup.timing.heartbeat_timeout_ms) {
+        self.forget_coordinator();
+        self.request_stop(io);
+      }
+    }
+    self.last_heartbeat_ms = Some(now_ms);
+    self.coordinator_uptime_ms = Some(uptime_ms);
   }
 
   fn heartbeat_fresh(&self, now_ms: u64) -> bool {

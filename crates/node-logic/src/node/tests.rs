@@ -4,7 +4,7 @@ extern crate std;
 
 use std::vec::Vec;
 
-use align_core::config::{Motion, NodeTiming};
+use align_core::config::{DirSign, Motion, NodeTiming};
 use align_proto::{MoveDone, PROTOCOL_VERSION};
 use proptest::prelude::*;
 
@@ -165,6 +165,20 @@ fn ready_with(setup: NodeSetup) -> (Node, Recorder) {
     node.on_frame(0, config(ConfigKey::DirSign, channel, 1), &mut io);
   }
   assert!(io.take().is_empty(), "setting a node up sends nothing");
+  (node, io)
+}
+
+/// Lets the coordinator's heartbeat go stale, so that the node forgets it, as on a bench with no coordinator.
+fn silence_coordinator(node: &mut Node, io: &mut Recorder) {
+  node.tick(1_000, io);
+  io.take();
+}
+
+/// A configured node whose coordinator has gone silent, in bench mode.
+fn bench_ready() -> (Node, Recorder) {
+  let (mut node, mut io) = ready();
+  silence_coordinator(&mut node, &mut io);
+  node.set_bench(true).unwrap();
   (node, io)
 }
 
@@ -563,7 +577,8 @@ fn a_finished_move_updates_the_position_persists_and_answers() {
     pos_steps: 25,
     last_dir: LastDir::Plus,
     phase,
-    suspect: false
+    suspect: false,
+    dir_sign: Some(DirSign::Reversed)
   };
   assert_eq!(io.events[0], Io::Persist(ch(0), record));
   assert_eq!(
@@ -615,7 +630,13 @@ fn a_rail_loss_makes_the_position_suspect_and_is_reported() {
 fn a_pin_fault_or_a_timeout_leaves_the_position_unchanged_and_suspect() {
   for (outcome, code) in [
     (MoveOutcome::PinFault { phase: Phase::ZERO }, FaultCode::PIN_FAULT),
-    (MoveOutcome::TimedOut { phase: Phase::ZERO }, FaultCode::MOVE_TIMEOUT)
+    (
+      MoveOutcome::TimedOut {
+        steps_issued: 0,
+        phase: Phase::ZERO
+      },
+      FaultCode::MOVE_TIMEOUT
+    )
   ] {
     let (mut node, mut io) = ready();
     node.on_frame(0, move_rel(4, 0, 25, false), &mut io);
@@ -665,7 +686,8 @@ fn restored_records_are_used_and_a_corrupt_one_starts_fresh_but_suspect() {
     pos_steps: 812,
     last_dir: LastDir::Plus,
     phase: Phase::new(2).unwrap(),
-    suspect: false
+    suspect: false,
+    dir_sign: Some(DirSign::Forward)
   };
   node.restore([Restored::Valid(stored), Restored::Corrupt, Restored::Missing]);
   assert_eq!(
@@ -708,8 +730,11 @@ fn config_values_are_checked_against_their_bounds() {
   let (mut node, mut io) = ready();
   let accepted_period = i32::try_from(TIMING.min_step_period_us).unwrap();
   node.on_frame(0, config(ConfigKey::StepPeriodUs, 0, accepted_period), &mut io);
-  node.on_frame(0, config(ConfigKey::OvershootSteps, 0, 0), &mut io);
+  node.on_frame(0, config(ConfigKey::OvershootSteps, 0, 1), &mut io);
   assert!(io.faults().is_empty());
+  // An overshoot of zero would let a finish-plus move from minus end minus.
+  node.on_frame(0, config(ConfigKey::OvershootSteps, 0, 0), &mut io);
+  assert_eq!(io.faults(), [FaultCode::CONFIG_REJECTED]);
 }
 
 #[test]
@@ -809,8 +834,7 @@ fn bus_moves_are_refused_in_bench_mode() {
 
 #[test]
 fn a_bench_move_reports_no_move_done_on_the_bus() {
-  let (mut node, mut io) = ready();
-  node.set_bench(true).unwrap();
+  let (mut node, mut io) = bench_ready();
   node.bench_move(ch(0), 50, 5_000, &mut io).unwrap();
   node.on_move_outcome(10, done(50), &mut io);
   assert!(io.dones().is_empty());
@@ -892,8 +916,7 @@ fn a_bus_move_disarms_as_soon_as_its_heartbeat_is_stale_even_before_the_next_tic
 
 #[test]
 fn the_console_stop_stops_the_running_move() {
-  let (mut node, mut io) = ready();
-  node.set_bench(true).unwrap();
+  let (mut node, mut io) = bench_ready();
   node.bench_move(ch(0), 500, 5_000, &mut io).unwrap();
   io.take();
   node.stop(&mut io);
@@ -937,6 +960,7 @@ fn a_channel_beyond_the_board_is_unavailable_whatever_the_setup_claims() {
     populated: 4,
     ..setup()
   });
+  silence_coordinator(&mut node, &mut io);
   node.set_bench(true).unwrap();
   assert_eq!(
     node.bench_move(ch(3), 10, 5_000, &mut io),
@@ -1039,6 +1063,251 @@ fn the_node_s_heartbeat_carries_the_protocol_version() {
     })
     .collect();
   assert_eq!(versions, [PROTOCOL_VERSION]);
+}
+
+// --- review findings, 2026-11-15 ---------------------------------------------------------------------------------
+
+fn persisted(io: &Recorder) -> Vec<AxisRecord> {
+  let records = io.events.iter().filter_map(|event| match event {
+    Io::Persist(_, record) => Some(*record),
+    _ => None
+  });
+  records.collect()
+}
+
+#[test]
+fn a_timed_out_move_keeps_the_steps_it_issued_and_is_suspect() {
+  let (mut node, mut io) = ready();
+  node.on_frame(0, move_rel(4, 0, 25, false), &mut io);
+  node.on_move_outcome(
+    10,
+    MoveOutcome::TimedOut {
+      steps_issued: 7,
+      phase: Phase::new(3).unwrap()
+    },
+    &mut io
+  );
+  let record = node.axis(ch(0)).unwrap().record;
+  assert_eq!(
+    (record.pos_steps, record.suspect, record.phase),
+    (7, true, Phase::new(3).unwrap())
+  );
+}
+
+#[test]
+fn a_rail_lost_before_the_first_step_is_reported_but_not_suspect() {
+  let (mut node, mut io) = ready();
+  node.on_frame(0, move_rel(4, 0, 25, false), &mut io);
+  io.take();
+  let outcome = MoveOutcome::Finished {
+    end: MoveEnd::RailLost,
+    steps_issued: 0,
+    phase: Phase::ZERO
+  };
+  node.on_move_outcome(10, outcome, &mut io);
+  assert!(
+    !node.axis(ch(0)).unwrap().record.suspect,
+    "no coil was energized, so nothing was lost"
+  );
+  assert_eq!(io.faults(), [FaultCode::RAIL_LOST_DURING_MOVE]);
+  assert_eq!(io.dones()[0].result, MoveResult::RailLost);
+}
+
+#[test]
+fn a_lost_coordinator_is_forgotten_so_its_first_move_after_returning_is_new_and_needs_permission() {
+  let (mut node, mut io) = ready();
+  node.on_frame(0, move_rel(0, 0, 45, false), &mut io);
+  node.on_move_outcome(1_000, done(45), &mut io);
+  node.tick(10_000, &mut io);
+  io.take();
+  // The coordinator is back, restarted, and sends its first poke again.
+  node.on_frame(10_010, heartbeat(), &mut io);
+  node.on_frame(10_020, move_rel(0, 0, 45, false), &mut io);
+  assert_eq!(io.faults(), [FaultCode::INHIBITED], "it must allow motion again first");
+  assert!(io.dones().is_empty(), "and the old MOVE_DONE is not replayed");
+  node.on_frame(10_030, allow(), &mut io);
+  node.on_frame(10_040, move_rel(0, 0, 45, false), &mut io);
+  assert_eq!(io.starts().len(), 1, "the poke runs");
+}
+
+#[test]
+fn a_coordinator_restart_shown_by_its_uptime_is_forgotten_too() {
+  let (mut node, mut io) = ready();
+  let beat = |uptime_ms| {
+    from_coordinator(Message::Heartbeat {
+      uptime_ms,
+      state: 1,
+      fw_version: 1,
+      proto_version: PROTOCOL_VERSION
+    })
+  };
+  // The set-up's heartbeats carry uptime 0, so this first one reads as a restart: allow motion again.
+  node.on_frame(10, beat(5_000), &mut io);
+  node.on_frame(15, allow(), &mut io);
+  node.on_frame(20, move_rel(0, 0, 45, false), &mut io);
+  node.on_move_outcome(30, done(45), &mut io);
+  node.on_frame(110, beat(5_100), &mut io);
+  node.on_frame(120, move_rel(0, 0, 45, false), &mut io);
+  assert_eq!(io.dones().len(), 2, "same coordinator: the resend is answered");
+  io.take();
+  // 100 ms later by the local clock, the coordinator says it has been up 40 ms: it restarted.
+  node.on_frame(210, beat(40), &mut io);
+  node.on_frame(220, move_rel(0, 0, 45, false), &mut io);
+  assert_eq!(io.faults(), [FaultCode::INHIBITED]);
+}
+
+#[test]
+fn an_uptime_that_disagrees_with_the_local_clock_by_exactly_the_heartbeat_timeout_is_the_same_coordinator() {
+  let timeout = TIMING.heartbeat_timeout_ms;
+  let (mut node, mut io) = ready();
+  let beat = |uptime_ms| {
+    from_coordinator(Message::Heartbeat {
+      uptime_ms,
+      state: 1,
+      fw_version: 1,
+      proto_version: PROTOCOL_VERSION
+    })
+  };
+  node.on_frame(10, beat(5_000), &mut io);
+  node.on_frame(15, allow(), &mut io);
+  node.on_frame(110, beat(5_100 + timeout), &mut io);
+  node.on_frame(120, move_rel(1, 0, 10, false), &mut io);
+  assert_eq!(io.starts().len(), 1, "at the boundary: not a restart");
+  node.on_move_outcome(130, done(10), &mut io);
+  node.on_frame(210, beat(5_200 + 2 * timeout + 1), &mut io);
+  io.take();
+  node.on_frame(220, move_rel(2, 0, 10, false), &mut io);
+  assert_eq!(io.faults(), [FaultCode::INHIBITED], "one millisecond more: a restart");
+}
+
+#[test]
+fn changing_the_direction_sign_converts_the_stored_position_and_writes_it() {
+  let (mut node, mut io) = ready();
+  node.on_frame(0, move_rel(1, 0, 200, false), &mut io);
+  node.on_move_outcome(10, done(200), &mut io);
+  io.take();
+  node.on_frame(20, config(ConfigKey::DirSign, 0, -1), &mut io);
+  let record = node.axis(ch(0)).unwrap().record;
+  assert_eq!(
+    (record.pos_steps, record.last_dir, record.dir_sign),
+    (-200, LastDir::Minus, Some(DirSign::Reversed))
+  );
+  assert_eq!(persisted(&io), [record], "the converted record is written");
+  // From minus, a finish-plus move overshoots instead of going straight.
+  io.take();
+  node.on_frame(30, move_rel(2, 0, 10, true), &mut io);
+  assert_eq!(
+    io.starts()[0].legs_steps,
+    [-(10 - MOTION.overshoot_steps), -MOTION.overshoot_steps]
+  );
+}
+
+#[test]
+fn the_same_direction_sign_again_changes_nothing() {
+  let (mut node, mut io) = ready();
+  node.on_frame(0, move_rel(1, 0, 200, false), &mut io);
+  node.on_move_outcome(10, done(200), &mut io);
+  io.take();
+  node.on_frame(20, config(ConfigKey::DirSign, 0, 1), &mut io);
+  assert!(io.events.is_empty());
+  assert_eq!(node.axis(ch(0)).unwrap().record.pos_steps, 200);
+}
+
+#[test]
+fn a_record_with_steps_but_no_sign_becomes_suspect_when_a_sign_is_set() {
+  let mut node = Node::new(setup());
+  let mut io = Recorder::default();
+  let format_1 = AxisRecord {
+    pos_steps: 500,
+    ..AxisRecord::FRESH
+  };
+  node.restore([Restored::Valid(format_1), Restored::Missing, Restored::Missing]);
+  node.on_frame(0, config(ConfigKey::DirSign, 0, 1), &mut io);
+  node.on_frame(0, config(ConfigKey::DirSign, 1, 1), &mut io);
+  assert!(node.axis(ch(0)).unwrap().record.suspect);
+  assert!(
+    !node.axis(ch(1)).unwrap().record.suspect,
+    "a fresh record at zero is fine"
+  );
+  assert_eq!(node.axis(ch(1)).unwrap().record.dir_sign, Some(DirSign::Forward));
+}
+
+#[test]
+fn the_record_is_written_suspect_before_every_move_starts() {
+  let (mut node, mut io) = ready();
+  node.on_frame(0, move_rel(1, 0, 25, false), &mut io);
+  let expected = AxisRecord {
+    suspect: true,
+    dir_sign: Some(DirSign::Forward),
+    ..AxisRecord::FRESH
+  };
+  assert_eq!(io.events[0], Io::Persist(ch(0), expected));
+  assert!(
+    matches!(io.events[1], Io::Start(_)),
+    "the write is queued before the move"
+  );
+  assert!(
+    !node.axis(ch(0)).unwrap().record.suspect,
+    "only the stored copy is marked"
+  );
+}
+
+#[test]
+fn a_failed_record_write_refuses_moves_until_a_write_succeeds() {
+  let (mut node, mut io) = ready();
+  node.on_persisted(ch(0), false, &mut io);
+  io.take();
+  node.on_frame(0, move_rel(1, 0, 25, false), &mut io);
+  assert_eq!(io.faults(), [FaultCode::PERSIST_FAILED]);
+  node.on_persisted(ch(0), true, &mut io);
+  node.on_frame(0, move_rel(1, 0, 25, false), &mut io);
+  assert_eq!(io.starts().len(), 1);
+}
+
+#[test]
+fn an_estop_latches_against_bench_moves_until_an_inhibit_0() {
+  let (mut node, mut io) = ready();
+  node.on_frame(0, from_coordinator(Message::Estop { reason: 0 }), &mut io);
+  silence_coordinator(&mut node, &mut io);
+  node.set_bench(true).unwrap();
+  assert_eq!(
+    node.bench_move(ch(0), 100, 5_000, &mut io),
+    Err(BenchRefused::EstopLatched)
+  );
+  node.on_frame(2_000, allow(), &mut io);
+  assert_eq!(node.bench_move(ch(0), 100, 5_000, &mut io), Ok(()));
+}
+
+#[test]
+fn an_estop_during_a_bench_move_disarms_it() {
+  let (mut node, mut io) = bench_ready();
+  node.bench_move(ch(0), 1_000, 5_000, &mut io).unwrap();
+  assert!(node.armed(2_000));
+  node.on_frame(2_000, from_coordinator(Message::Estop { reason: 0 }), &mut io);
+  assert!(!node.armed(2_000));
+}
+
+#[test]
+fn bench_moves_are_refused_while_a_coordinator_is_on_the_bus() {
+  let (mut node, mut io) = ready();
+  node.set_bench(true).unwrap();
+  assert_eq!(
+    node.bench_move(ch(0), 100, 5_000, &mut io),
+    Err(BenchRefused::CoordinatorPresent)
+  );
+}
+
+#[test]
+fn entering_bench_mode_inhibits_and_forgets_the_last_bus_move() {
+  let (mut node, mut io) = ready();
+  node.on_frame(0, move_rel(3, 0, 25, false), &mut io);
+  node.on_move_outcome(10, done(25), &mut io);
+  node.set_bench(true).unwrap();
+  node.set_bench(false).unwrap();
+  io.take();
+  node.on_frame(20, move_rel(3, 0, 25, false), &mut io);
+  assert_eq!(io.faults(), [FaultCode::INHIBITED]);
+  assert!(io.dones().is_empty(), "no stale MOVE_DONE");
 }
 
 // --- the guard property -------------------------------------------------------
