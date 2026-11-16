@@ -77,7 +77,8 @@ pub enum AlignFault {
     /// What the actuator reported.
     fault: MoveFault
   },
-  /// A move would have left the soft limits. Nothing was moved; manual pre-alignment is required.
+  /// A move would have left the soft limits. Nothing of the step, poke, or approach it belonged to was moved;
+  /// manual pre-alignment is required.
   #[error("axis {axis:?}: a move to {target_steps} steps is outside the soft limits")]
   SoftLimit {
     /// The axis.
@@ -85,7 +86,8 @@ pub enum AlignFault {
     /// The commanded position the move would have reached.
     target_steps: i64
   },
-  /// A single move would have been longer than the per-move cap. Nothing was moved.
+  /// A single move would have been longer than the per-move cap. Nothing of the step, poke, or approach it
+  /// belonged to was moved.
   #[error("axis {axis:?}: a move of {steps} steps is longer than the per-move cap")]
   MoveTooLong {
     /// The axis.
@@ -123,6 +125,22 @@ pub enum AlignFault {
   NotConverged {
     /// Infinity norm of the last measurement vector.
     residual_norm: f32
+  }
+}
+
+/// Where an axis would be after the moves checked so far.
+#[derive(Clone, Copy, Debug)]
+struct Planned {
+  pos_steps: i64,
+  last_dir: LastDir
+}
+
+impl From<AxisState> for Planned {
+  fn from(state: AxisState) -> Self {
+    Self {
+      pos_steps: i64::from(state.pos_steps),
+      last_dir: state.last_dir
+    }
   }
 }
 
@@ -235,25 +253,41 @@ impl<A: Actuator, S: BeamSensor> Aligner<A, S> {
   /// [`AlignFault::SoftLimit`] or [`AlignFault::MoveTooLong`] before anything moved, or [`AlignFault::Move`] if
   /// the actuator failed; the axis is then marked suspect and its last direction unknown.
   pub async fn approach(&mut self, axis: Axis, delta_steps: i32) -> Result<(), AlignFault> {
-    let motion = self.config.motion;
     let state = self.axes.get(axis);
-    let plan = approach::plan(delta_steps, state.last_dir, motion.overshoot_steps);
-    let limits = SoftLimits::for_axis(&motion, axis);
-    let longest = u32::try_from(motion.max_move_steps).unwrap_or(0);
-    let mut target_steps = i64::from(state.pos_steps);
-    for leg in plan.legs() {
-      if leg.unsigned_abs() > longest {
-        return Err(AlignFault::MoveTooLong { axis, steps: leg });
-      }
-      target_steps += i64::from(leg);
-      if !limits.contains(target_steps) {
-        return Err(AlignFault::SoftLimit { axis, target_steps });
-      }
-    }
+    self.check_approach(axis, Planned::from(state), delta_steps)?;
+    let plan = approach::plan(delta_steps, state.last_dir, self.config.motion.overshoot_steps);
     for leg in plan.legs() {
       self.leg(axis, leg).await?;
     }
     Ok(())
+  }
+
+  /// Checks an approach of `delta_steps` from `from` against the per-move cap and the soft limits, without moving,
+  /// and returns where it would leave the axis. A later approach is checked from there, so that a sequence of
+  /// moves (a poke and its return, or the four axes of a step) is refused whole before any of it runs.
+  fn check_approach(&self, axis: Axis, from: Planned, delta_steps: i32) -> Result<Planned, AlignFault> {
+    let motion = self.config.motion;
+    let plan = approach::plan(delta_steps, from.last_dir, motion.overshoot_steps);
+    let limits = SoftLimits::for_axis(&motion, axis);
+    let longest = u32::try_from(motion.max_move_steps).unwrap_or(0);
+    let mut target_steps = from.pos_steps;
+    for leg in plan.legs() {
+      if leg.unsigned_abs() > longest {
+        return Err(AlignFault::MoveTooLong { axis, steps: leg });
+      }
+      target_steps = target_steps.saturating_add(i64::from(leg));
+      if !limits.contains(target_steps) {
+        return Err(AlignFault::SoftLimit { axis, target_steps });
+      }
+    }
+    Ok(Planned {
+      pos_steps: target_steps,
+      last_dir: if plan.forward_steps > 0 {
+        LastDir::Plus
+      } else {
+        from.last_dir
+      }
+    })
   }
 
   /// Measures the Jacobian by poking each axis, and stores it.
@@ -267,6 +301,18 @@ impl<A: Actuator, S: BeamSensor> Aligner<A, S> {
   /// singular or ill-conditioned result, and any fault of a move or a measurement.
   pub async fn calibrate(&mut self) -> Result<Calibration, AlignFault> {
     let poke_steps = self.config.motion.poke_steps;
+    // Every move of the calibration is checked before the first one runs, so that a refused return leg cannot
+    // leave an axis poked.
+    for axis in Axis::ALL {
+      let state = Planned::from(self.axes.get(axis));
+      let standard = if state.last_dir == LastDir::Plus {
+        state
+      } else {
+        self.check_approach(axis, state, 0)?
+      };
+      let poked = self.check_approach(axis, standard, poke_steps)?;
+      self.check_approach(axis, poked, -poke_steps)?;
+    }
     for axis in Axis::ALL {
       if self.axes.get(axis).last_dir != LastDir::Plus {
         self.approach(axis, 0).await?;
@@ -378,6 +424,12 @@ impl<A: Actuator, S: BeamSensor> Aligner<A, S> {
         break;
       }
       *iterations = iterations.saturating_add(1);
+      // The whole step is checked before any axis moves, so that a refusal does not leave it half taken.
+      for (axis, delta_steps) in Axis::ALL.into_iter().zip(steps) {
+        if delta_steps != 0 {
+          self.check_approach(axis, Planned::from(self.axes.get(axis)), delta_steps)?;
+        }
+      }
       for (axis, delta_steps) in Axis::ALL.into_iter().zip(steps) {
         if delta_steps != 0 {
           self.approach(axis, delta_steps).await?;

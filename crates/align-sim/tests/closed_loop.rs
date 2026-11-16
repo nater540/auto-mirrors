@@ -3,8 +3,8 @@
 //! Each test asserts on the model's truth (the real beam angles and the noise-free residual), not only on what
 //! the aligner reports about itself.
 
-use align_core::aligner::{AlignFault, AlignReport, Aligner};
-use align_core::approach::SoftLimits;
+use align_core::aligner::{AlignFault, AlignReport, Aligner, AxisState};
+use align_core::approach::{LastDir, SoftLimits};
 use align_core::axis::{Axis, PerAxis};
 use align_core::config::Config;
 use align_core::measurement::Shots;
@@ -249,8 +249,54 @@ proptest! {
     }
     if let Err(fault) = outcome {
       prop_assert!(matches!(fault, AlignFault::SoftLimit { .. }), "{:?}", fault);
+      // The refused step was refused whole: nothing moved after the measurement it was computed from.
+      let log = rig.world().log().to_vec();
+      prop_assert!(matches!(log.last(), Some(Record::Measure { .. })), "moves after the last measurement: {:?}", log.last());
     }
   }
+}
+
+/// The case the 2026-11-15 review found: three axes of a step ran, then the fourth was refused at its limit.
+#[test]
+fn a_step_refused_at_a_soft_limit_moves_none_of_its_axes() {
+  let misalignment_steps = PerAxis {
+    m1_h: 30.0,
+    m1_v: -30.0,
+    m2_h: -45.0,
+    m2_v: 45.0
+  };
+  let rig = Rig::new(realistic(0, misalignment_steps, [0.0, 0.0]));
+  let mut config = Config::default();
+  config.motion.soft_min_steps = PerAxis::splat(-125);
+  config.motion.soft_max_steps = PerAxis::splat(125);
+  let (outcome, _) = align(&rig, &config);
+  assert!(matches!(outcome, Err(AlignFault::SoftLimit { .. })), "{outcome:?}");
+  let log = rig.world().log().to_vec();
+  assert!(matches!(log.last(), Some(Record::Measure { .. })), "{:?}", log.last());
+}
+
+/// A poke whose return leg would leave the soft limits is refused before the poke, so no axis is left poked.
+#[test]
+fn a_calibration_that_cannot_return_from_a_poke_moves_nothing() {
+  let rig = Rig::new(Scenario::IDEAL);
+  let mut config = Config::default();
+  // [-10, 110] with the margin: the poke to 45 fits, the overshoot of its return (45 - 45 - 120) does not.
+  config.motion.soft_min_steps = PerAxis::splat(0);
+  config.motion.soft_max_steps = PerAxis::splat(100);
+  let standard = AxisState {
+    last_dir: LastDir::Plus,
+    ..AxisState::default()
+  };
+  let mut aligner = rig.aligner(config).unwrap().with_axes(PerAxis::splat(standard));
+  let outcome = block_on(aligner.calibrate());
+  assert_eq!(
+    outcome,
+    Err(AlignFault::SoftLimit {
+      axis: Axis::M1H,
+      target_steps: -120
+    })
+  );
+  assert!(rig.world().log().is_empty(), "{:?}", rig.world().log());
 }
 
 /// Hand-off M2, test 3, with a stored calibration from when the axis still worked.
