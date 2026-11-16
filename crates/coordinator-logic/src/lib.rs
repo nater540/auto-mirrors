@@ -3,9 +3,11 @@
 //!
 //! - [`nodes`]: the watch over the nodes, from their heartbeats.
 //!   A node is present, lost, restarted, or speaking another protocol version.
+//! - [`readings`]: the sensor's readings paired with the shots of a job, late ones asked for again.
 //!
 //! The coordinator's state machine, which gates the relay and the motors, is `align_core::coordinator`; this crate
 //! turns bus traffic into its events. `firmware/coordinator` will wire both to TWAI and the Ruida I/O.
 #![no_std]
 
 pub mod nodes;
+pub mod readings;

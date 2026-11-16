@@ -296,7 +296,10 @@ pub struct CoordinatorTiming {
   pub shots_per_job: u8,
   /// UNVERIFIED: fire edges closer than this belong to one shot (a dot may be several edges with an RF tube or
   /// PWM). Settled by the Mod5 scope check (`docs/SENSOR_PLAN.md` section 14).
-  pub burst_gap_ms: u32
+  pub burst_gap_ms: u32,
+  /// UNVERIFIED: a reading still missing this long after its shot, or after it was last asked for, is asked for
+  /// again (SENSOR_RESEND). The button sensor answers 200 ms after a shot; a detector's integration may be longer.
+  pub resend_after_ms: u32
 }
 
 impl CoordinatorTiming {
@@ -308,7 +311,8 @@ impl CoordinatorTiming {
     reading_timeout_ms: 5_000,
     start_pulse_ms: 200,
     shots_per_job: 3,
-    burst_gap_ms: 5
+    burst_gap_ms: 5,
+    resend_after_ms: 1_000
   };
 }
 

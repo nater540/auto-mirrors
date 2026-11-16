@@ -220,7 +220,8 @@ One Cargo workspace, edition 2024, Rust 1.96.0 pinned. Dependencies and lints ar
   no output pin and writes no flash. Pins in `src/board.rs`, PROVISIONAL for a development board of its own.
 - `crates/coordinator-logic`: `no_std`. The coordinator's bus side, turning traffic into the state machine's events:
   so far the watch over the nodes (`nodes`: present, lost, restarted, or another protocol version, judged from
-  heartbeats the way the nodes judge the coordinator).
+  heartbeats the way the nodes judge the coordinator), and the sensor's readings paired with a job's shots
+  (`readings`: by sequence number, late ones asked for again with SENSOR_RESEND, the node's rejections as faults).
 - `firmware/coordinator` (`align-coordinator`): scaffold only. It boots, logs its notice, and touches no pin.
 
 Dependency direction: firmware and `align-sim` depend on `align-core`, `align-proto`, `stepper`, `node-logic`,

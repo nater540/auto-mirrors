@@ -30,8 +30,9 @@ examine_globs = [
   "crates/sensor-logic/src/node.rs",
   "crates/sensor-logic/src/buttons.rs",
   "crates/sensor-logic/src/console.rs",
-  # Whether the coordinator counts a node as present, lost, or restarted.
-  "crates/coordinator-logic/src/nodes.rs"
+  # Whether the coordinator counts a node as present, lost, or restarted, and which reading answers which shot.
+  "crates/coordinator-logic/src/nodes.rs",
+  "crates/coordinator-logic/src/readings.rs"
 ]
 
 # The firmware crates cannot build on the host, so the workspace is never tested as a whole. A mutant in
