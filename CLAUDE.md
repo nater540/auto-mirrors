@@ -34,8 +34,13 @@ add it to the open list in the report.
 Stop at the end of each milestone and report to the owner (hand-off section 6).
 
 - M0 scaffold: done. M1 core math: done. M2 simulator and closed loop: done. M3 protocol: done.
-- M4 stepper and node firmware: code done and running on the development board with PROVISIONAL pins. The motor
-  bench test (a 28BYJ-48 on a ULN2003, wired as the node's `FLASH_NOTICE.txt` says) is pending.
+- M4 stepper and node firmware: code done and running on the development board with PROVISIONAL pins. Motor bench
+  test on 2026-11-17 (a 28BYJ-48 on a ULN2003, wired as the node's `FLASH_NOTICE.txt` says, a 1 degree dial on the
+  shaft): plus steps turn the shaft counterclockwise seen from its end, and the unit is a true 64:1 (2048 steps a
+  turn, not the configured 2037.8864). Four turns of 2048 steps each came back to the same tick, and 40 steps each
+  way moved 7 ticks (7.03 predicted), so gear play unloaded is under half a degree. The first move after the shaft
+  was turned by hand unpowered came up about 1 degree short of the rest, not yet explained.
+  Still to run: the stop when the permit drops mid-move, the refusal of channel 1, and no coil LED lit during reset.
 - M5 coordinator: started. Host-tested so far: the state machine of reference 7.3 (`align_core::coordinator`, whose
   extra states await the owner's sign-off) and the watch over the nodes (`coordinator_logic::nodes`). The firmware
   is still the M0 scaffold.

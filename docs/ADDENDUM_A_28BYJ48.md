@@ -228,7 +228,7 @@ Settle time before a shot: 200 ms after coils release (UNVERIFIED; same as base)
 Identify each unit:
 
 1. Measure resistance from red to each coil wire. Expect one value near 27 to 50 ohm on a 5 V unit. A value near 200 ohm or more suggests a 12 V unit: set aside.
-2. Mark the shaft, command 2038 full steps, check for one turn. About a quarter turn too far per 4 commanded turns means a true 64:1 unit; about 4 turns means a 16:1 unit: set aside.
+2. Mark the shaft and command 2038 full steps, four times. About 4 turns on the first command means a 16:1 unit: set aside. After the four, the common 63.68395:1 unit is back on the mark (within half a degree); a true 64:1 unit is about 7 degrees (40 steps) short of it, and commands of 2048 steps then bring it back to the mark every turn.
 3. Use four matching units.
 
 Torque margin, on the real mount with the real cup coupler and springs:
