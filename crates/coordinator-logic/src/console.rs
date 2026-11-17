@@ -2,8 +2,8 @@
 //!
 //! The parser is a few lines over `split_whitespace`, as the node's is (`node_logic::console`, which records why
 //! no console crate was taken). A `jog` runs the whole interlock of [`crate::orchestrator`]: the relay armed and
-//! confirmed, the move, and the relay released. The hand-off's poke, calibrate, and align arrive with the
-//! measurement.
+//! confirmed, the move, and the relay released. A `measure` runs the canned job and collects the sensor's readings.
+//! The hand-off's poke, calibrate, and align arrive with the aligner.
 
 use align_core::axis::Axis;
 
@@ -23,6 +23,8 @@ pub enum Command {
   },
   /// Stop the move.
   Stop,
+  /// Run the canned job and collect the sensor's three readings.
+  Measure,
   /// Clear a fault: back to Inhibited, from which the self-test runs again.
   Clear
 }
@@ -33,6 +35,7 @@ help                  this list
 status                the state, the relay and inputs, the bus, each node, and each channel's last STATUS
 jog <axis> <steps>    move one axis (m1h, m1v, m2h, m2v) through the interlock; plus advances the screw
 stop                  stop the move
+measure               run the canned job (FootSW), a shot to the sensor per dot, and collect the three readings
 clear                 clear a fault; the self-test then runs again";
 
 /// Why a line is not a command.
@@ -60,6 +63,7 @@ pub fn parse(line: &str) -> Result<Command, ParseError> {
     "help" | "?" => Command::Help,
     "status" => Command::Status,
     "stop" => Command::Stop,
+    "measure" => Command::Measure,
     "clear" => Command::Clear,
     "jog" => {
       let axis = words.next().and_then(axis).ok_or(ParseError::BadArguments)?;
@@ -102,6 +106,7 @@ mod tests {
     assert_eq!(parse("  status  "), Ok(Command::Status));
     assert_eq!(parse("stop"), Ok(Command::Stop));
     assert_eq!(parse("clear"), Ok(Command::Clear));
+    assert_eq!(parse("measure"), Ok(Command::Measure));
     assert_eq!(
       parse("jog m1h 100"),
       Ok(Command::Jog {
@@ -144,11 +149,12 @@ mod tests {
     assert_eq!(parse("jog m1h ten"), Err(ParseError::BadArguments));
     assert_eq!(parse("jog m1h 10 200"), Err(ParseError::BadArguments));
     assert_eq!(parse("stop now"), Err(ParseError::BadArguments));
+    assert_eq!(parse("measure twice"), Err(ParseError::BadArguments));
   }
 
   #[test]
   fn the_help_names_every_command() {
-    for command in ["help", "status", "jog", "stop", "clear"] {
+    for command in ["help", "status", "jog", "stop", "measure", "clear"] {
       assert!(HELP.lines().any(|line| line.starts_with(command)), "{command}");
     }
   }

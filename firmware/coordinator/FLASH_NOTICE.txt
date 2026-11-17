@@ -1,4 +1,4 @@
-align-coordinator: interlock and moves over the bus (milestone M5), PROVISIONAL pins for an Adafruit Feather ESP32-C6
+align-coordinator: interlock, moves, and measurement (milestone M5), PROVISIONAL pins for an Adafruit Feather ESP32-C6
 
 Motors:      moved only by the console's `jog`, through the state machine of reference 7.3: in Idle with the node
              present, after 500 ms without a fire, the relay is energized; once its feedback reads the laser loop
@@ -11,16 +11,19 @@ Interlock:   GPIO 22 (Feather MO) drives the relay, high to energize; low at boo
              arming and moving. GPIO 21 (SCK) reads its feedback, pulled down, high when the laser loop is open.
              A fault (fire or job while armed, feedback disagreeing, a lost node) releases the relay at once and
              sends ESTOP.
-Ruida I/O:   GPIO 3 (A4) reads Status, pulled up, low = job running; GPIO 2 (A5) reads fire sense, pulled up,
-             low = firing. Both polarities UNVERIFIED (hand-off open item 9). FootSW is not driven.
+Ruida I/O:   GPIO 3 (A4) drives FootSW's optocoupler, high = active: high for 200 ms only on the console's
+             `measure`, in Idle with the relay released and the sensor node present (on the machine this starts the
+             Ruida's job, which fires the laser); low at boot, at reset, and otherwise. GPIO 2 (A5) reads Status,
+             pulled up, low = job running; GPIO 7 reads fire sense, pulled up, low = firing. Both polarities
+             UNVERIFIED (hand-off open item 9). Each burst of fire is a SHOT to the sensor node.
 Bus:         TWAI through an SN65HVD230 transceiver: TX on GPIO 23 (MI) to CTX, RX on GPIO 1 (A0) from CRX.
              250 kbit/s, normal mode. A heartbeat and the inhibit level every 100 ms, the inhibit at once on change.
 Other I/O:   none. Every other GPIO stays in its reset state, among them the Feather's RGB LED and I2C power
              (GPIO 20), its I2C pins (18, 19), and its LED (15).
 Flash:       nothing is written after boot.
-Watchdog:    the TIMG1 watchdog resets the chip if not fed for 1 s; a reset releases the relay.
+Watchdog:    the TIMG1 watchdog resets the chip if not fed for 1 s; a reset releases the relay and FootSW.
 
 Bench wiring: SN65HVD230: 3V3 to 3V, GND to GND, CTX to MI, CRX to A0; CANH and CANL to the node's.
              Jumper MO to SCK (the relay's feedback follows its drive), and wire MO to the node's pin 6 in place of
-             that pin's 3V jumper (MO is the motor permit). A4 and A5 open: no job, no fire.
+             that pin's 3V jumper (MO is the motor permit). A4 drives nothing; A5 and 7 open: no job, no fire.
 With no relay on the bench, MO drives the node's permit directly: the firmware checks are the only layer.

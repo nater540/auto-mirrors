@@ -1,6 +1,7 @@
-//! The orchestrator on a simulated bench: a relay whose feedback follows its drive, one motor node, and the frames
-//! the node would send. Every rule of a move, the refusals, the faults on the way, and a property over random
-//! sequences: a MOVE_REL goes out only after INHIBIT 0, with the relay energized and its loop reading open.
+//! The orchestrator on a simulated bench: a relay whose feedback follows its drive, one motor node, the sensor node,
+//! and the frames they would send. Every rule of a move and of a measurement, the refusals, the faults on the way,
+//! and a property over random sequences: a MOVE_REL goes out only after INHIBIT 0, with the relay energized and its
+//! loop reading open, and FootSW never starts a job while the relay is energized.
 
 extern crate std;
 
@@ -8,7 +9,13 @@ use std::vec::Vec;
 
 use align_core::approach::SoftLimits;
 use align_core::coordinator::FaultReason;
-use align_proto::{ConfigKey, MoveDone, MoveRel, MoveResult, PROTOCOL_VERSION};
+use align_core::quadrant::ReadingFault;
+use align_proto::{
+  ConfigKey, MoveDone, MoveRel, MoveResult, PROTOCOL_VERSION, SensorReading, SensorResult, SensorStatus, Shot,
+  ShotPoint
+};
+
+use crate::readings::to_reading;
 use proptest::prelude::*;
 
 use super::*;
@@ -31,6 +38,7 @@ fn setup() -> Setup {
 enum Io {
   Sent(Envelope),
   Relay(bool),
+  FootSw(bool),
   Report(Report)
 }
 
@@ -38,7 +46,8 @@ enum Io {
 #[derive(Default)]
 struct Bench {
   events: Vec<Io>,
-  relay: bool
+  relay: bool,
+  footsw: bool
 }
 
 impl CoordinatorIo for Bench {
@@ -49,6 +58,11 @@ impl CoordinatorIo for Bench {
   fn set_relay(&mut self, energized: bool) {
     self.relay = energized;
     self.events.push(Io::Relay(energized));
+  }
+
+  fn set_footsw(&mut self, active: bool) {
+    self.footsw = active;
+    self.events.push(Io::FootSw(active));
   }
 
   fn report(&mut self, report: Report) {
@@ -307,7 +321,11 @@ fn a_move_arms_the_relay_lifts_the_inhibit_sends_the_move_and_disarms_when_it_is
     axis: Axis::M1H,
     steps: 100
   })));
-  let sent = Bench { events, relay: true };
+  let sent = Bench {
+    events,
+    relay: true,
+    footsw: false
+  };
   assert_eq!(
     sent.move_rels(),
     [(
@@ -408,7 +426,7 @@ fn a_move_is_refused_outside_idle() {
   let mut bench = Bench::default();
   assert_eq!(
     orchestrator.request_move(0, Axis::M1H, 100, &mut bench),
-    Err(MoveRequestError::NotIdle {
+    Err(RequestError::NotIdle {
       state: State::Inhibited
     })
   );
@@ -421,12 +439,12 @@ fn a_second_move_is_refused_while_one_is_asked_for_or_running() {
   orchestrator.request_move(1_001, Axis::M1H, 100, &mut bench).unwrap();
   assert_eq!(
     orchestrator.request_move(1_001, Axis::M1V, 100, &mut bench),
-    Err(MoveRequestError::Busy)
+    Err(RequestError::Busy)
   );
   orchestrator.tick(1_002, follow(&bench), &mut bench);
   assert_eq!(
     orchestrator.request_move(1_002, Axis::M1H, 100, &mut bench),
-    Err(MoveRequestError::Busy)
+    Err(RequestError::Busy)
   );
   assert_eq!(bench.move_rels().len(), 1);
 }
@@ -436,7 +454,7 @@ fn a_move_on_an_axis_whose_node_is_absent_is_refused_and_nothing_is_armed() {
   let (mut orchestrator, mut bench) = idle();
   assert_eq!(
     orchestrator.request_move(1_001, Axis::M2H, 100, &mut bench),
-    Err(MoveRequestError::NodeAbsent {
+    Err(RequestError::NodeAbsent {
       node: NodeId::MIRROR_2.get()
     })
   );
@@ -455,7 +473,7 @@ fn a_move_is_refused_while_a_job_runs() {
   orchestrator.tick(1_001, job, &mut bench);
   assert_eq!(
     orchestrator.request_move(1_002, Axis::M1H, 100, &mut bench),
-    Err(MoveRequestError::Refused)
+    Err(RequestError::Refused)
   );
   assert!(!bench.relay);
 }
@@ -582,6 +600,343 @@ fn a_burst_lasts_while_the_line_stays_active() {
   assert_eq!(burst.sample(11 * gap, false), Some(Event::FireEnded));
 }
 
+// --- a measurement --------------------------------------------------------------------------------------------
+
+const SENSOR: NodeId = NodeId::SENSOR;
+
+fn sensor_beat(now_ms: u64) -> Envelope {
+  Envelope {
+    node: SENSOR,
+    ..beat(now_ms)
+  }
+}
+
+/// The sensor's answer to shot `seq`: a valid reading whose position tells the points apart.
+fn answer(seq: u8, result: SensorResult) -> Envelope {
+  let offset = i16::from(seq) * 1_000;
+  Envelope {
+    node: SENSOR,
+    message: Message::Sensor(SensorReading {
+      seq,
+      status: SensorStatus {
+        result,
+        calibrated: true,
+        bench: false
+      },
+      h_q15: 1_000 + offset,
+      v_q15: -2_000 - offset,
+      sum_q: 50_000
+    })
+  }
+}
+
+/// The SHOT frames sent so far: sequence number and point.
+fn shots_sent(bench: &Bench) -> Vec<(u8, ShotPoint)> {
+  let shots = bench.events.iter().filter_map(|event| match event {
+    Io::Sent(Envelope {
+      node,
+      message: Message::Shot(Shot { seq, point, .. })
+    }) if *node == SENSOR => Some((*seq, *point)),
+    _ => None
+  });
+  shots.collect()
+}
+
+fn measurements(bench: &Bench) -> Vec<Result<Shots, SensorFault>> {
+  let ended = bench.reports().into_iter().filter_map(|report| match report {
+    Report::MeasurementEnded { result } => Some(result),
+    _ => None
+  });
+  ended.collect()
+}
+
+/// Ticks one millisecond at a time with both nodes' heartbeats arriving, the loop following the relay, and the job
+/// as `job` says: whether the Status line is up and whether the laser fires at each time.
+fn play(
+  orchestrator: &mut Orchestrator,
+  bench: &mut Bench,
+  from_ms: u64,
+  to_ms: u64,
+  job: impl Fn(u64) -> (bool, bool)
+) {
+  for now_ms in from_ms..=to_ms {
+    if now_ms % 100 == 0 {
+      orchestrator.on_frame(now_ms, beat(now_ms), bench);
+    }
+    if now_ms % 100 == 50 {
+      orchestrator.on_frame(now_ms, sensor_beat(now_ms), bench);
+    }
+    let (job_running, firing) = job(now_ms);
+    let inputs = Inputs {
+      loop_open: bench.relay,
+      job_running,
+      firing
+    };
+    orchestrator.tick(now_ms, inputs, bench);
+  }
+}
+
+/// The canned job started at 1000 ms: Status up from 1300 ms to 2000 ms, and `dots` dots of 10 ms, 200 ms apart,
+/// from 1400 ms.
+fn canned(dots: u64) -> impl Fn(u64) -> (bool, bool) {
+  move |now_ms| {
+    let running = (1_300..2_000).contains(&now_ms);
+    let firing = (0..dots).any(|dot| (1_400 + 200 * dot..1_410 + 200 * dot).contains(&now_ms));
+    (running, firing)
+  }
+}
+
+/// No job.
+fn quiet(_: u64) -> (bool, bool) {
+  (false, false)
+}
+
+/// Idle at 1000 ms with the mirror 1 node and the sensor node present, everything so far cleared.
+fn idle_with_sensor() -> (Orchestrator, Bench) {
+  let mut orchestrator = Orchestrator::new(setup());
+  let mut bench = Bench::default();
+  play(&mut orchestrator, &mut bench, 0, 999, quiet);
+  assert_eq!(orchestrator.state(), State::Idle);
+  bench.take();
+  (orchestrator, bench)
+}
+
+/// The three shots' readings as the aligner gets them.
+fn expected_shots(seqs: [u8; 3]) -> Shots {
+  let reading = |seq| match answer(seq, SensorResult::Valid).message {
+    Message::Sensor(reading) => to_reading(&reading).unwrap(),
+    _ => unreachable!()
+  };
+  Shots {
+    a: reading(seqs[0]),
+    b: reading(seqs[1]),
+    c: reading(seqs[2])
+  }
+}
+
+#[test]
+fn a_measurement_pulses_footsw_for_the_start_pulse_only() {
+  let (mut orchestrator, mut bench) = idle_with_sensor();
+  assert_eq!(orchestrator.request_measurement(1_000, &mut bench), Ok(()));
+  assert!(bench.footsw);
+  let pulse_ms = u64::from(CONFIG.coordinator.start_pulse_ms);
+  play(&mut orchestrator, &mut bench, 1_000, 1_000 + pulse_ms - 1, quiet);
+  assert!(bench.footsw, "still low on the Ruida's side");
+  play(&mut orchestrator, &mut bench, 1_000 + pulse_ms, 1_000 + pulse_ms, quiet);
+  assert!(!bench.footsw);
+  let pulses: Vec<bool> = bench
+    .take()
+    .into_iter()
+    .filter_map(|event| match event {
+      Io::FootSw(active) => Some(active),
+      _ => None
+    })
+    .collect();
+  assert_eq!(pulses, [true, false]);
+  assert!(matches!(orchestrator.state(), State::WaitingForFire { .. }));
+}
+
+#[test]
+fn each_burst_is_a_shot_sent_to_the_sensor_with_its_point() {
+  let (mut orchestrator, mut bench) = idle_with_sensor();
+  orchestrator.request_measurement(1_000, &mut bench).unwrap();
+  play(&mut orchestrator, &mut bench, 1_000, 1_999, canned(3));
+  assert_eq!(
+    shots_sent(&bench),
+    [(0, ShotPoint::A), (1, ShotPoint::B), (2, ShotPoint::C)]
+  );
+}
+
+#[test]
+fn readings_that_arrive_during_the_job_complete_it_when_the_status_line_falls() {
+  let (mut orchestrator, mut bench) = idle_with_sensor();
+  orchestrator.request_measurement(1_000, &mut bench).unwrap();
+  play(&mut orchestrator, &mut bench, 1_000, 1_900, canned(3));
+  for (seq, _) in shots_sent(&bench) {
+    orchestrator.on_frame(1_900, answer(seq, SensorResult::Valid), &mut bench);
+  }
+  assert!(measurements(&bench).is_empty(), "not before the job ends");
+  play(&mut orchestrator, &mut bench, 1_901, 2_000, canned(3));
+  assert_eq!(measurements(&bench), [Ok(expected_shots([0, 1, 2]))]);
+  assert_eq!(orchestrator.state(), State::Idle);
+}
+
+#[test]
+fn readings_that_arrive_after_the_job_complete_it_on_the_last() {
+  let (mut orchestrator, mut bench) = idle_with_sensor();
+  orchestrator.request_measurement(1_000, &mut bench).unwrap();
+  play(&mut orchestrator, &mut bench, 1_000, 2_100, canned(3));
+  assert!(matches!(orchestrator.state(), State::CollectingReadings { .. }));
+  // Out of order: the readings are placed by sequence number.
+  for seq in [2, 0, 1] {
+    orchestrator.on_frame(2_100, answer(seq, SensorResult::Valid), &mut bench);
+  }
+  assert_eq!(measurements(&bench), [Ok(expected_shots([0, 1, 2]))]);
+  assert_eq!(orchestrator.state(), State::Idle);
+}
+
+#[test]
+fn a_new_measurement_forgets_the_readings_of_the_last() {
+  let (mut orchestrator, mut bench) = idle_with_sensor();
+  orchestrator.request_measurement(1_000, &mut bench).unwrap();
+  play(&mut orchestrator, &mut bench, 1_000, 2_100, canned(3));
+  for seq in 0..3 {
+    orchestrator.on_frame(2_100, answer(seq, SensorResult::Valid), &mut bench);
+  }
+  assert_eq!(measurements(&bench).len(), 1);
+  play(&mut orchestrator, &mut bench, 2_101, 2_999, quiet);
+  bench.take();
+  // The same job 2 s later. The sensor answers A and B before C fires: the last job's C must not complete it.
+  orchestrator.request_measurement(3_000, &mut bench).unwrap();
+  let job = canned(3);
+  let later = move |now_ms: u64| job(now_ms - 2_000);
+  play(&mut orchestrator, &mut bench, 3_000, 3_700, &later);
+  for (seq, _) in shots_sent(&bench) {
+    orchestrator.on_frame(3_700, answer(seq, SensorResult::Valid), &mut bench);
+  }
+  play(&mut orchestrator, &mut bench, 3_701, 4_100, &later);
+  assert!(measurements(&bench).is_empty(), "not complete without C's reading");
+  orchestrator.on_frame(4_100, answer(5, SensorResult::Valid), &mut bench);
+  assert_eq!(measurements(&bench), [Ok(expected_shots([3, 4, 5]))]);
+}
+
+#[test]
+fn a_late_reading_is_asked_for_again_while_the_measurement_runs() {
+  let (mut orchestrator, mut bench) = idle_with_sensor();
+  orchestrator.request_measurement(1_000, &mut bench).unwrap();
+  play(&mut orchestrator, &mut bench, 1_000, 2_100, canned(3));
+  for seq in [0, 2] {
+    orchestrator.on_frame(2_100, answer(seq, SensorResult::Valid), &mut bench);
+  }
+  bench.take();
+  // Shot 1 went out at 1600 ms: asked for again 1000 ms later, then every 1000 ms.
+  play(&mut orchestrator, &mut bench, 2_101, 3_700, canned(3));
+  let resends: Vec<u8> = bench
+    .sent()
+    .into_iter()
+    .filter_map(|message| match message {
+      Message::SensorResend { seq } => Some(seq),
+      _ => None
+    })
+    .collect();
+  assert_eq!(resends, [1, 1]);
+  orchestrator.on_frame(3_700, answer(1, SensorResult::Valid), &mut bench);
+  assert_eq!(measurements(&bench), [Ok(expected_shots([0, 1, 2]))]);
+}
+
+#[test]
+fn a_reading_the_sensor_rejected_ends_the_measurement_as_rejected() {
+  let (mut orchestrator, mut bench) = idle_with_sensor();
+  orchestrator.request_measurement(1_000, &mut bench).unwrap();
+  play(&mut orchestrator, &mut bench, 1_000, 2_100, canned(3));
+  orchestrator.on_frame(2_100, answer(0, SensorResult::Valid), &mut bench);
+  orchestrator.on_frame(2_100, answer(1, SensorResult::Saturated), &mut bench);
+  orchestrator.on_frame(2_100, answer(2, SensorResult::Valid), &mut bench);
+  assert_eq!(
+    measurements(&bench),
+    [Err(SensorFault::Rejected(ReadingFault::Saturated))]
+  );
+}
+
+#[test]
+fn a_job_with_a_dot_missing_is_no_measurement() {
+  let (mut orchestrator, mut bench) = idle_with_sensor();
+  orchestrator.request_measurement(1_000, &mut bench).unwrap();
+  play(&mut orchestrator, &mut bench, 1_000, 2_100, canned(2));
+  assert_eq!(measurements(&bench), [Err(SensorFault::NoReading)]);
+  assert!(bench.outcomes().contains(&Outcome::JobMismatch { fires: 2 }));
+  assert_eq!(orchestrator.state(), State::Idle);
+}
+
+#[test]
+fn readings_that_never_arrive_time_out_as_no_measurement() {
+  let (mut orchestrator, mut bench) = idle_with_sensor();
+  orchestrator.request_measurement(1_000, &mut bench).unwrap();
+  let timeout_ms = u64::from(CONFIG.coordinator.reading_timeout_ms);
+  play(&mut orchestrator, &mut bench, 1_000, 2_000 + timeout_ms, canned(3));
+  assert_eq!(measurements(&bench), [Err(SensorFault::NoReading)]);
+  assert!(bench.outcomes().contains(&Outcome::ReadingsTimedOut));
+}
+
+#[test]
+fn a_job_that_never_fires_faults_and_ends_the_measurement() {
+  let (mut orchestrator, mut bench) = idle_with_sensor();
+  orchestrator.request_measurement(1_000, &mut bench).unwrap();
+  let timeout_ms = u64::from(CONFIG.coordinator.fire_wait_timeout_ms);
+  play(&mut orchestrator, &mut bench, 1_000, 1_000 + timeout_ms, quiet);
+  assert_eq!(orchestrator.state(), State::Fault(FaultReason::NoFire));
+  assert_eq!(measurements(&bench), [Err(SensorFault::NoReading)]);
+}
+
+#[test]
+fn readings_outside_a_measurement_change_nothing() {
+  let (mut orchestrator, mut bench) = idle_with_sensor();
+  for seq in 0..3 {
+    orchestrator.on_frame(1_000, answer(seq, SensorResult::Valid), &mut bench);
+  }
+  assert!(bench.take().is_empty());
+  assert_eq!(orchestrator.state(), State::Idle);
+}
+
+#[test]
+fn a_measurement_is_refused_without_the_sensor_outside_idle_and_while_anything_runs() {
+  let (mut orchestrator, mut bench) = idle();
+  assert_eq!(
+    orchestrator.request_measurement(1_001, &mut bench),
+    Err(RequestError::NodeAbsent { node: SENSOR.get() })
+  );
+  let (mut orchestrator, mut bench) = idle_with_sensor();
+  orchestrator.request_move(1_000, Axis::M1H, 100, &mut bench).unwrap();
+  assert_eq!(
+    orchestrator.request_measurement(1_000, &mut bench),
+    Err(RequestError::Busy)
+  );
+  let (mut orchestrator, mut bench) = idle_with_sensor();
+  orchestrator.request_measurement(1_000, &mut bench).unwrap();
+  assert_eq!(
+    orchestrator.request_measurement(1_001, &mut bench),
+    Err(RequestError::Busy)
+  );
+  assert_eq!(
+    orchestrator.request_move(1_001, Axis::M1H, 100, &mut bench),
+    Err(RequestError::Busy)
+  );
+  let mut orchestrator = Orchestrator::new(setup());
+  let mut bench = Bench::default();
+  assert_eq!(
+    orchestrator.request_measurement(0, &mut bench),
+    Err(RequestError::NotIdle {
+      state: State::Inhibited
+    })
+  );
+  assert!(!bench.footsw);
+}
+
+#[test]
+fn a_measurement_is_refused_while_the_ruida_reports_a_job() {
+  let (mut orchestrator, mut bench) = idle_with_sensor();
+  play(&mut orchestrator, &mut bench, 1_000, 1_000, |_| (true, false));
+  assert_eq!(
+    orchestrator.request_measurement(1_001, &mut bench),
+    Err(RequestError::Refused)
+  );
+  assert!(!bench.footsw);
+}
+
+#[test]
+fn the_sensor_node_is_not_configured_as_a_motor_node() {
+  let mut orchestrator = Orchestrator::new(setup());
+  let mut bench = Bench::default();
+  orchestrator.on_frame(0, sensor_beat(0), &mut bench);
+  assert!(
+    !bench
+      .sent()
+      .iter()
+      .any(|message| matches!(message, Message::Config { .. }))
+  );
+  assert!(!bench.reports().contains(&Report::Configured { node: SENSOR }));
+}
+
 // --- the guard property ---------------------------------------------------------------------------------------
 
 #[derive(Clone, Copy, Debug)]
@@ -595,7 +950,10 @@ enum Step {
   RequestMove(i32),
   Stop,
   Answer(MoveResult),
-  ClearFault
+  ClearFault,
+  SensorHeartbeat,
+  RequestMeasurement,
+  Reading(SensorResult)
 }
 
 fn step() -> impl Strategy<Value = Step> {
@@ -611,13 +969,16 @@ fn step() -> impl Strategy<Value = Step> {
       Just(MoveResult::SoftLimit)
     ]
     .prop_map(Step::Answer),
-    1 => Just(Step::ClearFault)
+    1 => Just(Step::ClearFault),
+    2 => Just(Step::SensorHeartbeat),
+    1 => Just(Step::RequestMeasurement),
+    1 => prop_oneof![Just(SensorResult::Valid), Just(SensorResult::NoShot)].prop_map(Step::Reading)
   ]
 }
 
 proptest! {
   /// Whatever happens, a MOVE_REL goes out only when the last INHIBIT sent was INHIBIT 0, the relay is energized,
-  /// and the last feedback read said the loop is open.
+  /// and the last feedback read said the loop is open; and FootSW never starts a job while the relay is energized.
   #[test]
   fn a_move_goes_out_only_with_motion_allowed_the_relay_energized_and_the_loop_open(
     steps in proptest::collection::vec(step(), 1..300)
@@ -645,7 +1006,15 @@ proptest! {
           let seq = bench.move_rels().last().map_or(0, |(_, move_rel)| move_rel.seq);
           orchestrator.on_frame(now_ms, move_done(seq, result, 0), &mut bench);
         }
-        Step::ClearFault => orchestrator.clear_fault(now_ms, &mut bench)
+        Step::ClearFault => orchestrator.clear_fault(now_ms, &mut bench),
+        Step::SensorHeartbeat => orchestrator.on_frame(now_ms, sensor_beat(now_ms), &mut bench),
+        Step::RequestMeasurement => {
+          let _ = orchestrator.request_measurement(now_ms, &mut bench);
+        }
+        Step::Reading(result) => {
+          let seq = shots_sent(&bench).last().map_or(0, |(seq, _)| *seq);
+          orchestrator.on_frame(now_ms, answer(seq, result), &mut bench);
+        }
       }
       let mut relay = bench.events[..before].iter().rev().find_map(|event| match event {
         Io::Relay(level) => Some(*level),
@@ -660,6 +1029,7 @@ proptest! {
             prop_assert!(relay, "a MOVE_REL with the relay released");
             prop_assert!(last_loop_open, "a MOVE_REL with the loop read closed");
           }
+          Io::FootSw(true) => prop_assert!(!relay, "FootSW pulsed with the relay energized"),
           _ => {}
         }
       }

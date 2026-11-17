@@ -6,9 +6,12 @@
 //! - The rules of the node's `board.rs`: no strapping pin (GPIO4, 5, 8, 9, 15) for a safety signal, GPIO12 and 13
 //!   left to USB-Serial-JTAG, GPIO16 and 17 to UART0, and 18 to 20 to the Feather's I2C port.
 //! - The bus pins are the node development board's, so either Feather takes either image without rewiring.
-//! - The relay drive is on GPIO 22, which on the node's Feather drives a coil and was seen to stay low through reset
-//!   and boot (the node's `board.rs`, 2026-11-17). Its feedback is on the neighboring GPIO 21, so that one jumper
-//!   closes the bench loop.
+//! - **The two outputs that act on the machine are on pins seen to drive nothing on through reset and boot.** On the
+//!   node's Feather, GPIO 22 and 3 drive ULN2003 inputs, and no coil LED lit while the reset button was held or the
+//!   board booted (the node's `board.rs`, 2026-11-17). That is the load that matters here too: a relay driver and
+//!   FootSW's optocoupler need milliamperes, which a weak internal pull-up would not supply either. The relay drive
+//!   is GPIO 22; FootSW, which starts a laser job when held for 100 ms, is GPIO 3.
+//! - The relay's feedback is on GPIO 21, beside its drive, so that one jumper closes the bench loop.
 //! - **The feedback reads high when the laser loop is open**, through the relay's normally open auxiliary contact to
 //!   3V, with a pull-down. A broken wire then reads "closed": a move is never armed on it, and a loop that drops
 //!   while moving faults. Sensing the normally closed contact instead would let a broken wire read "open" and arm.
@@ -21,12 +24,13 @@
 //! | TWAI RX, from the transceiver's CRX | 1 | A0 | in, no pull | driven by the transceiver |
 //! | Relay drive (`ALIGN_MOVE`, reference 7.1) | 22 | MO | out, high energizes | low: released |
 //! | Relay feedback: laser loop open | 21 | SCK | in, pull-down, high = open | reads closed |
-//! | Ruida Status: job running | 3 | A4 | in, pull-up, low = running | reads no job |
-//! | Fire sense: laser firing | 2 | A5 | in, pull-up, low = firing | reads no fire |
+//! | FootSW, to the optocoupler that pulls the Ruida's FootSW low | 3 | A4 | out, high = active | low: inactive |
+//! | Ruida Status: job running | 2 | A5 | in, pull-up, low = running | reads no job |
+//! | Fire sense: laser firing | 7 | 7 | in, pull-up, low = firing | reads no fire |
 //!
 //! On the bench there is no relay and no Ruida: MO is jumpered to SCK, so the feedback follows the drive, and MO
-//! also drives the node's permit input in place of its 3V jumper. A4 and A5 stay open (no job, no fire); touching
-//! one to GND stands in for the Ruida.
+//! also drives the node's permit input in place of its 3V jumper. A4 drives nothing; A5 and 7 stay open (no job,
+//! no fire). Touching one of them to GND stands in for the Ruida.
 
 use esp_hal::Blocking;
 use esp_hal::gpio::AnyPin;
@@ -55,8 +59,9 @@ macro_rules! board_pins {
       twai_rx: $p.GPIO1.into(),
       relay: $p.GPIO22.into(),
       relay_feedback: $p.GPIO21.into(),
-      status: $p.GPIO3.into(),
-      fire: $p.GPIO2.into()
+      footsw: $p.GPIO3.into(),
+      status: $p.GPIO2.into(),
+      fire: $p.GPIO7.into()
     }
   };
 }
@@ -71,6 +76,8 @@ pub struct Pins {
   pub relay: AnyPin<'static>,
   /// The relay's feedback, high while the laser loop is open.
   pub relay_feedback: AnyPin<'static>,
+  /// FootSW's optocoupler, high to start the job.
+  pub footsw: AnyPin<'static>,
   /// The Ruida's Status output, low while a job runs.
   pub status: AnyPin<'static>,
   /// The fire sense, low while the laser fires.

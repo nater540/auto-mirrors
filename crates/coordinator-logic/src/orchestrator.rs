@@ -24,19 +24,31 @@
 //!   keeps in RAM only (CLAUDE.md, M4). A node that restarts during a move has forgotten it: the move is unanswered.
 //! - Only the nodes in [`Setup::expected`] are needed by the self-test, and only their loss inhibits.
 //!
-//! Measurement (FootSW, SHOT, the sensor's readings) is not driven from here yet. Nothing here asks the state
-//! machine for a measurement, so it never asks for a job or a shot.
+//! A measurement (the console's `measure` now, the aligner's later) runs the canned job (reference 6.7):
+//!
+//! 1. **Asked for** only in Idle, with the sensor node present: the state machine is told `StartMeasurement`, the
+//!    readings of any earlier job are forgotten, and FootSW is held active for `start_pulse_ms`.
+//! 2. **Each burst** of fire edges is a shot: the state machine numbers it and names its point, and SHOT goes to the
+//!    sensor node. A reading still missing `resend_after_ms` after its shot is asked for again with SENSOR_RESEND.
+//! 3. **Ended** by the state machine: the three readings when the job fired three dots and every reading arrived,
+//!    `SensorFault::Rejected` when the sensor rejected one, and `SensorFault::NoReading` for every other way out
+//!    (a dot missing, readings timed out, an unexpected job or fire, a fault, a lost node).
+//!
+//! The SHOT carries no edge age: a 1 ms sample places the edge no closer than that. An edge interrupt can, once the
+//! Mod5 scope check settles what a dot looks like (`docs/SENSOR_PLAN.md` section 14).
 
 use align_core::approach::SoftLimits;
 use align_core::axis::{Axis, PerAxis};
 use align_core::config::Config;
-use align_core::coordinator::{Actions, Coordinator, Event, Outcome, Relay, State};
-use align_core::rig::MoveFault;
-use align_proto::{Channel, ConfigKey, Envelope, Message, NodeId};
+use align_core::coordinator::{Actions, Coordinator, Event, Outcome, Point, Relay, State};
+use align_core::measurement::Shots;
+use align_core::rig::{MoveFault, SensorFault};
+use align_proto::{Channel, ConfigKey, Envelope, Message, NodeId, Shot, ShotPoint};
 
 use crate::link::{Beacon, Link};
 use crate::moves::{Moves, Progress};
 use crate::nodes::Change;
+use crate::readings::Readings;
 
 /// Where an axis's motor is wired: a node and a channel on it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -103,7 +115,7 @@ pub struct Inputs {
 }
 
 /// Something worth logging.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Report {
   /// The state machine is in a new state.
   State(State),
@@ -139,6 +151,11 @@ pub enum Report {
   MoveDropped {
     /// The axis.
     axis: Axis
+  },
+  /// A measurement ended: the three readings, or why there are none (see the module documentation).
+  MeasurementEnded {
+    /// The readings, or the fault.
+    result: Result<Shots, SensorFault>
   }
 }
 
@@ -148,15 +165,17 @@ pub trait CoordinatorIo {
   fn send(&mut self, envelope: Envelope);
   /// Drives the relay: energized (`true`, the laser loop open, the motor permit given) or released.
   fn set_relay(&mut self, energized: bool);
+  /// Drives FootSW: active (`true`, the Ruida's input pulled low, which starts the job) or not.
+  fn set_footsw(&mut self, active: bool);
   /// Logs something that happened.
   fn report(&mut self, report: Report);
 }
 
-/// Why a move was not started.
+/// Why a move or a measurement was not started.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
-pub enum MoveRequestError {
-  /// A move is already asked for or running.
-  #[error("a move is already asked for or running")]
+pub enum RequestError {
+  /// A move or a measurement is already asked for or running.
+  #[error("a move or a measurement is already asked for or running")]
   Busy,
   /// The coordinator is not in Idle.
   #[error("the coordinator is in {state:?}, not Idle")]
@@ -164,7 +183,7 @@ pub enum MoveRequestError {
     /// The state it is in.
     state: State
   },
-  /// The axis's node is not on the bus.
+  /// The node it needs (the axis's, or the sensor) is not on the bus.
   #[error("node {node} is not present")]
   NodeAbsent {
     /// The node.
@@ -173,6 +192,15 @@ pub enum MoveRequestError {
   /// The state machine refused: the loop does not read closed, a job is running, or a burst is in progress.
   #[error("the interlock is not ready: the loop reads open, a job is running, or the laser is firing")]
   Refused
+}
+
+/// The SHOT point of a measurement point.
+const fn shot_point(point: Point) -> ShotPoint {
+  match point {
+    Point::A => ShotPoint::A,
+    Point::B => ShotPoint::B,
+    Point::C => ShotPoint::C
+  }
 }
 
 /// The heartbeat's state byte: the state's place in [`State`], from 0 (Inhibited) to 8 (Fault).
@@ -239,7 +267,13 @@ pub struct Orchestrator {
   /// A move asked for and not yet sent.
   pending: Option<(Axis, i32)>,
   /// The axis of the move in flight.
-  in_flight: Option<Axis>
+  in_flight: Option<Axis>,
+  /// The shots of the current job and their readings.
+  readings: Readings,
+  /// A measurement was asked for and has not ended.
+  measuring: bool,
+  /// When FootSW is to go inactive, while it is active.
+  footsw_until_ms: Option<u64>
 }
 
 impl Orchestrator {
@@ -254,7 +288,10 @@ impl Orchestrator {
       burst: Burst::new(config.coordinator.burst_gap_ms),
       job_running: None,
       pending: None,
-      in_flight: None
+      in_flight: None,
+      readings: Readings::new(&config.coordinator),
+      measuring: false,
+      footsw_until_ms: None
     }
   }
 
@@ -280,6 +317,10 @@ impl Orchestrator {
 
   /// One sample of the inputs at the local time `now_ms`, and everything that is due.
   pub fn tick(&mut self, now_ms: u64, inputs: Inputs, io: &mut impl CoordinatorIo) {
+    if self.footsw_until_ms.is_some_and(|until_ms| now_ms >= until_ms) {
+      self.footsw_until_ms = None;
+      io.set_footsw(false);
+    }
     // The inputs first, so that the state machine judges this tick on fresh readings.
     if let Some(event) = self.burst.sample(now_ms, inputs.firing) {
       self.handle(now_ms, event, io);
@@ -301,6 +342,14 @@ impl Orchestrator {
       self.handle(now_ms, Event::SelfTest { passed: true }, io);
     }
     self.tick_move(now_ms, io);
+    if self.measuring {
+      for seq in self.readings.tick(now_ms).into_iter().flatten() {
+        io.send(Envelope {
+          node: NodeId::SENSOR,
+          message: Message::SensorResend { seq }
+        });
+      }
+    }
     let beacon = Beacon {
       state: state_code(self.state()),
       inhibited: !self.motion_allowed()
@@ -323,36 +372,49 @@ impl Orchestrator {
     if let Some(result) = self.moves.on_frame(&envelope) {
       self.finish(now_ms, result, io);
     }
+    if let Message::Sensor(reading) = envelope.message
+      && envelope.node == NodeId::SENSOR
+      && self.measuring
+      && self.readings.on_reading(reading)
+    {
+      self.handle(now_ms, Event::ReadingsComplete, io);
+    }
   }
 
   /// Asks for a move of `steps` on `axis`.
   ///
   /// # Errors
   ///
-  /// A [`MoveRequestError`] naming why the move was not started; nothing changed then.
+  /// A [`RequestError`] naming why the move was not started; nothing changed then.
   pub fn request_move(
     &mut self,
     now_ms: u64,
     axis: Axis,
     steps: i32,
     io: &mut impl CoordinatorIo
-  ) -> Result<(), MoveRequestError> {
-    if self.pending.is_some() || self.in_flight.is_some() {
-      return Err(MoveRequestError::Busy);
-    }
-    let state = self.state();
-    if state != State::Idle {
-      return Err(MoveRequestError::NotIdle { state });
-    }
-    let node = self.setup.wiring.get(axis).node;
-    if !self.link.present(node) {
-      return Err(MoveRequestError::NodeAbsent { node: node.get() });
-    }
+  ) -> Result<(), RequestError> {
+    self.ready_for(self.setup.wiring.get(axis).node)?;
     let refused = self.handle(now_ms, Event::StartMove, io) == Some(Outcome::Refused);
     if refused || !matches!(self.state(), State::ArmingMove { .. }) {
-      return Err(MoveRequestError::Refused);
+      return Err(RequestError::Refused);
     }
     self.pending = Some((axis, steps));
+    Ok(())
+  }
+
+  /// Asks for a measurement: the canned job started, a shot sent to the sensor for each of its dots, and the three
+  /// readings collected. Its end is reported as [`Report::MeasurementEnded`].
+  ///
+  /// # Errors
+  ///
+  /// A [`RequestError`] naming why the measurement was not started; nothing changed then.
+  pub fn request_measurement(&mut self, now_ms: u64, io: &mut impl CoordinatorIo) -> Result<(), RequestError> {
+    self.ready_for(NodeId::SENSOR)?;
+    let refused = self.handle(now_ms, Event::StartMeasurement, io) == Some(Outcome::Refused);
+    if refused || !matches!(self.state(), State::WaitingForFire { .. }) {
+      return Err(RequestError::Refused);
+    }
+    self.measuring = true;
     Ok(())
   }
 
@@ -382,6 +444,23 @@ impl Orchestrator {
     if let Some(relay) = actions.relay {
       io.set_relay(relay == Relay::Energize);
     }
+    if actions.start_job {
+      // Before any shot of this job can arrive: nothing of an earlier job may count.
+      self.readings.begin();
+      self.footsw_until_ms = Some(now_ms.saturating_add(u64::from(self.setup.config.coordinator.start_pulse_ms)));
+      io.set_footsw(true);
+    }
+    if let Some((seq, point)) = actions.shot {
+      self.readings.on_shot(now_ms, seq, point);
+      io.send(Envelope {
+        node: NodeId::SENSOR,
+        message: Message::Shot(Shot {
+          seq,
+          point: shot_point(point),
+          edge_age_10us: None
+        })
+      });
+    }
     if actions.estop {
       io.send(Envelope {
         node: NodeId::COORDINATOR,
@@ -396,7 +475,35 @@ impl Orchestrator {
     if after != before {
       io.report(Report::State(after));
     }
+    let in_job = matches!(
+      after,
+      State::WaitingForFire { .. } | State::Measuring { .. } | State::CollectingReadings { .. }
+    );
+    if self.measuring && !in_job {
+      self.measuring = false;
+      let result = match (actions.outcome, self.readings.measurement()) {
+        (Some(Outcome::MeasurementReady), Some(Ok(shots))) => Ok(shots),
+        (Some(Outcome::MeasurementReady), Some(Err(fault))) => Err(SensorFault::Rejected(fault)),
+        _ => Err(SensorFault::NoReading)
+      };
+      io.report(Report::MeasurementEnded { result });
+    }
     actions.outcome
+  }
+
+  /// The conditions every request shares: nothing else asked for or running, Idle, and `node` on the bus.
+  fn ready_for(&self, node: NodeId) -> Result<(), RequestError> {
+    if self.pending.is_some() || self.in_flight.is_some() || self.measuring {
+      return Err(RequestError::Busy);
+    }
+    let state = self.state();
+    if state != State::Idle {
+      return Err(RequestError::NotIdle { state });
+    }
+    if !self.link.present(node) {
+      return Err(RequestError::NodeAbsent { node: node.get() });
+    }
+    Ok(())
   }
 
   /// The move in flight and the move asked for, before the beacon.
@@ -477,13 +584,16 @@ impl Orchestrator {
   }
 
   /// Sends a node the soft limits and the direction sign of each axis wired to it.
+  /// A node with no axis wired to it (the sensor) is sent nothing.
   fn configure(&self, node: NodeId, io: &mut impl CoordinatorIo) {
     let config = &self.setup.config;
+    let mut configured = false;
     for axis in Axis::ALL {
       let wire = self.setup.wiring.get(axis);
       if wire.node != node {
         continue;
       }
+      configured = true;
       let limits = SoftLimits::for_axis(&config.motion, axis);
       let sign = config.mechanics.dir_sign.get(axis).factor();
       for (key, value) in [
@@ -501,7 +611,9 @@ impl Orchestrator {
         });
       }
     }
-    io.report(Report::Configured { node });
+    if configured {
+      io.report(Report::Configured { node });
+    }
   }
 
   fn expected_present(&self) -> bool {

@@ -5,12 +5,12 @@
 //!
 //! What this image does to hardware: it drives the relay output, which on the bench is the node's motor permit,
 //! only as the state machine of reference 7.3 commands; a node moves a motor only after the relay's feedback
-//! confirms the laser loop open and INHIBIT 0 has gone out. It reads the relay feedback, Status, and fire sense, and
-//! drives nothing else: FootSW and measurement come with the sensor.
+//! confirms the laser loop open and INHIBIT 0 has gone out. It pulses FootSW, which starts the Ruida's job, only for
+//! a `measure` in Idle with the relay released. It reads the relay feedback, Status, and fire sense.
 //!
 //! Tasks:
 //! - `control`: every millisecond, samples the inputs and hands them, the frames received, and the console's
-//!   commands to the orchestrator, which owns the relay output. Feeds the watchdog.
+//!   commands to the orchestrator, which owns the relay and FootSW outputs. Feeds the watchdog.
 //! - `can`: receives and decodes frames for `control`, and sends what it queues. Recovers from bus-off.
 //! - `console_task`: reads the console over USB-Serial-JTAG and queues its commands; replies go to the log.
 //!
@@ -85,9 +85,15 @@ fn now_ms() -> u64 {
   Instant::now().as_millis()
 }
 
-/// The firmware side of [`CoordinatorIo`]: the transmit queue, the relay output, and the log.
+/// The outputs that act on the machine, both low (inactive) at boot.
+struct Outputs {
+  relay: Output<'static>,
+  footsw: Output<'static>
+}
+
+/// The firmware side of [`CoordinatorIo`]: the transmit queue, the outputs, and the log.
 struct Firmware<'a> {
-  relay: &'a mut Output<'static>
+  outputs: &'a mut Outputs
 }
 
 impl CoordinatorIo for Firmware<'_> {
@@ -98,7 +104,11 @@ impl CoordinatorIo for Firmware<'_> {
   }
 
   fn set_relay(&mut self, energized: bool) {
-    self.relay.set_level(Level::from(energized));
+    self.outputs.relay.set_level(Level::from(energized));
+  }
+
+  fn set_footsw(&mut self, active: bool) {
+    self.outputs.footsw.set_level(Level::from(active));
   }
 
   fn report(&mut self, report: Report) {
@@ -116,7 +126,18 @@ impl CoordinatorIo for Firmware<'_> {
         Ok(pos_steps) => info!("{axis:?}: done, at {pos_steps} steps"),
         Err(fault) => warn!("{axis:?}: {fault}")
       },
-      Report::MoveDropped { axis } => warn!("{axis:?}: the move was dropped before it was sent")
+      Report::MoveDropped { axis } => warn!("{axis:?}: the move was dropped before it was sent"),
+      Report::MeasurementEnded { result } => match result {
+        Ok(shots) => {
+          for (point, reading) in [("A", shots.a), ("B", shots.b), ("C", shots.c)] {
+            info!(
+              "measured {point}: h {:.4}, v {:.4}, sum {:.3}",
+              reading.h_norm, reading.v_norm, reading.sum
+            );
+          }
+        }
+        Err(fault) => warn!("measurement: {fault}")
+      }
     }
   }
 }
@@ -202,9 +223,12 @@ async fn main(spawner: Spawner) -> ! {
     info!("{line}");
   }
 
-  // The relay output first, low: released before anything else runs.
+  // The outputs first, low: the relay released and FootSW inactive before anything else runs.
   let pins = board_pins!(peripherals);
-  let relay = Output::new(pins.relay, Level::Low, OutputConfig::default());
+  let outputs = Outputs {
+    relay: Output::new(pins.relay, Level::Low, OutputConfig::default()),
+    footsw: Output::new(pins.footsw, Level::Low, OutputConfig::default())
+  };
   let sensed = Sensed {
     relay_feedback: Input::new(pins.relay_feedback, InputConfig::default().with_pull(Pull::Down)),
     status: Input::new(pins.status, InputConfig::default().with_pull(Pull::Up)),
@@ -232,16 +256,16 @@ async fn main(spawner: Spawner) -> ! {
       }
     };
   }
-  // The watchdog resets the chip, and with it the relay output, if `control` stops feeding it: a panic spins with
+  // The watchdog resets the chip, and with it both outputs, if `control` stops feeding it: a panic spins with
   // interrupts masked, and a hang stops the loop. The nodes stop on their own when the heartbeat stops; the reset
-  // also drops the motor permit. The node's timeout is used: nothing here measured a better one.
+  // also drops the motor permit and ends a FootSW pulse. The node's timeout is used: nothing measured a better one.
   let mut watchdog = TimerGroup::new(peripherals.TIMG1).wdt;
   watchdog.set_timeout(
     MwdtStage::Stage0,
     HalDuration::from_millis(u64::from(settings.node.watchdog_timeout_ms))
   );
   watchdog.enable();
-  spawn!(control(orchestrator, relay, sensed, watchdog));
+  spawn!(control(orchestrator, outputs, sensed, watchdog));
   spawn!(can(twai));
   spawn!(console_task(usb_rx));
   info!("coordinator ready; `help` on this console lists the commands");
@@ -254,7 +278,7 @@ async fn main(spawner: Spawner) -> ! {
 #[embassy_executor::task]
 async fn control(
   mut orchestrator: Orchestrator,
-  mut relay: Output<'static>,
+  mut outputs: Outputs,
   sensed: Sensed,
   mut watchdog: Wdt<TIMG1<'static>>
 ) {
@@ -263,7 +287,7 @@ async fn control(
     watchdog.feed();
     let now = now_ms();
     let inputs = sensed.read();
-    let mut io = Firmware { relay: &mut relay };
+    let mut io = Firmware { outputs: &mut outputs };
     while let Ok(envelope) = FRAMES_IN.try_receive() {
       orchestrator.on_frame(now, envelope, &mut io);
     }
@@ -289,6 +313,11 @@ fn execute(now: u64, command: Command, inputs: Inputs, orchestrator: &mut Orches
       }
     }
     Command::Stop => orchestrator.stop(io),
+    Command::Measure => {
+      if let Err(error) = orchestrator.request_measurement(now, io) {
+        warn!("measure: {error}");
+      }
+    }
     Command::Clear => orchestrator.clear_fault(now, io)
   }
 }

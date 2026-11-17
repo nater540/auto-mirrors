@@ -48,7 +48,9 @@ Stop at the end of each milestone and report to the owner (hand-off section 6).
   inhibit level, and all of it together (`coordinator_logic::orchestrator`). The firmware, on a second Feather
   ESP32-C6 that talks to the node through SN65HVD230 transceivers, runs the interlock: its console's `jog` arms the
   relay output, waits for its feedback, sends INHIBIT 0 and the MOVE_REL, and disarms. On the bench the relay
-  output is the node's permit and the feedback a jumper. Measurement (FootSW, SHOT, the sensor) comes next.
+  output is the node's permit and the feedback a jumper (wired and flashed: not yet). Its `measure` pulses FootSW,
+  sends a SHOT per burst, and collects the sensor's readings: host-tested only, since no sensor board or Ruida is
+  on the bench. Next: the aligner on the coordinator, through the orchestrator.
 - M6 bring-up tools, M7 Ruida UDP (optional, read-only): not started.
 - Sensor track (`docs/SENSOR_PLAN.md`): S0 protocol, S1 `sensor-logic`, and S2 `firmware/sensor` done, with five
   buttons instead of a detector (owner, 2026-11-15). S3, the detector's method, waits for the detector, which is
@@ -225,6 +227,14 @@ Reference 5.4 and addendum A.8 leave these open; `align-proto` decides them, and
 - **Only the nodes the firmware expects gate the self-test and inhibit when lost** (the bench expects node 1 only).
 - **The heartbeat's state byte is the state's place in `State`**, 0 (Inhibited) to 8 (Fault): `state_code`.
 - **The coordinator's watchdog** resets the chip, and so releases the relay, if its 1 ms control loop stops.
+- **FootSW and the relay drive are on the pins seen to drive no ULN2003 input on through reset** (GPIO 3 and 22 on
+  the Feather): FootSW held for 100 ms starts a laser job. The bench check speaks to loads that need milliamperes
+  (a relay driver, an optocoupler), not to weak pulls.
+- **A measurement ends with the three readings only on `MeasurementReady`**; a sensor rejection is
+  `SensorFault::Rejected`, and every other end (a dot missing, readings timed out, an unexpected job or fire, a
+  fault, a lost node) is `SensorFault::NoReading`. A new measurement forgets the readings of the last.
+- **The SHOT carries no edge age** while fire sense is sampled each millisecond; an edge interrupt can give one
+  once the Mod5 scope check settles what a dot looks like.
 
 ## What the sensor settled (S1, S2)
 
@@ -277,10 +287,10 @@ One Cargo workspace, edition 2024, Rust 1.96.0 pinned. Dependencies and lints ar
   and one move in flight (`moves`: MOVE_REL with `finish_plus` clear, MOVE_DONE or a refusal FAULT back, resent
   while late, per-node sequence numbers). `link` sends the coordinator's heartbeat and inhibit level and keeps what
   each node last said; `console` parses the coordinator's console.
-  `orchestrator` runs all of it with the state machine: the self-test, the nodes configured, and a move armed,
-  sent, and disarmed.
-- `firmware/coordinator` (`align-coordinator`): the orchestrator on TWAI, the relay drive and its feedback, the
-  Status and fire sense inputs, the watchdog, and the console (`status`, `jog`, `stop`, `clear`). No FootSW yet.
+  `orchestrator` runs all of it with the state machine: the self-test, the nodes configured, a move armed, sent,
+  and disarmed, and a measurement started, shot, and read.
+- `firmware/coordinator` (`align-coordinator`): the orchestrator on TWAI, the relay drive and its feedback, FootSW,
+  the Status and fire sense inputs, the watchdog, and the console (`status`, `jog`, `stop`, `measure`, `clear`).
   Pins in `src/board.rs`, PROVISIONAL for a Feather.
 
 Dependency direction: firmware and `align-sim` depend on `align-core`, `align-proto`, `stepper`, `node-logic`,
