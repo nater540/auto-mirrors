@@ -6,6 +6,8 @@
 //! - [`link`]: the coordinator's own heartbeat and inhibit level, and what each node last said.
 //! - [`readings`]: the sensor's readings paired with the shots of a job, late ones asked for again.
 //! - [`moves`]: one move in flight on a node, its MOVE_REL sent again while its answer is late.
+//! - [`orchestrator`]: all of it with the state machine: the self-test, the nodes configured, and a move armed,
+//!   sent, and disarmed in the order of reference 7.3.
 //! - [`console`]: the commands of the coordinator's USB console.
 //!
 //! The coordinator's state machine, which gates the relay and the motors, is `align_core::coordinator`; this crate
@@ -16,4 +18,5 @@ pub mod console;
 pub mod link;
 pub mod moves;
 pub mod nodes;
+pub mod orchestrator;
 pub mod readings;
