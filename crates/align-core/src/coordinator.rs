@@ -33,7 +33,8 @@
 //! - **Nothing is assumed about an input until it is reported.** The relay feedback and the Status line start
 //!   unknown, and the self-test passes only once the loop has read closed and the Status line has been read.
 //! - **The relay is energized only while the loop reads closed, and motion is allowed only on a feedback reading
-//!   taken after it was energized.** A reading from before says nothing about this energize.
+//!   taken after it was energized**, in a later millisecond. A reading from before says nothing about this energize,
+//!   and one stamped with the energize's own millisecond may have been sampled before it.
 //! - **A fire is a burst, with a start and an end.** The start counts a shot; the quiet time before a move counts
 //!   from the end, so that a burst longer than the quiet time cannot let the relay energize while it lasts. A move
 //!   or a measurement is refused while a burst is in progress.
@@ -569,7 +570,9 @@ impl Coordinator {
         }
       }
       Some(energized) => {
-        if self.loop_open == Some(true) {
+        // A reading stamped with the energize's own millisecond was sampled before it: the firmware samples its
+        // inputs at the top of the millisecond and may energize later in it (review of 2026-11-17).
+        if self.loop_open == Some(true) && now_ms > energized {
           self.state = State::Moving { since_ms: now_ms };
           actions.allow_motion = Some(true);
           actions.outcome = Some(Outcome::MoveReady);

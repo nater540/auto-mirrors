@@ -493,6 +493,20 @@ fn motion_needs_a_feedback_reading_taken_after_the_energize() {
   );
 }
 
+/// The firmware samples its inputs at the top of each millisecond and a request can energize the relay later in the
+/// same millisecond, so a reading stamped with the energize's own time was taken before it (review of 2026-11-17).
+#[test]
+fn a_feedback_reading_in_the_millisecond_of_the_energize_does_not_allow_motion() {
+  let mut coordinator = idle();
+  coordinator.handle(5, Event::StartMove);
+  assert!(coordinator.relay_energized());
+  let same_millisecond = coordinator.handle(5, Event::RelayFeedback { loop_open: true });
+  assert_eq!(same_millisecond.allow_motion, None);
+  assert!(matches!(coordinator.state(), State::ArmingMove { .. }));
+  let next = coordinator.handle(6, Event::RelayFeedback { loop_open: true });
+  assert_eq!(next.allow_motion, Some(true));
+}
+
 #[test]
 fn the_relay_is_energized_only_while_the_loop_reads_closed() {
   let mut coordinator = idle();
