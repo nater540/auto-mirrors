@@ -140,8 +140,9 @@ These fill gaps in the documents. Each was found by a failing closed-loop test, 
 - **Through the whole system the aligner converges as it does against the model alone** (`just sweep --system`,
   2026-11-17): 1000 runs at each of 500, 200, 100, and 60 mm gave the same converged counts and faults, and one or
   two runs in 1000 differed in needing a recalibration, from the sensor's Q15 rounding. No frame was rejected. An
-  alignment took about 69 s of simulated time, 46 s of it in measurements; that number rests on the UNVERIFIED
-  placeholder job of `align_sim::system::Hardware` (2 s of gantry travel between dots).
+  alignment took about 71 s of simulated time, 46 s of it in measurements and 2 s in the settle time before them;
+  that number rests on the UNVERIFIED placeholder job of `align_sim::system::Hardware` (2 s of gantry travel
+  between dots).
 
 ## What the protocol settled (M3)
 
