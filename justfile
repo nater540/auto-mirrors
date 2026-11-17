@@ -96,6 +96,12 @@ sim *args: _sim
 sweep *args: _sim
     {{ sim_bin }} sweep {{ args }}
 
+# One axis's backlash and hysteresis measured on a machine of known play, with the coordinator's `BU1` lines:
+# `just bring-up --axis m2v --backlash 40`, `just bring-up --system`, `just bring-up --help`
+[group('simulator')]
+bring-up *args: _sim
+    {{ sim_bin }} bring-up {{ args }}
+
 # How much stick-slip, noise, backlash, and step loss the starting thresholds tolerate, at the 500 mm span
 [group('simulator')]
 sweep-margins runs="5000": _sim

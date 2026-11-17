@@ -1,14 +1,17 @@
-//! Command-line runner for the simulator: one alignment with its log, or a sweep over conditioning, against the
-//! model alone or, with `--system`, through the whole system (`align_sim::system`).
+//! Command-line runner for the simulator: one alignment with its log, a sweep over conditioning, or the bring-up
+//! measurements of one axis with the log lines the coordinator prints, against the model alone or, with `--system`,
+//! through the whole system (`align_sim::system`).
 //!
 //! Thin on purpose: the model is in `align_sim::world` and the procedure in `align_core::aligner`.
 
 use std::collections::BTreeMap;
 use std::io::{self, Write};
 
-use align_core::aligner::{AlignFault, AlignReport};
+use align_core::aligner::{AlignFault, AlignReport, Aligner};
 use align_core::axis::{Axis, PerAxis};
+use align_core::bringup::{Entry, SAMPLE_COLUMNS};
 use align_core::config::Config;
+use align_core::rig::{Actuator, BeamSensor};
 use align_core::solver::Conditioning;
 use align_core::units;
 use align_sim::block_on;
@@ -32,7 +35,10 @@ enum Command {
   /// Run one alignment and print every move and measurement
   Run(RunArgs),
   /// Run many alignments at each Y span and print how conditioning affects convergence
-  Sweep(SweepArgs)
+  Sweep(SweepArgs),
+  /// Measure one axis's backlash, then its hysteresis, and print the `BU1` lines the coordinator's `backlash` and
+  /// `hysteresis` print, on a machine whose play is known
+  BringUp(BringUpArgs)
 }
 
 /// The imperfections of the simulated machine. Every default is an UNVERIFIED placeholder.
@@ -117,13 +123,43 @@ struct SweepArgs {
   imperfections: Imperfections
 }
 
+#[derive(Args)]
+struct BringUpArgs {
+  /// The axis: m1h, m1v, m2h, or m2v
+  #[arg(long, default_value = "m1h", value_parser = parse_axis)]
+  axis: Axis,
+  /// Seed for the noise
+  #[arg(long, default_value_t = 1)]
+  seed: u64,
+  /// Span of gantry travel in Y, in millimeters
+  #[arg(long, default_value_t = 500.0)]
+  y_span: f64,
+  /// Measure through the whole system: the coordinator's orchestrator, the nodes, and the sensor node on a simulated
+  /// bus. Adds the simulated time each measurement took.
+  #[arg(long)]
+  system: bool,
+  #[command(flatten)]
+  optics: Optics,
+  #[command(flatten)]
+  imperfections: Imperfections
+}
+
 fn main() -> anyhow::Result<()> {
   let cli = Cli::parse();
   let mut out = io::stdout().lock();
   match cli.command {
     Command::Run(args) => run(&args, &mut out),
-    Command::Sweep(args) => sweep(&args, &mut out)
+    Command::Sweep(args) => sweep(&args, &mut out),
+    Command::BringUp(args) => bring_up(&args, &mut out)
   }
+}
+
+/// An axis by its name.
+fn parse_axis(word: &str) -> Result<Axis, String> {
+  Axis::ALL
+    .into_iter()
+    .find(|axis| axis.name().eq_ignore_ascii_case(word))
+    .ok_or_else(|| format!("`{word}` is not an axis: m1h, m1v, m2h, or m2v"))
 }
 
 fn scenario(imperfections: Imperfections, optics: Optics, y_span_mm: f64, seed: u64) -> Scenario {
@@ -228,6 +264,72 @@ fn run(args: &RunArgs, out: &mut impl Write) -> anyhow::Result<()> {
         ""
       }
     )?;
+  }
+  Ok(())
+}
+
+fn bring_up(args: &BringUpArgs, out: &mut impl Write) -> anyhow::Result<()> {
+  let scenario = scenario(args.imperfections, args.optics, args.y_span, args.seed);
+  let (config, _) = config_for(args.optics, args.imperfections.backlash);
+  let imperfections = args.imperfections;
+  writeln!(
+    out,
+    "model: backlash {} steps and a seat that sticks for {} on every axis, noise {} per coordinate; the lines below \
+     should find them",
+    imperfections.backlash, imperfections.stick, imperfections.noise
+  )?;
+  if args.system {
+    let rig = SystemRig::new(System::new(scenario, config, Hardware::PLACEHOLDER));
+    let clock = rig.clone();
+    measure_bring_up(&mut rig.aligner(config)?, args.axis, || clock.system().now_ms(), out)
+  } else {
+    let rig = Rig::new(scenario);
+    measure_bring_up(&mut rig.aligner(config)?, args.axis, || 0, out)
+  }
+}
+
+/// Both bring-up measurements of one axis, with their log lines and, from a clock that runs, the time each took.
+fn measure_bring_up<A: Actuator, S: BeamSensor>(
+  aligner: &mut Aligner<A, S>,
+  axis: Axis,
+  now_ms: impl Fn() -> u64,
+  out: &mut impl Write
+) -> anyhow::Result<()> {
+  let mut entries = Vec::new();
+  let started_ms = now_ms();
+  writeln!(out, "{SAMPLE_COLUMNS}")?;
+  let backlash = block_on(aligner.measure_backlash(axis, &mut |entry| entries.push(*entry)));
+  print_bring_up(&mut entries, backlash, out)?;
+  let backlash_ms = now_ms().saturating_sub(started_ms);
+  writeln!(out, "{SAMPLE_COLUMNS}")?;
+  let hysteresis = block_on(aligner.measure_hysteresis(axis, &mut |entry| entries.push(*entry)));
+  print_bring_up(&mut entries, hysteresis, out)?;
+  let hysteresis_ms = now_ms().saturating_sub(started_ms).saturating_sub(backlash_ms);
+  if backlash_ms > 0 {
+    #[expect(clippy::cast_precision_loss, reason = "simulated times of minutes")]
+    let seconds = |ms: u64| ms as f64 / 1_000.0;
+    writeln!(
+      out,
+      "simulated time: backlash {:.1} s, hysteresis {:.1} s",
+      seconds(backlash_ms),
+      seconds(hysteresis_ms)
+    )?;
+  }
+  Ok(())
+}
+
+/// The entries a procedure logged, then its report or fault.
+fn print_bring_up<R: core::fmt::Display>(
+  entries: &mut Vec<Entry>,
+  outcome: Result<R, AlignFault>,
+  out: &mut impl Write
+) -> anyhow::Result<()> {
+  for entry in entries.drain(..) {
+    writeln!(out, "{entry}")?;
+  }
+  match outcome {
+    Ok(report) => writeln!(out, "{report}")?,
+    Err(fault) => writeln!(out, "fault: {fault}")?
   }
   Ok(())
 }
