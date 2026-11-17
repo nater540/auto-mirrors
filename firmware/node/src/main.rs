@@ -627,6 +627,17 @@ async fn execute(text: &str, rx: &mut UsbSerialJtagRx<'static, Async>) {
     Ok(Command::Stop) => {
       with_node(Node::stop);
     }
+    Ok(Command::Zero { channel }) => {
+      let Some(channel) = Channel::new(channel) else {
+        warn!("no such channel");
+        return;
+      };
+      match with_node(|node, io| node.bench_zero(channel, io)) {
+        Some(Ok(())) => info!("channel {}: position set to zero", channel.get()),
+        Some(Err(error)) => warn!("{error}"),
+        None => {}
+      }
+    }
     Ok(Command::Jog {
       channel,
       steps,

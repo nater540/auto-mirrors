@@ -32,7 +32,12 @@ pub enum Command {
     rate_pps: u32
   },
   /// Stop the running move.
-  Stop
+  Stop,
+  /// Make one channel's present position its zero (the commissioning position).
+  Zero {
+    /// The channel.
+    channel: u8
+  }
 }
 
 /// The help text, one command per line.
@@ -42,7 +47,8 @@ status                        node state, and each channel's position, phase, an
 bench on|off                  enter or leave bench mode (bus moves are refused while on)
 jog <channel> <steps> [pps]   move one channel; plus advances the screw
 torque <channel> <pps>        addendum A.6 cycles: +amplitude then -amplitude, repeated
-stop                          stop the running move";
+stop                          stop the running move
+zero <channel>                make the present position zero, trusted (bench mode; nothing moves)";
 
 /// Why a line is not a command.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
@@ -89,6 +95,9 @@ pub fn parse(line: &str) -> Result<Command, ParseError> {
     "torque" => Command::Torque {
       channel: number(arg())?,
       rate_pps: number(arg())?
+    },
+    "zero" => Command::Zero {
+      channel: number(arg())?
     },
     _ => return Err(ParseError::UnknownCommand)
   };
@@ -150,6 +159,7 @@ mod tests {
       })
     );
     assert_eq!(parse("stop"), Ok(Command::Stop));
+    assert_eq!(parse("zero 0"), Ok(Command::Zero { channel: 0 }));
   }
 
   #[test]
@@ -164,6 +174,9 @@ mod tests {
     assert_eq!(parse("jog 1 10 100 extra"), Err(ParseError::BadArguments));
     assert_eq!(parse("torque 0"), Err(ParseError::BadArguments));
     assert_eq!(parse("stop now"), Err(ParseError::BadArguments));
+    assert_eq!(parse("zero"), Err(ParseError::BadArguments));
+    assert_eq!(parse("zero 0 1"), Err(ParseError::BadArguments));
+    assert_eq!(parse("zero all"), Err(ParseError::BadArguments));
   }
 
   #[test]

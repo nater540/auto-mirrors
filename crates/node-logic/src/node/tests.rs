@@ -841,6 +841,82 @@ fn a_bench_move_reports_no_move_done_on_the_bus() {
   assert_eq!(node.axis(ch(0)).unwrap().record.pos_steps, 50);
 }
 
+/// A bench node whose channel 0 was restored far from zero, suspect, under the forward sign.
+fn far_from_zero() -> (Node, Recorder, AxisRecord) {
+  let record = AxisRecord {
+    pos_steps: 27_508,
+    last_dir: LastDir::Plus,
+    phase: Phase::ZERO,
+    suspect: true,
+    dir_sign: Some(DirSign::Forward)
+  };
+  let mut node = Node::new(setup());
+  let io = Recorder::default();
+  node.restore([Restored::Valid(record), Restored::Missing, Restored::Missing]);
+  node.set_bench(true).unwrap();
+  (node, io, record)
+}
+
+#[test]
+fn a_bench_zero_makes_the_position_zero_and_trusted_and_writes_it() {
+  let (mut node, mut io, record) = far_from_zero();
+  assert_eq!(node.bench_zero(ch(0), &mut io), Ok(()));
+  let zeroed = AxisRecord {
+    pos_steps: 0,
+    suspect: false,
+    ..record
+  };
+  assert_eq!(io.take(), [Io::Persist(ch(0), zeroed)]);
+  let axis = node.axis(ch(0)).unwrap();
+  assert_eq!(axis.record, zeroed);
+  assert!(!axis.persisted, "not written until the flash says so");
+  node.on_persisted(ch(0), true, &mut io);
+  assert!(node.axis(ch(0)).unwrap().persisted);
+}
+
+#[test]
+fn a_bench_zero_moves_nothing_and_needs_no_permit() {
+  let (mut node, mut io, _) = far_from_zero();
+  node.bench_zero(ch(0), &mut io).unwrap();
+  assert!(io.starts().is_empty());
+  assert!(!node.armed(0));
+}
+
+#[test]
+fn a_bench_zero_is_refused_outside_bench_mode_during_a_move_with_a_coordinator_and_without_a_motor() {
+  let (mut node, mut io, record) = far_from_zero();
+  // Each refusal is checked to write nothing: the events before it are cleared first.
+  let refused = |node: &mut Node, io: &mut Recorder, why: BenchRefused| {
+    io.take();
+    assert_eq!(node.bench_zero(ch(0), io), Err(why));
+    assert!(io.take().is_empty(), "a refused zero writes nothing: {why:?}");
+  };
+  io.take();
+  assert_eq!(
+    node.bench_zero(ch(2), &mut io),
+    Err(BenchRefused::ChannelUnavailable { channel: 2 })
+  );
+  assert!(io.take().is_empty());
+  node.set_permit(true, &mut io);
+  node.bench_move(ch(0), 10, 5_000, &mut io).unwrap();
+  refused(&mut node, &mut io, BenchRefused::Busy);
+  node.on_move_outcome(10, done(10), &mut io);
+  node.set_bench(false).unwrap();
+  refused(&mut node, &mut io, BenchRefused::NotInBench);
+  node.set_bench(true).unwrap();
+  node.on_frame(20, heartbeat(), &mut io);
+  refused(&mut node, &mut io, BenchRefused::CoordinatorPresent);
+  assert_eq!(node.axis(ch(0)).unwrap().record.pos_steps, record.pos_steps + 10);
+}
+
+#[test]
+fn a_bench_zero_needs_the_positions_restored() {
+  let mut node = Node::new(setup());
+  let mut io = Recorder::default();
+  node.set_bench(true).unwrap();
+  assert_eq!(node.bench_zero(ch(0), &mut io), Err(BenchRefused::NotReady));
+}
+
 // --- boundaries ---------------------------------------------------------------
 
 #[test]

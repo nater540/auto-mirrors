@@ -569,6 +569,41 @@ impl Node {
     Ok(())
   }
 
+  /// Makes a channel's present position its zero, trusted, and writes it: the commissioning position, from which the
+  /// soft limits count. Nothing moves, so the permit is not needed; the rest of a bench move's conditions apply, so
+  /// that no coordinator is relying on the old count. The phase, the last direction, and the sign are kept: they
+  /// describe the motor, not the count.
+  ///
+  /// # Errors
+  ///
+  /// A [`BenchRefused`] naming the first condition not met.
+  pub fn bench_zero(&mut self, channel: Channel, io: &mut impl NodeIo) -> Result<(), BenchRefused> {
+    if !self.bench {
+      return Err(BenchRefused::NotInBench);
+    }
+    if !self.restored {
+      return Err(BenchRefused::NotReady);
+    }
+    if self.running.is_some() {
+      return Err(BenchRefused::Busy);
+    }
+    if self.last_heartbeat_ms.is_some() {
+      return Err(BenchRefused::CoordinatorPresent);
+    }
+    if !self.is_populated(channel) {
+      return Err(BenchRefused::ChannelUnavailable { channel: channel.get() });
+    }
+    let axis = self
+      .axes
+      .get_mut(usize::from(channel.get()))
+      .ok_or(BenchRefused::ChannelUnavailable { channel: channel.get() })?;
+    axis.record.pos_steps = 0;
+    axis.record.suspect = false;
+    axis.persisted = false;
+    io.persist(channel, axis.record);
+    Ok(())
+  }
+
   /// Stops the running move, whatever started it.
   pub fn stop(&mut self, io: &mut impl NodeIo) {
     self.request_stop(io);
