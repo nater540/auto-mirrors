@@ -10,7 +10,11 @@
 //!
 //! Tasks:
 //! - `control`: every millisecond, samples the inputs and hands them, the frames received, and the console's
-//!   commands to the orchestrator, which owns the relay and FootSW outputs. Feeds the watchdog.
+//!   commands to the orchestrator, which owns the relay and FootSW outputs. Feeds the watchdog. It does not log what
+//!   the orchestrator reports: a burst of lines over USB could hold it for milliseconds and miss a dot.
+//! - `fire_sense`: keeps the fire input's level and latches each of its edges from the pin's interrupt, so that a
+//!   dot shorter than a millisecond, or one during a late loop, still reaches the next sample.
+//! - `logger`: logs what the orchestrator reports, from a queue.
 //! - `can`: receives and decodes frames for `control`, and sends what it queues. Recovers from bus-off.
 //! - `console_task`: reads the console over USB-Serial-JTAG and queues its commands; replies go to the log.
 //!
@@ -27,7 +31,7 @@
 
 mod board;
 
-use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 
 use align_core::config::Config;
 use align_proto::{Envelope, Message, NodeId, PROTOCOL_VERSION};
@@ -73,13 +77,21 @@ const LINE_LEN: usize = 80;
 
 type Raw = CriticalSectionRawMutex;
 
-static FRAMES_OUT: Queue<Raw, Envelope, 16> = Queue::new();
+/// Room for a burst: a node's six CONFIG frames, the heartbeat, the inhibit level, ESTOP, and a move.
+static FRAMES_OUT: Queue<Raw, Envelope, 32> = Queue::new();
 static FRAMES_IN: Queue<Raw, Envelope, 16> = Queue::new();
 static COMMANDS: Queue<Raw, Command, 4> = Queue::new();
 /// The controller's error counters and bus-off state as the `can` task last read them, for `status`.
 static TX_ERRORS: AtomicU8 = AtomicU8::new(0);
 static RX_ERRORS: AtomicU8 = AtomicU8::new(0);
 static BUS_OFF: AtomicBool = AtomicBool::new(false);
+/// What the orchestrator reported, for `logger`; reports that found it full are counted, not waited for.
+static REPORTS: Queue<Raw, Report, 32> = Queue::new();
+static REPORTS_DROPPED: AtomicU32 = AtomicU32::new(0);
+/// The fire input as `fire_sense` keeps it: whether it is active now, and whether it changed since `control`
+/// last looked.
+static FIRE_ACTIVE: AtomicBool = AtomicBool::new(false);
+static FIRE_EDGE: AtomicBool = AtomicBool::new(false);
 
 fn now_ms() -> u64 {
   Instant::now().as_millis()
@@ -112,32 +124,39 @@ impl CoordinatorIo for Firmware<'_> {
   }
 
   fn report(&mut self, report: Report) {
-    match report {
-      Report::State(state) => info!("state {state:?}"),
-      Report::Outcome(outcome) => info!("outcome {outcome:?}"),
-      Report::Node { node, change } => report_node(node, change),
-      Report::Configured { node } => info!(
-        "node {} ({}): soft limits and direction signs sent",
-        node.get(),
-        name(node)
-      ),
-      Report::MoveSent { axis, steps } => info!("{axis:?}: {steps} steps sent"),
-      Report::MoveEnded { axis, result } => match result {
-        Ok(pos_steps) => info!("{axis:?}: done, at {pos_steps} steps"),
-        Err(fault) => warn!("{axis:?}: {fault}")
-      },
-      Report::MoveDropped { axis } => warn!("{axis:?}: the move was dropped before it was sent"),
-      Report::MeasurementEnded { result } => match result {
-        Ok(shots) => {
-          for (point, reading) in [("A", shots.a), ("B", shots.b), ("C", shots.c)] {
-            info!(
-              "measured {point}: h {:.4}, v {:.4}, sum {:.3}",
-              reading.h_norm, reading.v_norm, reading.sum
-            );
-          }
+    if REPORTS.try_send(report).is_err() {
+      REPORTS_DROPPED.fetch_add(1, Ordering::AcqRel);
+    }
+  }
+}
+
+/// Logs one report of the orchestrator.
+fn log_report(report: Report) {
+  match report {
+    Report::State(state) => info!("state {state:?}"),
+    Report::Outcome(outcome) => info!("outcome {outcome:?}"),
+    Report::Node { node, change } => report_node(node, change),
+    Report::Configured { node } => info!(
+      "node {} ({}): soft limits and direction signs sent",
+      node.get(),
+      name(node)
+    ),
+    Report::MoveSent { axis, steps } => info!("{axis:?}: {steps} steps sent"),
+    Report::MoveEnded { axis, result } => match result {
+      Ok(pos_steps) => info!("{axis:?}: done, at {pos_steps} steps"),
+      Err(fault) => warn!("{axis:?}: {fault}")
+    },
+    Report::MoveDropped { axis } => warn!("{axis:?}: the move was dropped before it was sent"),
+    Report::MeasurementEnded { result } => match result {
+      Ok(shots) => {
+        for (point, reading) in [("A", shots.a), ("B", shots.b), ("C", shots.c)] {
+          info!(
+            "measured {point}: h {:.4}, v {:.4}, sum {:.3}",
+            reading.h_norm, reading.v_norm, reading.sum
+          );
         }
-        Err(fault) => warn!("measurement: {fault}")
       }
+      Err(fault) => warn!("measurement: {fault}")
     }
   }
 }
@@ -191,19 +210,21 @@ fn report_node(node: NodeId, change: Change) {
   }
 }
 
-/// The inputs `control` samples, each read in its logical sense (see `board.rs` for the polarities).
+/// The inputs `control` samples, each read in its logical sense (see `board.rs` for the polarities). Fire sense is
+/// read through `fire_sense`.
 struct Sensed {
   relay_feedback: Input<'static>,
-  status: Input<'static>,
-  fire: Input<'static>
+  status: Input<'static>
 }
 
 impl Sensed {
   fn read(&self) -> Inputs {
+    // An edge since the last sample counts as firing for this one, however short the dot was.
+    let edge = FIRE_EDGE.swap(false, Ordering::AcqRel);
     Inputs {
       loop_open: self.relay_feedback.is_high(),
       job_running: self.status.is_low(),
-      firing: self.fire.is_low()
+      firing: FIRE_ACTIVE.load(Ordering::Acquire) || edge
     }
   }
 }
@@ -231,9 +252,9 @@ async fn main(spawner: Spawner) -> ! {
   };
   let sensed = Sensed {
     relay_feedback: Input::new(pins.relay_feedback, InputConfig::default().with_pull(Pull::Down)),
-    status: Input::new(pins.status, InputConfig::default().with_pull(Pull::Up)),
-    fire: Input::new(pins.fire, InputConfig::default().with_pull(Pull::Up))
+    status: Input::new(pins.status, InputConfig::default().with_pull(Pull::Up))
   };
+  let fire = Input::new(pins.fire, InputConfig::default().with_pull(Pull::Up));
   let orchestrator = Orchestrator::new(Setup {
     config: settings,
     fw_version: FW_VERSION,
@@ -265,6 +286,8 @@ async fn main(spawner: Spawner) -> ! {
     HalDuration::from_millis(u64::from(settings.node.watchdog_timeout_ms))
   );
   watchdog.enable();
+  spawn!(fire_sense(fire));
+  spawn!(logger());
   spawn!(control(orchestrator, outputs, sensed, watchdog));
   spawn!(can(twai));
   spawn!(console_task(usb_rx));
@@ -283,11 +306,18 @@ async fn control(
   mut watchdog: Wdt<TIMG1<'static>>
 ) {
   let mut ticker = Ticker::every(Duration::from_millis(1));
+  let mut bus_was_off = false;
   loop {
     watchdog.feed();
     let now = now_ms();
     let inputs = sensed.read();
     let mut io = Firmware { outputs: &mut outputs };
+    // Reference 7.3: bus-off is a fault, cleared by hand, even though the controller recovers on its own.
+    let bus_off = BUS_OFF.load(Ordering::Acquire);
+    if bus_off && !bus_was_off {
+      orchestrator.bus_off(now, &mut io);
+    }
+    bus_was_off = bus_off;
     while let Ok(envelope) = FRAMES_IN.try_receive() {
       orchestrator.on_frame(now, envelope, &mut io);
     }
@@ -296,6 +326,27 @@ async fn control(
     }
     orchestrator.tick(now, inputs, &mut io);
     ticker.next().await;
+  }
+}
+
+#[embassy_executor::task]
+async fn fire_sense(mut fire: Input<'static>) {
+  loop {
+    FIRE_ACTIVE.store(fire.is_low(), Ordering::Release);
+    fire.wait_for_any_edge().await;
+    FIRE_EDGE.store(true, Ordering::Release);
+  }
+}
+
+#[embassy_executor::task]
+async fn logger() {
+  loop {
+    let report = REPORTS.receive().await;
+    let dropped = REPORTS_DROPPED.swap(0, Ordering::AcqRel);
+    if dropped > 0 {
+      warn!("{dropped} reports were dropped: the log fell behind");
+    }
+    log_report(report);
   }
 }
 

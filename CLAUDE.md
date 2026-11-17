@@ -244,6 +244,26 @@ Reference 5.4 and addendum A.8 leave these open; `align-proto` decides them, and
   is addressed to the sensor (node 3). The whole-system simulation found the orchestrator addressing SHOT to the
   sensor, which ignores that, while the orchestrator's own tests agreed with the mistake.
 
+The review of the orchestrator on 2026-11-17 (four defects, each with the test that failed on it) set these:
+
+- **A feedback reading confirms the relay only from a later millisecond than the energize**
+  (`align_core::coordinator`): the firmware samples its inputs at the top of the millisecond and may energize later in
+  it, so a reading stamped with the energize's own time was taken before it.
+- **FootSW is let go as soon as the job no longer waits to start**, and no request is accepted while it is held:
+  held on, it could start another job after one that ended at once, or pause a running one (reference 6.6).
+- **The node of the move asked for or running counts as expected while it does**: its loss inhibits, whether or
+  not the self-test needs it.
+- **A FAULT that answers no command carries `align_proto::DETAIL_NO_COMMAND`** (0xFFFF) as its detail, never a
+  sequence number: a node's failed flash write was read as the refusal of move 0.
+- **Reference 7.3's faults are raised**: a soft limit or a lost rail in a MOVE_DONE, a motor node's PIN_FAULT,
+  RAIL_LOST_DURING_MOVE, or MOVE_TIMEOUT, and the coordinator's own CAN bus-off each fault until `clear`.
+- **ESTOP is repeated with every heartbeat while faulted**, and a node that refuses a move as NOT_CONFIGURED is sent
+  its CONFIG again: a frame dropped from a full queue is otherwise never resent.
+- **The coordinator's control loop logs nothing of what the orchestrator reports** (a `logger` task does), and fire
+  sense latches its edges by interrupt, so neither a burst of log lines nor a short dot can hide a fire.
+- Left as they are: a node loss found by the tick inhibits 1 ms after the beacon; a `stop` during the quiet time still
+  energizes the relay later and disarms at once, with nothing moved.
+
 ## What the sensor settled (S1, S2)
 
 - **Five buttons are the reading until the detector exists** (owner, 2026-11-15). No detector processing is built;
