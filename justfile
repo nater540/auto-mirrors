@@ -278,7 +278,7 @@ doctor:
 
 # --- quality ----------------------------------------------------------------
 
-# Mutation testing of the alignment logic, the files in .cargo/mutants.toml: `just mutants -j 4` (about 5 minutes)
+# Mutation testing of the alignment logic, the files in .cargo/mutants.toml: `just mutants -j 2 --timeout 120`
 [group('quality')]
 mutants *flags:
     {{ mutants_env }} cargo mutants --output target {{ flags }}

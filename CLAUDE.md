@@ -409,7 +409,7 @@ just sweep-margins         # how much stick-slip, noise, backlash, and step loss
 just deny                  # licenses, advisories, bans, and sources (deny.toml)
 just outdated              # the pinned crates against crates.io
 just doctor                # the tools the recipes need, and what is missing
-just mutants -j 4          # mutation testing of the alignment logic, about 5 minutes
+just mutants -j 2 --timeout 120  # mutation testing of the alignment logic; read the timeouts (below)
 just check-commits <base>  # format, clippy, tests, and the no_std build at every commit after <base>
 cargo test -p align-core <test_name>   # one test
 ```
@@ -417,6 +417,9 @@ cargo test -p align-core <test_name>   # one test
 After changing the aligner, the solver, or a threshold: run `just sweep` and `just sweep-margins` before and after
 and compare the tables, run `just test-stress` once, and run `just mutants`. A surviving mutant gets a test that
 states the boundary; it is excluded in `.cargo/mutants.toml` only if it cannot change behavior, with the reason.
+**A timeout is not a catch.** On 2026-11-17 a run at `-j 4` timed out 254 mutants at the 20 s default, most before
+their first test binary printed a line, though the whole suite takes 8 s. The bring-up's mutants, run again at
+`-j 2` with `--timeout 120`, had no timeouts and 22 survivors. Run timed-out mutants again that way (`--re` picks them).
 Before handing a branch over, run `just check-commits <base>`: every commit must pass, not only the last.
 After changing the protocol, a node's logic, or the orchestrator, `cargo test -p align-sim --test system` is the
 test that holds the devices to each other; a unit test that encodes the same mistake on both sides cannot.
