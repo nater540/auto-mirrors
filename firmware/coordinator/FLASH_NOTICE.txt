@@ -1,10 +1,15 @@
-align-coordinator: scaffold (milestone M0)
+align-coordinator: the bus only (milestone M5, first step), PROVISIONAL pins for an Adafruit Feather ESP32-C6
 
-Motors:      none. No move command exists and no bus is started to send one.
-Interlock:   not driven. The relay output and the motor permit stay at their reset state.
+Motors:      none moved. It sends no MOVE_REL, no CONFIG, and never INHIBIT 0: every INHIBIT it sends says
+             inhibited. A node that hears its heartbeat also refuses console moves (bench moves need a silent bus).
+Interlock:   not driven. No relay output exists yet; the motor permit is not touched.
 Ruida I/O:   none. FootSW is not driven; Status and fire sense are not read.
-Bus:         none. TWAI is not started.
-Other I/O:   none. Every GPIO stays in its reset state.
+Bus:         TWAI through an SN65HVD230 transceiver: TX on GPIO 23 (Feather MI) to CTX, RX on GPIO 1 (A0) from
+             CRX. 250 kbit/s, normal mode. It sends a heartbeat and INHIBIT 1 every 100 ms, and reads the nodes'
+             heartbeats, STATUS, FAULT, and MOVE_DONE.
+Other I/O:   none. Every other GPIO stays in its reset state, among them the Feather's RGB LED and I2C power
+             (GPIO 20), its I2C pins (18, 19), and its LED (15).
 Flash:       nothing is written after boot.
 
-It boots, logs this notice over USB-Serial-JTAG, and idles.
+Bench wiring: SN65HVD230: 3V3 to 3V, GND to GND, CTX to MI, CRX to A0; CANH and CANL to the node's.
+The console (`help`) shows each node present or not, and what it last reported.

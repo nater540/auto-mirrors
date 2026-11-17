@@ -44,8 +44,10 @@ Stop at the end of each milestone and report to the owner (hand-off section 6).
   steps counted and the record suspect; a move on channel 1 was refused; no coil LED lit during reset or boot.
   The torque margin test of addendum A.6 waits for the real mount.
 - M5 coordinator: started. Host-tested so far: the state machine of reference 7.3 (`align_core::coordinator`, whose
-  extra states await the owner's sign-off) and the watch over the nodes (`coordinator_logic::nodes`). The firmware
-  is still the M0 scaffold.
+  extra states await the owner's sign-off), the watch over the nodes, readings, moves, and the coordinator's own
+  heartbeat and inhibit level (`coordinator_logic`). The firmware's first step is the bus alone: it sends its
+  heartbeat with motion always inhibited and shows the nodes on its console, on a second Feather ESP32-C6 that
+  talks to the node through SN65HVD230 transceivers. The state machine, the relay, and the Ruida I/O come next.
 - M6 bring-up tools, M7 Ruida UDP (optional, read-only): not started.
 - Sensor track (`docs/SENSOR_PLAN.md`): S0 protocol, S1 `sensor-logic`, and S2 `firmware/sensor` done, with five
   buttons instead of a detector (owner, 2026-11-15). S3, the detector's method, waits for the detector, which is
@@ -180,8 +182,9 @@ Reference 5.4 and addendum A.8 leave these open; `align-proto` decides them, and
   The record carries its direction sign (format 2) and is written suspect before every move. A silent or restarted
   coordinator is forgotten (inhibited, moves forgotten). An ESTOP latches until INHIBIT 0; bench moves need no
   coordinator on the bus. The TIMG1 watchdog resets the node after 1 s without feeding, so a panic cannot hold a coil.
-- **On the development board, TWAI runs on GPIO 23 alone** in self-test mode (TX and RX looped back through the
-  pin), so frames go out without a transceiver or a second node.
+- **On the development boards, TWAI runs through an SN65HVD230 transceiver** in normal mode, TX on GPIO 23 (MI)
+  and RX on GPIO 1 (A0), on the node and the coordinator alike. A frame then needs a second node to acknowledge it:
+  a board alone on the bus logs its failed sends once a second, and esp-hal aborts each one at error passive.
 - **The Feather has clean header pins for one motor channel only** (GPIO 3, 2, 21, 22 for IN1 to IN4); channel 1 is
   unpopulated there (`board::CHANNELS`). Two channels on one board wait for the node board.
 
@@ -256,8 +259,10 @@ One Cargo workspace, edition 2024, Rust 1.96.0 pinned. Dependencies and lints ar
   heartbeats the way the nodes judge the coordinator), and the sensor's readings paired with a job's shots
   (`readings`: by sequence number, late ones asked for again with SENSOR_RESEND, the node's rejections as faults),
   and one move in flight (`moves`: MOVE_REL with `finish_plus` clear, MOVE_DONE or a refusal FAULT back, resent
-  while late, per-node sequence numbers).
-- `firmware/coordinator` (`align-coordinator`): scaffold only. It boots, logs its notice, and touches no pin.
+  while late, per-node sequence numbers). `link` sends the coordinator's heartbeat and inhibit level and keeps what
+  each node last said; `console` parses the coordinator's console.
+- `firmware/coordinator` (`align-coordinator`): the bus only so far. Heartbeat and INHIBIT 1 every 100 ms, the
+  nodes watched, `status` on the console. Drives no pin but TWAI. Pins in `src/board.rs`, PROVISIONAL for a Feather.
 
 Dependency direction: firmware and `align-sim` depend on `align-core`, `align-proto`, `stepper`, `node-logic`,
 `sensor-logic`, and `coordinator-logic`; `node-logic` depends on the first three, `sensor-logic` and

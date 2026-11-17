@@ -12,6 +12,7 @@
 //!   and GPIO18 and 19 are its I2C pins (SCL, SDA), shared with that port. GPIO10 and 11 are not on its headers.
 //! - That leaves ten header pins (0, 1, 2, 3, 6, 7, 14, 21, 22, 23): enough for one channel, the bus, the two inputs,
 //!   and the arm pulse, not for a second channel. Channel 1 is unpopulated on this board.
+//! - The bus goes through an SN65HVD230 transceiver board (reference 5.3), powered from the Feather's 3V pin.
 //! - The four coils are adjacent on the left header (A4, A5, SCK, MO), so one ribbon of four wires reaches IN1 to IN4.
 //! - The two inputs are pulled down, so a broken wire reads as no permit and no rail.
 //!
@@ -20,7 +21,8 @@
 //! | Channel 0, IN1 to IN4 (blue, pink, yellow, orange) | 3, 2, 21, 22 | A4, A5, SCK, MO | out | low: coils off |
 //! | Channel 1 | none | | | unpopulated on this board |
 //! | Channel 2 | none | | | unpopulated (addendum A.7) |
-//! | TWAI, one-wire loopback on the bench | 23 | MI | open drain, pull-up | recessive |
+//! | TWAI TX, to the transceiver's CTX | 23 | MI | out | reset state until TWAI starts (see below) |
+//! | TWAI RX, from the transceiver's CRX | 1 | A0 | in, no pull | driven by the transceiver |
 //! | Motor permit | 6 | A2 (left), 6 (right) | in, pull-down | absent |
 //! | Rail sense (`rail_ok`) | 7 | 7 | in, pull-down | down |
 //! | Arm pulse to the charge pump | 0 | 0 | out | low: not armed |
@@ -28,10 +30,13 @@
 //! VERIFIED on the bench (2026-11-17): no coil pin is pulled up between reset and the firmware's first instruction.
 //! None of the ULN2003's four LEDs lit while the reset button was held or while the board booted.
 //! Repeat the check on every new board.
+//!
+//! UNVERIFIED: whether the transceiver's CTX input floats dominant while GPIO 23 is in its reset state. If it does,
+//! a reset of this board holds the bus for the length of the boot, and the other boards see bus errors, not frames.
 
 use align_proto::NodeId;
 use esp_hal::Blocking;
-use esp_hal::gpio::{AnyPin, Flex};
+use esp_hal::gpio::AnyPin;
 use esp_hal::peripherals::TWAI0;
 use esp_hal::twai::{BaudRate, TwaiConfiguration, TwaiMode};
 
@@ -49,19 +54,17 @@ const _: () = assert!(
   "the pin table and the node agree on the channels"
 );
 
-/// The TWAI controller as this board wires it.
+/// The TWAI controller as this board wires it: through a transceiver, in [`TwaiMode::Normal`].
 ///
-/// PROVISIONAL: the development board has no CAN transceiver, so TX and RX share GPIO 23, open drain with a pull-up.
-/// The controller reads back every bit it sends, as on a bus with one node. Self-test mode needs no acknowledgement,
-/// so the node's frames go out and the controller never reaches bus-off.
-/// A node board with a transceiver uses `TwaiConfiguration::new` with two pins and [`TwaiMode::Normal`].
+/// Every frame then needs another node on the bus to acknowledge it. Alone on the bus, the controller turns error
+/// passive and esp-hal aborts each frame (`EspTwaiError::TransmissionAborted`); it never reaches bus-off that way.
 pub fn twai(
   peripheral: TWAI0<'static>,
   tx: AnyPin<'static>,
+  rx: AnyPin<'static>,
   baud_rate: BaudRate
 ) -> TwaiConfiguration<'static, Blocking> {
-  let (input, output) = Flex::new(tx).split();
-  TwaiConfiguration::new_no_transceiver(peripheral, input, output, baud_rate, TwaiMode::SelfTest)
+  TwaiConfiguration::new(peripheral, rx, tx, baud_rate, TwaiMode::Normal)
 }
 
 /// Takes the pins out of the peripherals by name, so that the GPIO numbers above appear exactly once in code.
@@ -71,6 +74,7 @@ macro_rules! board_pins {
     $crate::board::Pins {
       channels: [[$p.GPIO3.into(), $p.GPIO2.into(), $p.GPIO21.into(), $p.GPIO22.into()]],
       twai_tx: $p.GPIO23.into(),
+      twai_rx: $p.GPIO1.into(),
       permit: $p.GPIO6.into(),
       rail_sense: $p.GPIO7.into(),
       arm: $p.GPIO0.into()
@@ -82,8 +86,10 @@ macro_rules! board_pins {
 pub struct Pins {
   /// IN1 to IN4 of the ULN2003 of each populated channel, channel 0 first.
   pub channels: [[AnyPin<'static>; 4]; CHANNELS],
-  /// TWAI transmit; on the bench also receive (see [`twai`]).
+  /// TWAI transmit, to the transceiver.
   pub twai_tx: AnyPin<'static>,
+  /// TWAI receive, from the transceiver.
+  pub twai_rx: AnyPin<'static>,
   /// The hardware motor permit from the drag chain, high when present.
   pub permit: AnyPin<'static>,
   /// The switched motor rail through a divider, high when up.

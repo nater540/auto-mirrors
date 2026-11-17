@@ -257,7 +257,7 @@ async fn main(spawner: Spawner) -> ! {
   node.restore(restored);
   NODE.lock(|cell| cell.replace(Some(node)));
 
-  let twai = board::twai(peripherals.TWAI0, pins.twai_tx, BAUD_RATE)
+  let twai = board::twai(peripherals.TWAI0, pins.twai_tx, pins.twai_rx, BAUD_RATE)
     .into_async()
     .start();
   let (usb_rx, _usb_tx) = UsbSerialJtag::new(peripherals.USB_DEVICE).into_async().split();
@@ -400,6 +400,8 @@ async fn arm_pulse(mut arm: Output<'static>) {
 #[embassy_executor::task]
 async fn can(mut twai: Twai<'static, Async>) {
   let mut rejected = RateLimited::new();
+  // Alone on the bus (no coordinator powered), every frame fails: ten heartbeats a second.
+  let mut unsent = RateLimited::new();
   loop {
     if twai.is_bus_off() {
       // Reference 5.3: brake all, wait 100 ms, recover once, and wait for the recovery to finish rather than
@@ -436,11 +438,18 @@ async fn can(mut twai: Twai<'static, Async>) {
       }
       Either::First(Err(error)) => warn!("CAN receive error: {error:?}"),
       Either::Second(envelope) => match envelope.encode::<EspTwaiFrame>() {
-        Ok(frame) => match with_timeout(Duration::from_millis(20), twai.transmit_async(&frame)).await {
-          Ok(Ok(())) => {}
-          Ok(Err(error)) => warn!("CAN transmit failed: {error:?}"),
-          Err(_) => warn!("CAN transmit timed out")
-        },
+        Ok(frame) => {
+          // `Err(TimeoutError)` when the 20 ms ran out, `Ok(Err(..))` when esp-hal gave up on the frame.
+          let result = with_timeout(Duration::from_millis(20), twai.transmit_async(&frame)).await;
+          if !matches!(result, Ok(Ok(())))
+            && let Some(held_back) = unsent.admit(now_ms())
+          {
+            warn!(
+              "CAN transmit failed: {result:?}, transmit errors {} ({held_back} more held back)",
+              twai.transmit_error_count()
+            );
+          }
+        }
         Err(error) => error!("encoding {:?} failed: {error}", envelope.message)
       }
     }

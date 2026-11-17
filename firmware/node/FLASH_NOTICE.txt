@@ -11,9 +11,9 @@ Motors:      one stepper channel, 0: ULN2003 IN1 to IN4 on GPIO 3, 2, 21, 22 (Fe
              At most 4000 steps and 25 s per move; one channel at a time; coils released after every move.
 Motor rail:  GPIO 0 carries a 1 kHz arm pulse only while a move runs; low otherwise. GPIO 7 reads the rail.
 Permit:      GPIO 6 reads the motor permit, pulled down: unconnected means no permit and no move.
-Bus:         TWAI on GPIO 23 alone (Feather MI; TX and RX looped back, open drain, pull-up), 250 kbit/s,
-             self-test mode, no transceiver. It sends a heartbeat every 100 ms and a status every second, and acts
-             on frames addressed to node 1.
+Bus:         TWAI through an SN65HVD230 transceiver: TX on GPIO 23 (Feather MI) to CTX, RX on GPIO 1 (A0) from
+             CRX. 250 kbit/s, normal mode: a frame needs another node to acknowledge it. It sends a heartbeat every
+             100 ms and a status every second, and acts on frames addressed to node 1.
 Other I/O:   none. Every other GPIO stays in its reset state, among them the Feather's RGB LED and I2C power
              (GPIO 20), its I2C pins (18, 19), and its LED (15).
 Flash:       writes a 9-byte position record per channel to the `nvs` partition before every move (marked
@@ -23,4 +23,5 @@ Watchdog:    the TIMG1 watchdog resets the chip if not fed for 1 s; a reset leav
 
 Bench wiring: ULN2003 IN1 to IN4 to Feather A4, A5, SCK, MO; its + to USB (5 V) and - to GND.
              Jumper Feather 6 and 7 to 3V (never to USB or BAT: the inputs are not 5 V tolerant).
+             SN65HVD230: 3V3 to 3V, GND to GND, CTX to MI, CRX to A0; CANH and CANL to the coordinator's.
 With no switched rail on the bench, the firmware checks are the only layer between a command and the motor.
