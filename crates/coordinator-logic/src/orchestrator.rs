@@ -28,8 +28,9 @@
 //!
 //! 1. **Asked for** only in Idle, with the sensor node present: the state machine is told `StartMeasurement`, the
 //!    readings of any earlier job are forgotten, and FootSW is held active for `start_pulse_ms`.
-//! 2. **Each burst** of fire edges is a shot: the state machine numbers it and names its point, and SHOT goes to the
-//!    sensor node. A reading still missing `resend_after_ms` after its shot is asked for again with SENSOR_RESEND.
+//! 2. **Each burst** of fire edges is a shot: the state machine numbers it and names its point, and SHOT goes to every
+//!    node in the coordinator's name. A reading still missing `resend_after_ms` after its shot is asked for again
+//!    with SENSOR_RESEND, addressed to the sensor.
 //! 3. **Ended** by the state machine: the three readings when the job fired three dots and every reading arrived,
 //!    `SensorFault::Rejected` when the sensor rejected one, and `SensorFault::NoReading` for every other way out
 //!    (a dot missing, readings timed out, an unexpected job or fire, a fault, a lost node).
@@ -452,8 +453,10 @@ impl Orchestrator {
     }
     if let Some((seq, point)) = actions.shot {
       self.readings.on_shot(now_ms, seq, point);
+      // SHOT goes from the coordinator to every node (`align_proto::Shot`), so it carries the coordinator's
+      // address: the sensor node ignores one addressed to it (found by the whole-system simulation).
       io.send(Envelope {
-        node: NodeId::SENSOR,
+        node: NodeId::COORDINATOR,
         message: Message::Shot(Shot {
           seq,
           point: shot_point(point),

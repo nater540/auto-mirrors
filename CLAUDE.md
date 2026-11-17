@@ -235,6 +235,9 @@ Reference 5.4 and addendum A.8 leave these open; `align-proto` decides them, and
   fault, a lost node) is `SensorFault::NoReading`. A new measurement forgets the readings of the last.
 - **The SHOT carries no edge age** while fire sense is sampled each millisecond; an edge interrupt can give one
   once the Mod5 scope check settles what a dot looks like.
+- **SHOT goes out in the coordinator's name (node 0), to every node**, as `align_proto::Shot` defines it; SENSOR_RESEND
+  is addressed to the sensor (node 3). The whole-system simulation found the orchestrator addressing SHOT to the
+  sensor, which ignores that, while the orchestrator's own tests agreed with the mistake.
 
 ## What the sensor settled (S1, S2)
 

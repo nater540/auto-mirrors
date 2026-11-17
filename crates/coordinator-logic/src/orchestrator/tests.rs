@@ -630,13 +630,13 @@ fn answer(seq: u8, result: SensorResult) -> Envelope {
   }
 }
 
-/// The SHOT frames sent so far: sequence number and point.
+/// The SHOT frames sent so far, in the coordinator's name as the protocol has them: sequence number and point.
 fn shots_sent(bench: &Bench) -> Vec<(u8, ShotPoint)> {
   let shots = bench.events.iter().filter_map(|event| match event {
     Io::Sent(Envelope {
       node,
       message: Message::Shot(Shot { seq, point, .. })
-    }) if *node == SENSOR => Some((*seq, *point)),
+    }) if *node == NodeId::COORDINATOR => Some((*seq, *point)),
     _ => None
   });
   shots.collect()
