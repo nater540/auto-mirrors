@@ -132,11 +132,14 @@ struct Seen {
   at_ms: u64
 }
 
-/// The sensor node.
+/// The sensor node, reading each shot through its method `M`: the buttons by default, a detector's method later,
+/// and the simulated beam in `align-sim`.
 #[derive(Clone, Debug)]
-pub struct SensorNode {
+pub struct SensorNode<M = ButtonMethod> {
   setup: SensorSetup,
-  method: ButtonMethod,
+  method: M,
+  /// The bench parameters. The reply delay here applies to every shot, whatever the method.
+  bench: ButtonBench,
   physical_held: ButtonSet,
   console_held: ButtonSet,
   bench_mode: bool,
@@ -153,15 +156,44 @@ pub struct SensorNode {
   write_cursor: usize
 }
 
-impl SensorNode {
-  /// A sensor after boot: not in bench mode, no buttons held, nothing pending.
+impl SensorNode<ButtonMethod> {
+  /// A sensor after boot that reads its buttons: not in bench mode, no buttons held, nothing pending.
   pub fn new(setup: SensorSetup) -> Self {
-    Self {
+    Self::with_method(
       setup,
-      method: ButtonMethod {
+      ButtonMethod {
         bench: setup.bench,
         held: ButtonSet::empty()
-      },
+      }
+    )
+  }
+
+  /// The physical buttons held now, debounced.
+  pub fn set_held(&mut self, held: ButtonSet) {
+    self.physical_held = held;
+    self.method.held = self.physical_held | self.console_held;
+  }
+
+  /// The buttons the console holds, added to the physical ones. Takes effect at once, so that a console `hold`
+  /// followed straight away by a `shot` reads the new position.
+  pub fn set_console_held(&mut self, held: ButtonSet) {
+    self.console_held = held;
+    self.method.held = self.physical_held | self.console_held;
+  }
+
+  /// The buttons held now, physical and console together.
+  pub const fn held(&self) -> ButtonSet {
+    self.method.held
+  }
+}
+
+impl<M: ShotMethod> SensorNode<M> {
+  /// A sensor after boot that reads each shot through `method`: not in bench mode, nothing pending.
+  pub fn with_method(setup: SensorSetup, method: M) -> Self {
+    Self {
+      setup,
+      method,
+      bench: setup.bench,
       physical_held: ButtonSet::empty(),
       console_held: ButtonSet::empty(),
       bench_mode: false,
@@ -195,24 +227,6 @@ impl SensorNode {
     self.bench_mode
   }
 
-  /// The physical buttons held now, debounced.
-  pub fn set_held(&mut self, held: ButtonSet) {
-    self.physical_held = held;
-    self.method.held = self.physical_held | self.console_held;
-  }
-
-  /// The buttons the console holds, added to the physical ones. Takes effect at once, so that a console `hold`
-  /// followed straight away by a `shot` reads the new position.
-  pub fn set_console_held(&mut self, held: ButtonSet) {
-    self.console_held = held;
-    self.method.held = self.physical_held | self.console_held;
-  }
-
-  /// The buttons held now, physical and console together.
-  pub const fn held(&self) -> ButtonSet {
-    self.method.held
-  }
-
   /// The console's injection for the coming shots.
   pub const fn injection_mut(&mut self) -> &mut Injection {
     &mut self.injection
@@ -220,12 +234,12 @@ impl SensorNode {
 
   /// Sets the delay from a shot to its reading.
   pub const fn set_reply_delay_ms(&mut self, delay_ms: u32) {
-    self.method.bench.reply_delay_ms = delay_ms;
+    self.bench.reply_delay_ms = delay_ms;
   }
 
   /// The delay from a shot to its reading.
   pub const fn reply_delay_ms(&self) -> u32 {
-    self.method.bench.reply_delay_ms
+    self.bench.reply_delay_ms
   }
 
   /// Enters or leaves bench mode.
@@ -272,8 +286,9 @@ impl SensorNode {
     if !self.bench_mode {
       return;
     }
+    // A chord is read by the buttons, whatever reads the shots.
     let reading = ButtonMethod {
-      bench: self.method.bench,
+      bench: self.bench,
       held: chord
     }
     .read();
@@ -415,7 +430,7 @@ impl SensorNode {
     if let Some(sum_q) = self.injection.sum_q {
       reading.sum_q = sum_q;
     }
-    let due_ms = now_ms.saturating_add(u64::from(self.method.bench.reply_delay_ms));
+    let due_ms = now_ms.saturating_add(u64::from(self.bench.reply_delay_ms));
     let arrival = self.arrivals;
     self.arrivals = self.arrivals.wrapping_add(1);
     let pending = Pending {
