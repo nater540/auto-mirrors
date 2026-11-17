@@ -5,6 +5,8 @@
 //! - **The inhibit level** goes out with every heartbeat, and at once when it changes. The repeat is what tells a
 //!   node that restarted. A node boots inhibited, so until the first INHIBIT 0 the level only confirms what every
 //!   node already assumes.
+//! - **ESTOP** goes out with every heartbeat while the coordinator is faulted, so that a node that missed the first
+//!   (a full transmit queue, a restart) latches it all the same (review of 2026-11-17).
 //! - **What was heard:** the watch over the nodes ([`crate::nodes`]) judges each heartbeat. This module keeps the
 //!   rest for the console: each node's last heartbeat (state, firmware version, uptime) and the last STATUS of each
 //!   of its channels.
@@ -26,7 +28,9 @@ pub struct Beacon {
   /// The state byte of its heartbeat.
   pub state: u8,
   /// Whether motion is inhibited: the negation of `align_core::coordinator::Coordinator::motion_allowed`.
-  pub inhibited: bool
+  pub inhibited: bool,
+  /// Whether the coordinator is faulted: ESTOP is repeated with every heartbeat.
+  pub estop: bool
 }
 
 /// What was last heard from one node. Kept after the node is lost, as what it said last.
@@ -88,6 +92,10 @@ impl Link {
         fw_version: self.fw_version,
         proto_version: PROTOCOL_VERSION
       }));
+      if beacon.estop {
+        // The reason byte has no defined values yet (CLAUDE.md, M3).
+        send(coordinator(Message::Estop { reason: 0 }));
+      }
     }
     if heartbeat_due || self.sent_inhibited != Some(beacon.inhibited) {
       self.sent_inhibited = Some(beacon.inhibited);

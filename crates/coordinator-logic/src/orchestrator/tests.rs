@@ -5,6 +5,7 @@
 
 extern crate std;
 
+use std::vec;
 use std::vec::Vec;
 
 use align_core::approach::SoftLimits;
@@ -355,7 +356,7 @@ fn a_move_arms_the_relay_lifts_the_inhibit_sends_the_move_and_disarms_when_it_is
 }
 
 #[test]
-fn a_move_the_node_refuses_at_its_soft_limit_disarms_the_same_way() {
+fn a_move_the_node_refuses_at_its_soft_limit_disarms_and_faults_until_cleared() {
   let (mut orchestrator, mut bench) = idle();
   orchestrator.request_move(1_001, Axis::M1H, 100, &mut bench).unwrap();
   orchestrator.tick(1_002, follow(&bench), &mut bench);
@@ -365,8 +366,95 @@ fn a_move_the_node_refuses_at_its_soft_limit_disarms_the_same_way() {
     result: Err(MoveFault::SoftLimit)
   }));
   assert!(!bench.relay);
-  orchestrator.tick(1_011, follow(&bench), &mut bench);
+  // Reference 7.3: a soft limit is a fault, cleared by hand.
+  assert_eq!(orchestrator.state(), State::Fault(FaultReason::Procedure));
+  run(&mut orchestrator, &mut bench, 1_011, 1_200);
+  assert_eq!(orchestrator.state(), State::Fault(FaultReason::Procedure));
+  orchestrator.clear_fault(1_201, &mut bench);
+  run(&mut orchestrator, &mut bench, 1_202, 1_210);
   assert_eq!(orchestrator.state(), State::Idle);
+}
+
+#[test]
+fn a_rail_lost_under_a_move_disarms_and_faults() {
+  let (mut orchestrator, mut bench) = idle();
+  orchestrator.request_move(1_001, Axis::M1H, 100, &mut bench).unwrap();
+  orchestrator.tick(1_002, follow(&bench), &mut bench);
+  orchestrator.on_frame(1_100, move_done(0, MoveResult::RailLost, 17), &mut bench);
+  assert!(!bench.relay);
+  assert_eq!(orchestrator.state(), State::Fault(FaultReason::Procedure));
+}
+
+#[test]
+fn a_motor_node_s_hardware_fault_faults_the_coordinator_and_estop_repeats_until_cleared() {
+  for code in [
+    align_proto::FaultCode::PIN_FAULT,
+    align_proto::FaultCode::RAIL_LOST_DURING_MOVE,
+    align_proto::FaultCode::MOVE_TIMEOUT
+  ] {
+    let (mut orchestrator, mut bench) = idle();
+    orchestrator.request_move(1_001, Axis::M1H, 1_000, &mut bench).unwrap();
+    orchestrator.tick(1_002, follow(&bench), &mut bench);
+    let fault = Envelope {
+      node: MIRROR_1,
+      message: Message::Fault {
+        channel: Channel::ZERO,
+        code,
+        detail: 0
+      }
+    };
+    orchestrator.on_frame(1_003, fault, &mut bench);
+    assert_eq!(orchestrator.state(), State::Fault(FaultReason::Procedure), "{code:?}");
+    assert!(!bench.relay);
+    bench.take();
+    run(&mut orchestrator, &mut bench, 1_004, 1_300);
+    let estops = bench
+      .sent()
+      .iter()
+      .filter(|message| matches!(message, Message::Estop { .. }))
+      .count();
+    assert_eq!(estops, 3, "one with each heartbeat: {code:?}");
+  }
+}
+
+#[test]
+fn a_bus_off_faults_the_coordinator() {
+  let (mut orchestrator, mut bench) = idle();
+  orchestrator.request_move(1_001, Axis::M1H, 1_000, &mut bench).unwrap();
+  orchestrator.tick(1_002, follow(&bench), &mut bench);
+  orchestrator.bus_off(1_003, &mut bench);
+  assert_eq!(orchestrator.state(), State::Fault(FaultReason::Procedure));
+  assert!(!bench.relay);
+  assert!(!orchestrator.motion_allowed());
+}
+
+#[test]
+fn a_node_that_refuses_a_move_as_not_configured_is_configured_again() {
+  let (mut orchestrator, mut bench) = idle();
+  orchestrator.request_move(1_001, Axis::M1H, 100, &mut bench).unwrap();
+  orchestrator.tick(1_002, follow(&bench), &mut bench);
+  bench.take();
+  let refused = Envelope {
+    node: MIRROR_1,
+    message: Message::Fault {
+      channel: Channel::ZERO,
+      code: align_proto::FaultCode::NOT_CONFIGURED,
+      detail: 0
+    }
+  };
+  orchestrator.on_frame(1_003, refused, &mut bench);
+  assert!(bench.reports().contains(&Report::MoveEnded {
+    axis: Axis::M1H,
+    result: Err(MoveFault::Refused {
+      code: align_proto::FaultCode::NOT_CONFIGURED.0
+    })
+  }));
+  let configs = bench
+    .sent()
+    .iter()
+    .filter(|message| matches!(message, Message::Config { .. }))
+    .count();
+  assert_eq!(configs, 6);
 }
 
 #[test]
@@ -946,10 +1034,23 @@ enum Step {
     job_running: bool,
     firing: bool
   },
+  /// A move asked for, then a tick in the same millisecond on inputs sampled before it, as the firmware's loop runs.
+  RequestThenTick {
+    on_mirror_2: bool,
+    loop_open: bool
+  },
   Heartbeat,
-  RequestMove(i32),
+  Mirror2Heartbeat,
+  /// Mirror 1's uptime jumps back: it restarted.
+  Restart,
+  RequestMove {
+    on_mirror_2: bool,
+    steps: i32
+  },
   Stop,
   Answer(MoveResult),
+  NodeFault(u8),
+  BusOff,
   ClearFault,
   SensorHeartbeat,
   RequestMeasurement,
@@ -958,17 +1059,23 @@ enum Step {
 
 fn step() -> impl Strategy<Value = Step> {
   prop_oneof![
-    6 => (proptest::option::of(any::<bool>()), proptest::bool::weighted(0.05), proptest::bool::weighted(0.05))
+    8 => (proptest::option::of(any::<bool>()), proptest::bool::weighted(0.05), proptest::bool::weighted(0.05))
       .prop_map(|(loop_open, job_running, firing)| Step::Tick { loop_open, job_running, firing }),
+    1 => (any::<bool>(), any::<bool>()).prop_map(|(on_mirror_2, loop_open)| Step::RequestThenTick { on_mirror_2, loop_open }),
     3 => Just(Step::Heartbeat),
-    2 => (-500_i32..500).prop_map(Step::RequestMove),
+    2 => Just(Step::Mirror2Heartbeat),
+    1 => Just(Step::Restart),
+    2 => (any::<bool>(), -500_i32..500).prop_map(|(on_mirror_2, steps)| Step::RequestMove { on_mirror_2, steps }),
     1 => Just(Step::Stop),
     1 => prop_oneof![
       Just(MoveResult::Done),
       Just(MoveResult::Stopped),
-      Just(MoveResult::SoftLimit)
+      Just(MoveResult::SoftLimit),
+      Just(MoveResult::RailLost)
     ]
     .prop_map(Step::Answer),
+    1 => prop_oneof![Just(0x21_u8), Just(0x25), Just(0x2A), Just(0x2C), Just(0x2D)].prop_map(Step::NodeFault),
+    1 => Just(Step::BusOff),
     1 => Just(Step::ClearFault),
     2 => Just(Step::SensorHeartbeat),
     1 => Just(Step::RequestMeasurement),
@@ -977,35 +1084,74 @@ fn step() -> impl Strategy<Value = Step> {
 }
 
 proptest! {
-  /// Whatever happens, a MOVE_REL goes out only when the last INHIBIT sent was INHIBIT 0, the relay is energized,
-  /// and the last feedback read said the loop is open; and FootSW never starts a job while the relay is energized.
+  /// Whatever happens: a MOVE_REL goes out only when the last INHIBIT sent was INHIBIT 0, the relay is energized,
+  /// and a tick in a later millisecond than the energize read the loop open; the relay never energizes while
+  /// FootSW is held, nor FootSW while the relay is; and in Fault or Inhibited motion is never allowed and the relay
+  /// is released.
   #[test]
-  fn a_move_goes_out_only_with_motion_allowed_the_relay_energized_and_the_loop_open(
+  fn a_move_goes_out_only_with_motion_allowed_the_relay_energized_and_the_loop_confirmed_open(
     steps in proptest::collection::vec(step(), 1..300)
   ) {
     let (mut orchestrator, mut bench) = idle();
     let mut now_ms = 1_000_u64;
     let mut last_inhibited = true;
-    let mut last_loop_open = false;
+    // When the relay last energized, and whether a tick after that millisecond has read the loop open.
+    let mut energized_ms: Option<u64> = None;
+    let mut confirmed = false;
+    let mut relay = false;
+    let mut footsw = false;
+    let mirror = |on_mirror_2: bool| if on_mirror_2 { Axis::M2H } else { Axis::M1H };
     for step in steps {
       now_ms += 7;
       let before = bench.events.len();
+      // The loop open as read by the tick of this step, if there is one, and when.
+      let mut reading: Option<bool> = None;
       match step {
         Step::Tick { loop_open, job_running, firing } => {
           // `None`: the loop follows the relay, as on the bench.
           let loop_open = loop_open.unwrap_or(bench.relay);
-          last_loop_open = loop_open;
+          reading = Some(loop_open);
           orchestrator.tick(now_ms, Inputs { loop_open, job_running, firing }, &mut bench);
         }
+        Step::RequestThenTick { on_mirror_2, loop_open } => {
+          let _ = orchestrator.request_move(now_ms, mirror(on_mirror_2), 100, &mut bench);
+          reading = Some(loop_open);
+          orchestrator.tick(now_ms, Inputs { loop_open, job_running: false, firing: false }, &mut bench);
+        }
         Step::Heartbeat => orchestrator.on_frame(now_ms, beat(now_ms), &mut bench),
-        Step::RequestMove(steps) => {
-          let _ = orchestrator.request_move(now_ms, Axis::M1H, steps, &mut bench);
+        Step::Mirror2Heartbeat => {
+          orchestrator.on_frame(now_ms, Envelope { node: NodeId::MIRROR_2, ..beat(now_ms) }, &mut bench);
+        }
+        Step::Restart => {
+          let mut restarted = beat(now_ms);
+          if let Message::Heartbeat { uptime_ms, .. } = &mut restarted.message {
+            *uptime_ms = 5;
+          }
+          orchestrator.on_frame(now_ms, restarted, &mut bench);
+        }
+        Step::RequestMove { on_mirror_2, steps } => {
+          let _ = orchestrator.request_move(now_ms, mirror(on_mirror_2), steps, &mut bench);
         }
         Step::Stop => orchestrator.stop(&mut bench),
         Step::Answer(result) => {
-          let seq = bench.move_rels().last().map_or(0, |(_, move_rel)| move_rel.seq);
-          orchestrator.on_frame(now_ms, move_done(seq, result, 0), &mut bench);
+          if let Some((node, move_rel)) = bench.move_rels().last().copied() {
+            let done = Envelope { node, ..move_done(move_rel.seq, result, 0) };
+            orchestrator.on_frame(now_ms, done, &mut bench);
+          }
         }
+        Step::NodeFault(code) => {
+          let seq = bench.move_rels().last().map_or(0, |(_, move_rel)| move_rel.seq);
+          let fault = Envelope {
+            node: MIRROR_1,
+            message: Message::Fault {
+              channel: Channel::ZERO,
+              code: align_proto::FaultCode(code),
+              detail: u16::from(seq)
+            }
+          };
+          orchestrator.on_frame(now_ms, fault, &mut bench);
+        }
+        Step::BusOff => orchestrator.bus_off(now_ms, &mut bench),
         Step::ClearFault => orchestrator.clear_fault(now_ms, &mut bench),
         Step::SensorHeartbeat => orchestrator.on_frame(now_ms, sensor_beat(now_ms), &mut bench),
         Step::RequestMeasurement => {
@@ -1016,23 +1162,151 @@ proptest! {
           orchestrator.on_frame(now_ms, answer(seq, result), &mut bench);
         }
       }
-      let mut relay = bench.events[..before].iter().rev().find_map(|event| match event {
-        Io::Relay(level) => Some(*level),
-        _ => None
-      }).unwrap_or(false);
       for event in &bench.events[before..] {
         match event {
-          Io::Relay(level) => relay = *level,
-          Io::Sent(Envelope { message: Message::Inhibit { inhibited, .. }, .. }) => last_inhibited = *inhibited,
+          Io::Relay(level) => {
+            prop_assert!(!(*level && footsw), "the relay energized with FootSW held");
+            relay = *level;
+            energized_ms = level.then_some(now_ms);
+            confirmed = false;
+          }
+          Io::FootSw(level) => {
+            prop_assert!(!(*level && relay), "FootSW pulsed with the relay energized");
+            footsw = *level;
+          }
+          Io::Sent(Envelope { message: Message::Inhibit { inhibited, .. }, .. }) => {
+            // The tick that sends the beacon has read the loop already: count its reading before the move.
+            if let (Some(true), Some(energized)) = (reading, energized_ms)
+              && now_ms > energized
+            {
+              confirmed = true;
+            }
+            last_inhibited = *inhibited;
+          }
           Io::Sent(Envelope { message: Message::MoveRel(_), .. }) => {
             prop_assert!(!last_inhibited, "a MOVE_REL while inhibited");
             prop_assert!(relay, "a MOVE_REL with the relay released");
-            prop_assert!(last_loop_open, "a MOVE_REL with the loop read closed");
+            prop_assert!(confirmed, "a MOVE_REL with no open reading after the energize's millisecond");
           }
-          Io::FootSw(true) => prop_assert!(!relay, "FootSW pulsed with the relay energized"),
           _ => {}
         }
       }
+      if let (Some(true), Some(energized)) = (reading, energized_ms)
+        && now_ms > energized
+      {
+        confirmed = true;
+      }
+      if matches!(orchestrator.state(), State::Fault(_) | State::Inhibited) {
+        prop_assert!(!orchestrator.motion_allowed(), "motion allowed in {:?}", orchestrator.state());
+        prop_assert!(!bench.relay, "the relay energized in {:?}", orchestrator.state());
+      }
     }
   }
+}
+
+// --- nemesis review of 2026-11-17: each test below fails on the code as reviewed -------------------------------
+
+/// The firmware's `control` loop samples the inputs first, then runs the console's commands, then ticks with that
+/// sample (`firmware/coordinator/src/main.rs`, `control`). A `jog` energizes the relay inside `request_move`, so the
+/// first feedback reading the state machine gets after the energize was taken before it.
+#[test]
+fn a_feedback_reading_sampled_before_the_energize_does_not_allow_motion() {
+  let (mut orchestrator, mut bench) = idle();
+  // At the top of the loop the feedback reads open while the relay is still released: contact bounce after the last
+  // move's release, or a fault on the feedback wire. The relay has not operated: nothing confirms the loop open.
+  let sampled = Inputs {
+    loop_open: true,
+    job_running: false,
+    firing: false
+  };
+  orchestrator.request_move(1_001, Axis::M1H, 100, &mut bench).unwrap();
+  orchestrator.tick(1_001, sampled, &mut bench);
+  assert!(
+    bench.move_rels().is_empty() && !orchestrator.motion_allowed(),
+    "motion allowed on a reading taken before the energize: {:?}",
+    bench.events
+  );
+}
+
+/// Reference 6.6: FootSW held low starts a job. The pulse runs out on its timer whatever the state machine did
+/// meanwhile, so a move can be armed while it is still held.
+#[test]
+fn the_relay_is_never_energized_while_footsw_is_held() {
+  let (mut orchestrator, mut bench) = idle_with_sensor();
+  orchestrator.request_measurement(1_000, &mut bench).unwrap();
+  // The Ruida reports a job and ends it at once (stopped at its panel, or an empty job), inside the 200 ms pulse.
+  let aborted = |now_ms: u64| ((1_050..1_100).contains(&now_ms), false);
+  play(&mut orchestrator, &mut bench, 1_000, 1_150, aborted);
+  assert_eq!(orchestrator.state(), State::Idle);
+  // Before the fix the pulse ran on to 1200 ms here; now it ends with the job.
+  assert!(!bench.footsw, "FootSW let go when the job ended");
+  let _ = orchestrator.request_move(1_151, Axis::M1H, 100, &mut bench);
+  play(&mut orchestrator, &mut bench, 1_151, 1_250, quiet);
+  let mut footsw = false;
+  for event in &bench.events {
+    match event {
+      Io::FootSw(level) => footsw = *level,
+      Io::Relay(true) => assert!(!footsw, "the relay energized with FootSW held: {:?}", bench.events),
+      Io::Sent(Envelope {
+        message: Message::MoveRel(_),
+        ..
+      }) => assert!(!footsw, "a MOVE_REL with FootSW held"),
+      _ => {}
+    }
+  }
+}
+
+/// The firmware's `EXPECTED` holds mirror 1 only, and `request_move` accepts a move on any present node. When the
+/// node running the move goes silent, motion must not stay allowed (reference 7.3: a lost heartbeat inhibits).
+#[test]
+fn losing_the_node_of_the_move_in_flight_ends_motion_even_if_the_self_test_does_not_need_it() {
+  let (mut orchestrator, mut bench) = idle();
+  let mirror_2 = |now_ms| Envelope {
+    node: NodeId::MIRROR_2,
+    ..beat(now_ms)
+  };
+  orchestrator.on_frame(1_000, mirror_2(1_000), &mut bench);
+  orchestrator.request_move(1_001, Axis::M2H, 1_000, &mut bench).unwrap();
+  orchestrator.tick(1_002, follow(&bench), &mut bench);
+  assert!(orchestrator.motion_allowed());
+  // Mirror 2 says nothing more; mirror 1 keeps beating. Mirror 2 is reported lost at 1301 ms.
+  run(&mut orchestrator, &mut bench, 1_003, 1_400);
+  assert!(bench.reports().contains(&Report::Node {
+    node: NodeId::MIRROR_2,
+    change: Change::Lost
+  }));
+  assert!(
+    !orchestrator.motion_allowed() && !bench.relay,
+    "still {:?} with the relay energized after the moving node was lost",
+    orchestrator.state()
+  );
+}
+
+/// A node reports a failed flash write as FAULT `PERSIST_FAILED` (`node_logic::Node::on_persisted`) and keeps running
+/// the move whose suspect record failed to write. Its detail was 0, which the coordinator read as the refusal of move
+/// 0, the first move each node gets; it is now `DETAIL_NO_COMMAND`, which no sequence number equals.
+#[test]
+fn a_failed_record_write_is_not_taken_for_the_refusal_of_move_zero() {
+  let (mut orchestrator, mut bench) = idle();
+  orchestrator.request_move(1_001, Axis::M1H, 100, &mut bench).unwrap();
+  orchestrator.tick(1_002, follow(&bench), &mut bench);
+  assert_eq!(bench.move_rels().last().map(|(_, move_rel)| move_rel.seq), Some(0));
+  let write_failed = Envelope {
+    node: MIRROR_1,
+    message: Message::Fault {
+      channel: Channel::ZERO,
+      code: align_proto::FaultCode::PERSIST_FAILED,
+      detail: align_proto::DETAIL_NO_COMMAND
+    }
+  };
+  orchestrator.on_frame(1_003, write_failed, &mut bench);
+  let ended: Vec<Report> = bench
+    .reports()
+    .into_iter()
+    .filter(|report| matches!(report, Report::MoveEnded { .. }))
+    .collect();
+  assert!(
+    ended.is_empty(),
+    "the move the node is running was ended by a write failure: {ended:?}"
+  );
 }

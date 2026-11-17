@@ -16,7 +16,8 @@ const MIRROR_1: NodeId = NodeId::MIRROR_1;
 
 const INHIBITED: Beacon = Beacon {
   state: 0,
-  inhibited: true
+  inhibited: true,
+  estop: false
 };
 
 fn link() -> Link {
@@ -101,7 +102,8 @@ fn the_heartbeat_carries_the_uptime_the_state_and_both_versions() {
   let mut link = link();
   let beacon = Beacon {
     state: 4,
-    inhibited: true
+    inhibited: true,
+    estop: false
   };
   assert_eq!(tick(&mut link, 1_234, beacon).first(), Some(&heartbeat(1_234, 4)));
 }
@@ -119,7 +121,8 @@ fn a_change_of_the_inhibit_level_goes_out_at_once_between_heartbeats() {
   tick(&mut link, 0, INHIBITED);
   let allowed = Beacon {
     state: 0,
-    inhibited: false
+    inhibited: false,
+    estop: false
   };
   assert_eq!(tick(&mut link, 10, allowed), [inhibit(false)]);
   assert_eq!(tick(&mut link, 20, allowed), []);
@@ -137,7 +140,8 @@ fn every_frame_it_sends_is_addressed_from_the_coordinator() {
   for step in 0..20_u64 {
     let beacon = Beacon {
       state: 0,
-      inhibited: step % 3 != 0
+      inhibited: step % 3 != 0,
+      estop: false
     };
     sent.extend(tick(&mut link, step * 37, beacon));
   }
@@ -225,4 +229,25 @@ fn a_heartbeat_of_another_protocol_version_is_reported_and_the_node_is_not_prese
     ))
   );
   assert!(!link.present(MIRROR_1));
+}
+
+#[test]
+fn while_faulted_estop_goes_out_with_every_heartbeat_and_not_between() {
+  let mut link = link();
+  let faulted = Beacon {
+    state: 8,
+    inhibited: true,
+    estop: true
+  };
+  let estop = coordinator(Message::Estop { reason: 0 });
+  assert_eq!(tick(&mut link, 0, faulted), [heartbeat(0, 8), estop, inhibit(true)]);
+  assert_eq!(tick(&mut link, 50, faulted), []);
+  assert_eq!(
+    tick(&mut link, PERIOD_MS, faulted),
+    [heartbeat(100, 8), estop, inhibit(true)]
+  );
+  assert_eq!(
+    tick(&mut link, 2 * PERIOD_MS, INHIBITED),
+    [heartbeat(200, 0), inhibit(true)]
+  );
 }

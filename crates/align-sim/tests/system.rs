@@ -92,13 +92,16 @@ fn a_screw_wired_the_other_way_turns_the_right_way_through_its_sign() {
 }
 
 #[test]
-fn a_move_beyond_the_soft_limit_is_refused_by_the_node_and_moves_nothing() {
+fn a_move_beyond_the_soft_limit_is_refused_by_the_node_moves_nothing_and_faults() {
   let rig = rig(Scenario::IDEAL);
   let mut system = rig.system_mut();
   assert_eq!(system.move_rel(Axis::M1V, 4_000), Ok(4_000));
   assert_eq!(system.move_rel(Axis::M1V, 1_000), Err(MoveFault::SoftLimit));
   assert_eq!(system.world().commanded_steps(Axis::M1V), 4_000);
-  // The relay releases within its release time, and the coordinator is Idle again.
+  // Reference 7.3: a soft limit is a fault, cleared by hand; the relay is released meanwhile.
+  system.run_for(50);
+  assert_eq!(system.state(), State::Fault(FaultReason::Procedure));
+  system.clear_fault();
   assert!(system.run_until(50, |system| system.state() == State::Idle));
 }
 

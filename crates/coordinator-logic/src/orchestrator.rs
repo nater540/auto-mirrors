@@ -44,7 +44,7 @@ use align_core::config::Config;
 use align_core::coordinator::{Actions, Coordinator, Event, Outcome, Point, Relay, State};
 use align_core::measurement::Shots;
 use align_core::rig::{MoveFault, SensorFault};
-use align_proto::{Channel, ConfigKey, Envelope, Message, NodeId, Shot, ShotPoint};
+use align_proto::{Channel, ConfigKey, Envelope, FaultCode, Message, NodeId, Shot, ShotPoint};
 
 use crate::link::{Beacon, Link};
 use crate::moves::{Moves, Progress};
@@ -194,6 +194,14 @@ pub enum RequestError {
   #[error("the interlock is not ready: the loop reads open, a job is running, or the laser is firing")]
   Refused
 }
+
+/// A motor node's faults of its hardware, which reference 7.3 stops everything for (nFAULT, a stall): a coil pin, a
+/// rail lost under a move, a move cut off at its time cap.
+const HARDWARE_FAULTS: [FaultCode; 3] = [
+  FaultCode::PIN_FAULT,
+  FaultCode::RAIL_LOST_DURING_MOVE,
+  FaultCode::MOVE_TIMEOUT
+];
 
 /// The SHOT point of a measurement point.
 const fn shot_point(point: Point) -> ShotPoint {
@@ -353,7 +361,8 @@ impl Orchestrator {
     }
     let beacon = Beacon {
       state: state_code(self.state()),
-      inhibited: !self.motion_allowed()
+      inhibited: !self.motion_allowed(),
+      estop: matches!(self.state(), State::Fault(_))
     };
     let lost = self.link.tick(now_ms, beacon, &mut |envelope| io.send(envelope));
     for (node, change) in crate::nodes::WATCHED.iter().zip(lost) {
@@ -372,6 +381,17 @@ impl Orchestrator {
     }
     if let Some(result) = self.moves.on_frame(&envelope) {
       self.finish(now_ms, result, io);
+    }
+    if let Message::Fault { code, .. } = envelope.message
+      && self.has_axes(envelope.node)
+    {
+      if HARDWARE_FAULTS.contains(&code) {
+        self.handle(now_ms, Event::ProcedureFault, io);
+      }
+      // A CONFIG lost on the way (a full transmit queue) would otherwise leave the node refusing every move.
+      if code == FaultCode::NOT_CONFIGURED {
+        self.configure(envelope.node, io);
+      }
     }
     if let Message::Sensor(reading) = envelope.message
       && envelope.node == NodeId::SENSOR
@@ -437,6 +457,11 @@ impl Orchestrator {
     self.handle(now_ms, Event::ClearFault, io);
   }
 
+  /// The firmware's own bus went off (reference 7.3: bus-off is a fault): everything stops until cleared by hand.
+  pub fn bus_off(&mut self, now_ms: u64, io: &mut impl CoordinatorIo) {
+    self.handle(now_ms, Event::ProcedureFault, io);
+  }
+
   /// Hands one event to the state machine, carries out its actions, and reports what changed.
   /// Returns its outcome.
   fn handle(&mut self, now_ms: u64, event: Event, io: &mut impl CoordinatorIo) -> Option<Outcome> {
@@ -478,6 +503,12 @@ impl Orchestrator {
     if after != before {
       io.report(Report::State(after));
     }
+    // FootSW is let go as soon as the job no longer waits to start: held while the job runs it would pause it
+    // (reference 6.6), and held after a job that ended at once it could start another (review of 2026-11-17).
+    if self.footsw_until_ms.is_some() && !matches!(after, State::WaitingForFire { .. }) {
+      self.footsw_until_ms = None;
+      io.set_footsw(false);
+    }
     let in_job = matches!(
       after,
       State::WaitingForFire { .. } | State::Measuring { .. } | State::CollectingReadings { .. }
@@ -496,7 +527,8 @@ impl Orchestrator {
 
   /// The conditions every request shares: nothing else asked for or running, Idle, and `node` on the bus.
   fn ready_for(&self, node: NodeId) -> Result<(), RequestError> {
-    if self.pending.is_some() || self.in_flight.is_some() || self.measuring {
+    // FootSW still held counts as busy: the Ruida may yet start a job on it (review of 2026-11-17).
+    if self.pending.is_some() || self.in_flight.is_some() || self.measuring || self.footsw_until_ms.is_some() {
       return Err(RequestError::Busy);
     }
     let state = self.state();
@@ -557,16 +589,25 @@ impl Orchestrator {
   }
 
   /// The move in flight ended.
+  /// Reference 7.3 faults on a soft limit and on a lost motor rail, the addendum's nFAULT: the motors are disarmed
+  /// first, then everything waits for a clear by hand.
   fn finish(&mut self, now_ms: u64, result: Result<i32, MoveFault>, io: &mut impl CoordinatorIo) {
     if let Some(axis) = self.in_flight.take() {
       io.report(Report::MoveEnded { axis, result });
     }
     self.handle(now_ms, Event::MovesDone, io);
+    if matches!(result, Err(MoveFault::SoftLimit | MoveFault::RailLost { .. })) {
+      self.handle(now_ms, Event::ProcedureFault, io);
+    }
   }
 
   fn node_changed(&mut self, now_ms: u64, node: NodeId, change: Change, io: &mut impl CoordinatorIo) {
     io.report(Report::Node { node, change });
-    let expected = self.setup.expected.contains(&node);
+    // The node of the move asked for or running counts as expected while it does: its loss must end the motion,
+    // whether or not the self-test needs it (review of 2026-11-17).
+    let wired_to = |axis: Axis| self.setup.wiring.get(axis).node == node;
+    let moving_here = self.in_flight.is_some_and(wired_to) || self.pending.is_some_and(|(axis, _)| wired_to(axis));
+    let expected = self.setup.expected.contains(&node) || moving_here;
     match change {
       Change::Appeared => self.configure(node, io),
       Change::Restarted => {
@@ -617,6 +658,13 @@ impl Orchestrator {
     if configured {
       io.report(Report::Configured { node });
     }
+  }
+
+  /// Whether any axis is wired to `node`.
+  fn has_axes(&self, node: NodeId) -> bool {
+    Axis::ALL
+      .into_iter()
+      .any(|axis| self.setup.wiring.get(axis).node == node)
   }
 
   fn expected_present(&self) -> bool {

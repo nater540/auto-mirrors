@@ -5,3 +5,5 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc b2442e21163cfbb58ebe479645ddd876d6bf0e9d7d29f41ee314c1273f3adee6 # shrinks to steps = [RequestMove(0), Tick { loop_open: None, job_running: false, firing: false }]
+cc 2a1ad929e17945c849abf82ff04473bb46cb77387b29a528b7cc46b947140de6 # shrinks to steps = [RequestThenTick { on_mirror_2: false, loop_open: true }]
+cc 1f1f823853f9dd807cfef087d0d295f4fb17091fef0c6d404b295df367247463 # shrinks to steps = [SensorHeartbeat, Tick { loop_open: None, job_running: false, firing: false }, ClearFault, Tick { loop_open: None, job_running: false, firing: false }, RequestMeasurement, Tick { loop_open: Some(true), job_running: false, firing: false }, ClearFault, Tick { loop_open: None, job_running: false, firing: false }, RequestMove { on_mirror_2: false, steps: 0 }]

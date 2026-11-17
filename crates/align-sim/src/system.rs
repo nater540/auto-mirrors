@@ -401,6 +401,12 @@ impl System {
     self.coordinator_down = true;
   }
 
+  /// The operator clears the coordinator's fault, as the console's `clear` does.
+  pub fn clear_fault(&mut self) {
+    let now = self.now_ms;
+    self.with_coordinator(|coordinator, io| coordinator.clear_fault(now, io));
+  }
+
   /// Asks the coordinator for a move and returns at once; the move runs as the system steps.
   ///
   /// # Errors
