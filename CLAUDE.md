@@ -52,7 +52,10 @@ Stop at the end of each milestone and report to the owner (hand-off section 6).
   sends a SHOT per burst, and collects the sensor's readings, and `calibrate`, `align`, and `poke` run the aligner
   through the same interlock (`coordinator_logic::requests`). Measurement and the procedure are host-tested only,
   through the whole-system simulation: no sensor board or Ruida is on the bench.
-- M6 bring-up tools, M7 Ruida UDP (optional, read-only): not started.
+- M6 bring-up tools: built and host-tested, not run on hardware (it needs the sensor and a Ruida). The coordinator's
+  `backlash <axis>` brackets one axis's play through the beam and `hysteresis <axis>` cycles it through its loop
+  (reference 3.4, `align_core::bringup`), each logging `BU1` lines for the owner to paste back.
+- M7 Ruida UDP (optional, read-only): not started.
 - Sensor track (`docs/SENSOR_PLAN.md`): S0 protocol, S1 `sensor-logic`, and S2 `firmware/sensor` done, with five
   buttons instead of a detector (owner, 2026-11-15). S3, the detector's method, waits for the detector, which is
   likely a pyroelectric quad; do not build detector processing before then.
@@ -280,6 +283,34 @@ The alignment procedure on the coordinator (`coordinator_logic::requests`, the f
 - **The whole-system simulation asks through the same `Requests`**, so its tests and `just sweep --system` cover
   the code the firmware runs.
 
+## What the bring-up settled (M6)
+
+`crates/align-core/src/bringup.rs` opens with the full list; the ones that shape its use:
+
+- **Both measurements are methods of the aligner** (`Aligner::measure_backlash`, `Aligner::measure_hysteresis`), on
+  the same traits, so the coordinator runs them over the bus and the simulator against its model. Each moves one
+  axis, checks every move against the soft limits before the first, and leaves the axis where it started,
+  approached plus.
+- **A measurement is reduced to its six absolute coordinates, projected onto the axis's own direction**, found by a
+  plus move. The noise is measured from three repeats at the start, pooled over the six, never taken from the
+  configuration; a shift is judged at 3 sigmas of a difference of two measurements.
+- **A backlash trial is judged against the reading just before it, and counts as moving the beam only if it does so
+  twice.** Without the confirmation, one seed in 40 called noise motion on three of the four axes (three repeats give
+  sigma to 12 degrees of freedom), which reports the play too small and the overshoot with it. A motion the
+  confirmation misses pushes the bracket up instead, toward a larger overshoot. With it, over 40 seeds of each of 28
+  cases (four axes, play of 0 to 200 steps, stick of 0 or 3), every bracket's high end was above the model's play
+  and its low end within twice the reported resolution of it.
+- **The play is a bracket, as fine as the noise allows.** The report gives the resolution in steps (about 1 on M1H and
+  3 on M2V at the realistic noise and placeholder geometry) and addendum A.5's overshoot, `max(2 x high end, 60)`.
+  It does not apply it: `overshoot_steps` stays the configured placeholder until the owner sets it.
+- **The hysteresis loop's width is read at its middle level**, interpolating where each half crosses it. On the
+  model it is within 3 steps of the play on every axis, and a seat that sticks for 3 widens it by about 1.
+- **The log is `BU1` lines**: one per measurement as it is taken (`bringup::SAMPLE_COLUMNS` names the fields), one per
+  trial, and the report, so that a run cut short still leaves its data. `just bring-up` prints the same lines for a
+  machine of known play, which is the reference for reading a pasted log.
+- Through the whole system on the placeholder job timing, a backlash measurement took 96 s and a hysteresis cycle
+  113 s.
+
 ## What the sensor settled (S1, S2)
 
 - **Five buttons are the reading until the detector exists** (owner, 2026-11-15). No detector processing is built;
@@ -305,8 +336,9 @@ One Cargo workspace, edition 2024, Rust 1.96.0 pinned. Dependencies and lints ar
 `Cargo.toml`.
 
 - `crates/align-core`: `no_std`, no HAL. Config, unit conversions, quadrant math, the measurement vector, the
-  solver, the `Actuator` and `BeamSensor` traits, the approach planner and soft limits, calibration, and the
-  `Aligner` procedure. Later: the coordinator state machine (a pure function of state and event).
+  solver, the `Actuator` and `BeamSensor` traits, the approach planner and soft limits, calibration, the `Aligner`
+  procedure, the bring-up measurements on it (`bringup`, with the procedures in `aligner/bringup_procedures.rs`),
+  and the coordinator state machine (a pure function of state and event).
 - `crates/align-proto`: `no_std`. The identifier layout (`frame`), the ten messages and their encoding through
   `Envelope` (`message`), and the node-side check that runs a resent MOVE_REL once (`dedup`). Frames are the
   `embedded_can::Frame` trait, so firmware passes its esp-hal TWAI frames in directly.
@@ -315,6 +347,7 @@ One Cargo workspace, edition 2024, Rust 1.96.0 pinned. Dependencies and lints ar
   is an UNVERIFIED placeholder and a scenario parameter, never configuration. `system` runs the whole system behind
   the same traits: the orchestrator, two `node-logic` nodes, and a `sensor-logic` node on a simulated bus (frames
   encoded and decoded), with the relay, the motors, and the Ruida simulated; `tests/system.rs` aligns through it.
+  `tests/bring_up.rs` holds the bring-up measurements to the model's known play.
 - `crates/stepper`: `no_std`. 28BYJ-48 full-step driver over `embedded_hal::digital::OutputPin` and the async
   `DelayNs`: stop flag, rail check, coils released on drop.
 - `crates/node-logic`: `no_std`. The motor node as a state machine (`node`, behind the `NodeIo` trait), its flash
@@ -339,7 +372,7 @@ One Cargo workspace, edition 2024, Rust 1.96.0 pinned. Dependencies and lints ar
   to it one at a time, and gives the aligner the nodes' counts before a procedure.
 - `firmware/coordinator` (`align-coordinator`): the orchestrator on TWAI, the relay drive and its feedback, FootSW,
   the Status and fire sense inputs, the watchdog, the aligner in its own task, and the console (`status`, `jog`,
-  `stop`, `measure`, `calibrate`, `align`, `poke`, `clear`).
+  `stop`, `measure`, `calibrate`, `align`, `poke`, `backlash`, `hysteresis`, `clear`).
   Pins in `src/board.rs`, PROVISIONAL for a Feather.
 
 Dependency direction: firmware and `align-sim` depend on `align-core`, `align-proto`, `stepper`, `node-logic`,
@@ -371,6 +404,7 @@ just flash sensor          # the sensor image: five buttons instead of a detecto
 just sim --seed 7          # one simulated alignment, every move and measurement
 just sweep --runs 5000     # convergence against conditioning (the Y span); --x-span and --beam-radius for a frame
 just sweep --system        # the same through the whole system (bus, nodes, interlock), with the simulated time
+just bring-up --axis m2v   # one axis's backlash and hysteresis on a machine of known play, with the `BU1` lines
 just sweep-margins         # how much stick-slip, noise, backlash, and step loss the thresholds tolerate
 just deny                  # licenses, advisories, bans, and sources (deny.toml)
 just outdated              # the pinned crates against crates.io
