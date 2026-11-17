@@ -677,6 +677,15 @@ fn a_confirmed_write_marks_the_record_persisted_and_a_failed_one_is_reported() {
   assert!(node.axis(ch(0)).unwrap().persisted);
   node.on_persisted(ch(1), false, &mut io);
   assert_eq!(io.faults(), [FaultCode::PERSIST_FAILED]);
+  let detail = io.events.iter().find_map(|event| match event {
+    Io::Sent(Message::Fault { detail, .. }) => Some(*detail),
+    _ => None
+  });
+  assert_eq!(
+    detail,
+    Some(DETAIL_NO_COMMAND),
+    "never a sequence number: the move it runs is not refused"
+  );
 }
 
 #[test]

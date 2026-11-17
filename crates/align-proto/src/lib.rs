@@ -22,7 +22,8 @@ mod test_frame;
 pub use dedup::{MoveDecision, MoveRefused, MoveRelTracker};
 pub use frame::{Channel, Class, NodeId};
 pub use message::{
-  ConfigKey, DecodeError, EncodeError, Envelope, FaultCode, Message, MoveDone, MoveRel, MoveResult, Status, StatusFlags
+  ConfigKey, DETAIL_NO_COMMAND, DecodeError, EncodeError, Envelope, FaultCode, Message, MoveDone, MoveRel, MoveResult,
+  Status, StatusFlags
 };
 pub use sensor::{
   CmdStatus, PROTOCOL_VERSION, SUM_Q_ONE, SUM_Q_SATURATED, SensorCmd, SensorCmdReply, SensorOp, SensorReading,

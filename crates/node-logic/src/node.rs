@@ -30,8 +30,8 @@
 use align_core::approach::{self, LastDir, SoftLimits};
 use align_core::config::{DirSign, Motion, NodeTiming};
 use align_proto::{
-  Channel, ConfigKey, Envelope, FaultCode, Message, MoveDecision, MoveRefused, MoveRel, MoveRelTracker, MoveResult,
-  NodeId, PROTOCOL_VERSION, Status, StatusFlags
+  Channel, ConfigKey, DETAIL_NO_COMMAND, Envelope, FaultCode, Message, MoveDecision, MoveRefused, MoveRel,
+  MoveRelTracker, MoveResult, NodeId, PROTOCOL_VERSION, Status, StatusFlags
 };
 use stepper::{MoveEnd, Phase, Timing};
 
@@ -484,7 +484,7 @@ impl Node {
         Message::Fault {
           channel,
           code: FaultCode::PERSIST_FAILED,
-          detail: 0
+          detail: DETAIL_NO_COMMAND
         }
       );
     }

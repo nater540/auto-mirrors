@@ -14,6 +14,11 @@ use crate::sensor::{
   CmdStatus, EDGE_AGE_UNKNOWN, SensorCmd, SensorCmdReply, SensorOp, SensorReading, SensorStatus, Shot, ShotPoint
 };
 
+/// The detail of a FAULT that answers no command: a write that failed on its own, for one. A sequence number is at
+/// most 255, so the coordinator never takes such a FAULT for the refusal of a move (review of 2026-11-17: a failed
+/// write reported with detail 0 ended move 0 as refused while the node ran it).
+pub const DETAIL_NO_COMMAND: u16 = u16::MAX;
+
 /// A fault code in a FAULT message. The documents define only the two codes addendum A.8 adds; any other value
 /// is carried through unchanged so that the coordinator can still report it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -54,7 +59,8 @@ impl FaultCode {
   pub const BENCH_MODE: Self = Self(0x2B);
   /// A move outlasted its time cap and was cut off; the steps it issued are unknown.
   pub const MOVE_TIMEOUT: Self = Self(0x2C);
-  /// Writing a position record to flash failed.
+  /// Writing a position record to flash failed. As the refusal of a move, its detail is the move's sequence number;
+  /// as the report of a write that failed between commands, [`DETAIL_NO_COMMAND`].
   pub const PERSIST_FAILED: Self = Self(0x2D);
 
   // The codes below are defined by the sensor plan (`docs/SENSOR_PLAN.md` section 3.5); 0x34 applies to every node.
