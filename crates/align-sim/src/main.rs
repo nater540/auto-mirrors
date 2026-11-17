@@ -1,18 +1,20 @@
-//! Command-line runner for the simulator: one alignment with its log, or a sweep over conditioning.
+//! Command-line runner for the simulator: one alignment with its log, or a sweep over conditioning, against the
+//! model alone or, with `--system`, through the whole system (`align_sim::system`).
 //!
 //! Thin on purpose: the model is in `align_sim::world` and the procedure in `align_core::aligner`.
 
 use std::collections::BTreeMap;
 use std::io::{self, Write};
 
-use align_core::aligner::AlignFault;
+use align_core::aligner::{AlignFault, AlignReport};
 use align_core::axis::{Axis, PerAxis};
 use align_core::config::Config;
 use align_core::solver::Conditioning;
 use align_core::units;
 use align_sim::block_on;
 use align_sim::rig::Rig;
-use align_sim::world::{AxisModel, Beam, Geometry, Record, Scenario};
+use align_sim::system::{Hardware, System, SystemRig};
+use align_sim::world::{AxisModel, Beam, Geometry, Record, Scenario, World};
 use anyhow::Context;
 use clap::{Args, Parser, Subcommand};
 use rand::rngs::StdRng;
@@ -105,6 +107,10 @@ struct SweepArgs {
   /// up or down at random, instead of calibrating first
   #[arg(long)]
   jacobian_error: Option<f32>,
+  /// Run every alignment through the whole system: the coordinator's orchestrator, the nodes, and the sensor node on
+  /// a simulated bus, with the interlock and the Ruida simulated. Adds the mean simulated time of an alignment.
+  #[arg(long, conflicts_with = "jacobian_error")]
+  system: bool,
   #[command(flatten)]
   optics: Optics,
   #[command(flatten)]
@@ -229,24 +235,8 @@ fn run(args: &RunArgs, out: &mut impl Write) -> anyhow::Result<()> {
 fn sweep(args: &SweepArgs, out: &mut impl Write) -> anyhow::Result<()> {
   let (config, formula) = config_for(args.optics, args.imperfections.backlash);
   let scale = misalignment_scale(args.optics);
-  writeln!(
-    out,
-    "{} runs per row, default config, random misalignment and head offset",
-    args.runs
-  )?;
-  if let Some(formula) = formula {
-    writeln!(
-      out,
-      "beam radius {:.0} um, X span {:.0} mm: poke {} steps (formula {formula:.1}), misalignment scaled by {scale:.2}",
-      args.optics.beam_radius.unwrap_or_default(),
-      args.optics.x_span,
-      config.motion.poke_steps
-    )?;
-  }
-  writeln!(
-    out,
-    "y_span_mm  model_cond  converged  first_attempt  mean_steps  recalibrated  faults"
-  )?;
+  sweep_header(args, &config, formula, scale, out)?;
+  let mut rejected_frames = 0_u64;
   for &y_span_mm in &args.y_spans {
     let mut misalignments = StdRng::seed_from_u64(args.seed);
     let mut converged = 0_u32;
@@ -255,6 +245,7 @@ fn sweep(args: &SweepArgs, out: &mut impl Write) -> anyhow::Result<()> {
     let mut steps = 0_u32;
     let mut model_cond = f32::NAN;
     let mut faults = BTreeMap::new();
+    let mut simulated_ms = 0_u64;
     for run in 0..args.runs {
       let mut scenario = scenario(
         args.imperfections,
@@ -273,22 +264,13 @@ fn sweep(args: &SweepArgs, out: &mut impl Write) -> anyhow::Result<()> {
         misalignments.random_range(-200.0..200.0) * scale,
         misalignments.random_range(-200.0..200.0) * scale
       ];
-      let rig = Rig::new(scenario);
-      if let Ok(conditioning) = Conditioning::of(&rig.world().true_jacobian()) {
+      if let Ok(conditioning) = Conditioning::of(&World::new(scenario).true_jacobian()) {
         model_cond = conditioning.cond;
       }
-      let mut aligner = rig.aligner(config)?;
-      if let Some(error) = args.jacobian_error {
-        let scale = core::array::from_fn(|_| {
-          if misalignments.random_bool(0.5) {
-            1.0 + error
-          } else {
-            1.0 - error
-          }
-        });
-        aligner = aligner.with_calibration(rig.stored_calibration(scale));
-      }
-      match block_on(aligner.align()) {
+      let (outcome, run_ms, rejected) = align_once(args, &config, scenario, &mut misalignments)?;
+      simulated_ms += run_ms;
+      rejected_frames += rejected;
+      match outcome {
         Ok(report) => {
           converged += 1;
           steps += u32::from(report.iterations);
@@ -306,17 +288,99 @@ fn sweep(args: &SweepArgs, out: &mut impl Write) -> anyhow::Result<()> {
     } else {
       f64::from(steps) / f64::from(converged)
     };
-    writeln!(
+    write!(
       out,
       "{y_span_mm:>9.0}  {model_cond:>10.1}  {converged:>9}  {first_attempt:>13}  {mean_steps:>10.2}  \
        {recalibrated:>12}  {:>6}",
       args.runs - converged
     )?;
+    if args.system {
+      #[expect(
+        clippy::cast_precision_loss,
+        reason = "a sweep's simulated time is far below 2^52 ms"
+      )]
+      let mean_time_s = simulated_ms as f64 / 1_000.0 / f64::from(args.runs.max(1));
+      write!(out, "  {mean_time_s:>11.1}")?;
+    }
+    writeln!(out)?;
     for (kind, count) in &faults {
       writeln!(out, "{:>9}  {count} x {kind}", "")?;
     }
   }
+  if args.system {
+    writeln!(out, "frames the protocol and a device disagreed on: {rejected_frames}")?;
+  }
   Ok(())
+}
+
+/// The lines above a sweep's table, and its column names.
+fn sweep_header(
+  args: &SweepArgs,
+  config: &Config,
+  formula: Option<f32>,
+  scale: f64,
+  out: &mut impl Write
+) -> anyhow::Result<()> {
+  writeln!(
+    out,
+    "{} runs per row, default config, random misalignment and head offset",
+    args.runs
+  )?;
+  if let Some(formula) = formula {
+    writeln!(
+      out,
+      "beam radius {:.0} um, X span {:.0} mm: poke {} steps (formula {formula:.1}), misalignment scaled by {scale:.2}",
+      args.optics.beam_radius.unwrap_or_default(),
+      args.optics.x_span,
+      config.motion.poke_steps
+    )?;
+  }
+  if args.system {
+    writeln!(
+      out,
+      "through the whole system: orchestrator, nodes, and sensor on a simulated bus, placeholder hardware timing"
+    )?;
+  }
+  writeln!(
+    out,
+    "y_span_mm  model_cond  converged  first_attempt  mean_steps  recalibrated  faults{}",
+    if args.system { "  mean_time_s" } else { "" }
+  )?;
+  Ok(())
+}
+
+/// One alignment of a sweep: against the model, or through the whole system with `--system`. Returns its outcome,
+/// the simulated time it took (zero against the model), and the frames the bus rejected.
+fn align_once(
+  args: &SweepArgs,
+  config: &Config,
+  scenario: Scenario,
+  draws: &mut StdRng
+) -> anyhow::Result<(Result<AlignReport, AlignFault>, u64, u64)> {
+  if args.system {
+    let rig = SystemRig::new(System::new(scenario, *config, Hardware::PLACEHOLDER));
+    let started_ms = rig.system().now_ms();
+    let outcome = block_on(rig.aligner(*config)?.align());
+    let system = rig.system();
+    return Ok((
+      outcome,
+      system.now_ms().saturating_sub(started_ms),
+      system.stats().rejected
+    ));
+  }
+  let rig = Rig::new(scenario);
+  let mut aligner = rig.aligner(*config)?;
+  if let Some(error) = args.jacobian_error {
+    let scale = core::array::from_fn(|_| {
+      if draws.random_bool(0.5) {
+        1.0 + error
+      } else {
+        1.0 - error
+      }
+    });
+    aligner = aligner.with_calibration(rig.stored_calibration(scale));
+  }
+  Ok((block_on(aligner.align()), 0, 0))
 }
 
 /// The default configuration, with the poke size computed for the beam when its radius is given: the formula of

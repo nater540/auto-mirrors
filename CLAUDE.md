@@ -136,6 +136,11 @@ These fill gaps in the documents. Each was found by a failing closed-loop test, 
   above 0.03.
 - The absolute two-position target is kept out of the product and exists only in
   `crates/align-sim/tests/closed_loop.rs`, through the `Aligner::with_target` seam.
+- **Through the whole system the aligner converges as it does against the model alone** (`just sweep --system`,
+  2026-11-17): 1000 runs at each of 500, 200, 100, and 60 mm gave the same converged counts and faults, and one or
+  two runs in 1000 differed in needing a recalibration, from the sensor's Q15 rounding. No frame was rejected. An
+  alignment took about 69 s of simulated time, 46 s of it in measurements; that number rests on the UNVERIFIED
+  placeholder job of `align_sim::system::Hardware` (2 s of gantry travel between dots).
 
 ## What the protocol settled (M3)
 
@@ -327,6 +332,7 @@ just boot-log coordinator  # reset the board and check that its boot log holds t
 just flash sensor          # the sensor image: five buttons instead of a detector; drives no output
 just sim --seed 7          # one simulated alignment, every move and measurement
 just sweep --runs 5000     # convergence against conditioning (the Y span); --x-span and --beam-radius for a frame
+just sweep --system        # the same through the whole system (bus, nodes, interlock), with the simulated time
 just sweep-margins         # how much stick-slip, noise, backlash, and step loss the thresholds tolerate
 just deny                  # licenses, advisories, bans, and sources (deny.toml)
 just outdated              # the pinned crates against crates.io
