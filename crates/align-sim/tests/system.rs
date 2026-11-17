@@ -224,6 +224,7 @@ fn ended(system: &System, axis: Axis) -> Option<Result<i32, MoveFault>> {
 }
 
 /// A long move under way: 1000 steps asked, about 2 s (some 380 steps) in.
+#[expect(clippy::unwrap_used, reason = "a test helper; a refused move fails the test")]
 fn moving(rig: &SystemRig) -> i64 {
   let mut system = rig.system_mut();
   system.start_move(Axis::M1H, 1_000).unwrap();
