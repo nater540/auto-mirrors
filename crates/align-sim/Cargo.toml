@@ -13,6 +13,13 @@ path = "src/main.rs"
 
 [dependencies]
 align-core.workspace = true
+# The whole system (`system`): every device's own logic on a simulated bus.
+align-proto.workspace = true
+node-logic.workspace = true
+sensor-logic.workspace = true
+coordinator-logic.workspace = true
+stepper.workspace = true
+embedded-can.workspace = true
 nalgebra.workspace = true
 # The error function, for the Gaussian beam on the quadrants. `std` has none.
 libm.workspace = true

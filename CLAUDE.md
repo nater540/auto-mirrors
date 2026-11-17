@@ -271,15 +271,18 @@ One Cargo workspace, edition 2024, Rust 1.96.0 pinned. Dependencies and lints ar
   `embedded_can::Frame` trait, so firmware passes its esp-hal TWAI frames in directly.
 - `crates/align-sim`: `std`. The model of the machine (`world`), the model behind the two traits (`rig`), the
   closed-loop tests (`tests/closed_loop.rs`), and the `align-sim` command-line runner. Every machine number in it
-  is an UNVERIFIED placeholder and a scenario parameter, never configuration.
+  is an UNVERIFIED placeholder and a scenario parameter, never configuration. `system` runs the whole system behind
+  the same traits: the orchestrator, two `node-logic` nodes, and a `sensor-logic` node on a simulated bus (frames
+  encoded and decoded), with the relay, the motors, and the Ruida simulated; `tests/system.rs` aligns through it.
 - `crates/stepper`: `no_std`. 28BYJ-48 full-step driver over `embedded_hal::digital::OutputPin` and the async
   `DelayNs`: stop flag, rail check, coils released on drop.
 - `crates/node-logic`: `no_std`. The motor node as a state machine (`node`, behind the `NodeIo` trait), its flash
   record layout (`record`), and the bench console commands (`console`). All host-tested.
 - `firmware/node` (`align-node`): wires `node-logic` to TWAI, the steppers, the arm pulse, the permit and rail
   inputs, flash, and the USB console. Every pin is in `src/board.rs`, PROVISIONAL for an Adafruit Feather ESP32-C6.
-- `crates/sensor-logic`: `no_std`. The sensor node as a state machine (`node`, behind `SensorIo`, readings through
-  the `ShotMethod` trait), the five bench buttons (`buttons`: debounce, chords, positions), and its console.
+- `crates/sensor-logic`: `no_std`. The sensor node as a state machine (`node`, behind `SensorIo`, generic over the
+  `ShotMethod` that reads a shot: the buttons by default, the simulated beam in `align-sim`), the five bench
+  buttons (`buttons`: debounce, chords, positions), and its console.
 - `firmware/sensor` (`align-sensor`): wires `sensor-logic` to TWAI, five button inputs, and the USB console. Drives
   no output pin and writes no flash. Pins in `src/board.rs`, PROVISIONAL for a development board of its own; they
   assume a DevKitC-1 (GPIO 10 and 20 are not on a Feather's headers) and need a new table for the board it gets.
@@ -337,6 +340,8 @@ After changing the aligner, the solver, or a threshold: run `just sweep` and `ju
 and compare the tables, run `just test-stress` once, and run `just mutants`. A surviving mutant gets a test that
 states the boundary; it is excluded in `.cargo/mutants.toml` only if it cannot change behavior, with the reason.
 Before handing a branch over, run `just check-commits <base>`: every commit must pass, not only the last.
+After changing the protocol, a node's logic, or the orchestrator, `cargo test -p align-sim --test system` is the
+test that holds the devices to each other; a unit test that encodes the same mistake on both sides cannot.
 
 **The board recipes talk to hardware: `flash`, `boot-log`, `monitor`, `reset`, `board-info`, `ports`.** The flash
 gate and the boot log check are in `scripts/board.sh`.

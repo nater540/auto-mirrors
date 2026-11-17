@@ -4,6 +4,8 @@
 //!   sensor with noise, a finite aperture, and a constant head offset (reference 1.3 and 2.2).
 //! - [`rig`]: the model behind the `Actuator` and `BeamSensor` traits of `align-core`, so the same
 //!   [`align_core::aligner::Aligner`] that will run on the coordinator runs here.
+//! - [`system`]: the whole system behind the same traits: the coordinator's orchestrator, the two mirror nodes, and
+//!   the sensor node on a simulated bus, with the relay, the motors, and the Ruida simulated around them.
 //! - [`block_on`]: runs the aligner's futures to completion on the host.
 //!
 //! Every number that describes the machine here (path lengths, beam radius, backlash, noise) is an UNVERIFIED
@@ -14,6 +16,7 @@ use core::pin::pin;
 use core::task::{Context, Poll, Waker};
 
 pub mod rig;
+pub mod system;
 pub mod world;
 
 /// Runs a future to completion on the calling thread.

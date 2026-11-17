@@ -105,13 +105,19 @@ name = "align-sim"
 version = "0.1.0"
 dependencies = [
  "align-core",
+ "align-proto",
  "anyhow",
  "clap",
+ "coordinator-logic",
+ "embedded-can",
  "libm",
  "nalgebra",
+ "node-logic",
  "proptest",
  "rand",
  "rand_distr",
+ "sensor-logic",
+ "stepper",
 ]
 
 [[package]]
