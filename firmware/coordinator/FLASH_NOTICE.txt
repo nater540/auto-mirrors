@@ -1,7 +1,9 @@
-align-coordinator: interlock, moves, measurement, alignment (M5), PROVISIONAL pins for an Adafruit Feather ESP32-C6
+align-coordinator: interlock, moves, measurement, alignment, bring-up (M5, M6), PROVISIONAL pins for a Feather ESP32-C6
 
-Motors:      moved only by the console's `jog`, `calibrate`, `align`, and `poke` (the last three run the alignment
-             procedure one move at a time, its axes started from the nodes' STATUS). Every move goes through the
+Motors:      moved only by the console's `jog`, `calibrate`, `align`, `poke`, `backlash`, and `hysteresis` (the last
+             five run one move at a time, the axes started from the nodes' STATUS). `backlash` and `hysteresis` move
+             one axis only, every move checked against the soft limits first, staying within 128 steps below and 90
+             above where the axis started, and ending there. Every move goes through the
              state machine of reference 7.3: in Idle with the node present, after 500 ms without a fire, the relay
              is energized; once its feedback reads the laser loop open, in a later millisecond than the energize,
              INHIBIT 0 goes out and then one MOVE_REL with `finish_plus` clear. When the node answers (or not, after

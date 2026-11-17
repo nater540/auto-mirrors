@@ -1,5 +1,5 @@
-//! Coordinator firmware for the ESP32-C6 (milestone M5): the interlock, moves and measurements over the bus, and the
-//! alignment procedure.
+//! Coordinator firmware for the ESP32-C6 (milestones M5 and M6): the interlock, moves and measurements over the bus,
+//! the alignment procedure, and the bring-up measurements of backlash and hysteresis.
 //!
 //! The decisions are in `coordinator-logic` (`Orchestrator`), tested on the host; this file wires them to the
 //! hardware. Every pin is in `board.rs`, which is PROVISIONAL until the coordinator board exists.
@@ -8,7 +8,8 @@
 //! only as the state machine of reference 7.3 commands; a node moves a motor only after the relay's feedback
 //! confirms the laser loop open and INHIBIT 0 has gone out. It pulses FootSW, which starts the Ruida's job, only for
 //! a measurement in Idle with the relay released. It reads the relay feedback, Status, and fire sense. The console's
-//! `calibrate`, `align`, and `poke` move and measure through the same orchestrator, one request at a time.
+//! `calibrate`, `align`, `poke`, `backlash`, and `hysteresis` move and measure through the same orchestrator, one
+//! request at a time.
 //!
 //! Tasks:
 //! - `control`: every millisecond, samples the inputs and hands them, the frames received, and the console's
@@ -17,9 +18,10 @@
 //! - `fire_sense`: keeps the fire input's level and latches each of its edges from the pin's interrupt, so that a
 //!   dot shorter than a millisecond, or one during a late loop, still reaches the next sample.
 //! - `logger`: logs what the orchestrator reports, from a queue.
-//! - `procedure`: runs the aligner (`align_core::aligner::Aligner`). Its moves and measurements go to `control` as
-//!   requests (`coordinator_logic::requests`) and come back as completions; a fault of the procedure faults the
-//!   coordinator, cleared by hand.
+//! - `procedure`: runs the aligner (`align_core::aligner::Aligner`) and the bring-up measurements. Its moves and
+//!   measurements go to `control` as requests (`coordinator_logic::requests`) and come back as completions; a fault of
+//!   the procedure faults the coordinator, cleared by hand. The bring-up logs a `BU1` line per measurement, per
+//!   trial, and for its report (`align_core::bringup`), for the owner to paste back.
 //! - `can`: receives and decodes frames for `control`, and sends what it queues. Recovers from bus-off.
 //! - `console_task`: reads the console over USB-Serial-JTAG and queues its commands; replies go to the log.
 //!
@@ -40,6 +42,7 @@ use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 
 use align_core::aligner::{AlignFault, Aligner};
 use align_core::axis::{Axis, PerAxis};
+use align_core::bringup::{Play, SAMPLE_COLUMNS};
 use align_core::config::Config;
 use align_core::measurement::Shots;
 use align_core::rig::{Actuator, BeamSensor, MoveFault, SensorFault};
@@ -123,7 +126,9 @@ static PROCEDURE_RUNNING: AtomicBool = AtomicBool::new(false);
 enum ProcedureKind {
   Calibrate,
   Align,
-  Poke(Axis)
+  Poke(Axis),
+  Backlash(Axis),
+  Hysteresis(Axis)
 }
 
 /// A procedure, and the nodes' counts it starts from.
@@ -536,6 +541,42 @@ async fn run_procedure(
         column.x, column.y, column.z, column.w
       );
     }
+    ProcedureKind::Backlash(axis) => {
+      info!("{SAMPLE_COLUMNS}");
+      let report = aligner.measure_backlash(axis, &mut |entry| info!("{entry}")).await?;
+      info!("{report}");
+      match report.play {
+        Play::Bracket {
+          above_steps,
+          up_to_steps
+        } => info!(
+          "backlash {}: play more than {above_steps} and at most {up_to_steps} steps, to {:.1} steps; the line \
+           above gives addendum A.5's overshoot",
+          axis.name(),
+          report.resolution_steps()
+        ),
+        Play::Beyond { steps } => warn!(
+          "backlash {}: no trial moved the beam, so the play is more than {steps} steps",
+          axis.name()
+        )
+      }
+    }
+    ProcedureKind::Hysteresis(axis) => {
+      info!("{SAMPLE_COLUMNS}");
+      let report = aligner.measure_hysteresis(axis, &mut |entry| info!("{entry}")).await?;
+      info!("{report}");
+      match report.width_steps {
+        Some(width) => info!(
+          "hysteresis {}: the loop is {width:.1} steps wide over {} steps either way",
+          axis.name(),
+          report.amplitude_steps
+        ),
+        None => warn!(
+          "hysteresis {}: the loop never opened; the play may be more than the cycle",
+          axis.name()
+        )
+      }
+    }
   }
   Ok(())
 }
@@ -583,6 +624,8 @@ fn execute(now: u64, command: Command, inputs: Inputs, orchestrator: &mut Orches
     Command::Calibrate => start_procedure(ProcedureKind::Calibrate, orchestrator),
     Command::Align => start_procedure(ProcedureKind::Align, orchestrator),
     Command::Poke { axis } => start_procedure(ProcedureKind::Poke(axis), orchestrator),
+    Command::Backlash { axis } => start_procedure(ProcedureKind::Backlash(axis), orchestrator),
+    Command::Hysteresis { axis } => start_procedure(ProcedureKind::Hysteresis(axis), orchestrator),
     Command::Clear => orchestrator.clear_fault(now, io)
   }
 }

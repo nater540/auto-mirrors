@@ -3,7 +3,8 @@
 //! The parser is a few lines over `split_whitespace`, as the node's is (`node_logic::console`, which records why
 //! no console crate was taken). A `jog` runs the whole interlock of [`crate::orchestrator`]: the relay armed and
 //! confirmed, the move, and the relay released. A `measure` runs the canned job and collects the sensor's readings.
-//! `calibrate`, `align`, and `poke` run the alignment procedure (`align_core::aligner`) through the same interlock.
+//! `calibrate`, `align`, and `poke` run the alignment procedure (`align_core::aligner`) through the same interlock,
+//! and `backlash` and `hysteresis` the bring-up measurements of one axis (`align_core::bringup`).
 
 use align_core::axis::Axis;
 
@@ -34,6 +35,16 @@ pub enum Command {
     /// The axis.
     axis: Axis
   },
+  /// Measure one axis's play, backlash and seat stick-slip together, through the beam (reference 3.4).
+  Backlash {
+    /// The axis.
+    axis: Axis
+  },
+  /// Cycle one axis through its hysteresis loop, measuring after every move (reference 3.4).
+  Hysteresis {
+    /// The axis.
+    axis: Axis
+  },
   /// Clear a fault: back to Inhibited, from which the self-test runs again.
   Clear
 }
@@ -48,6 +59,8 @@ measure               run the canned job (FootSW), a shot to the sensor per dot,
 calibrate             poke each axis and keep the measured Jacobian
 align                 calibrate if needed, then step until aligned; prints the report
 poke <axis>           measure, poke one axis, measure, move it back; prints its Jacobian column
+backlash <axis>       find one axis's play through the beam (reference 3.4); logs `BU1` lines to paste back
+hysteresis <axis>     cycle one axis two poke sizes either way, a measurement per move; logs `BU1` lines
 clear                 clear a fault; the self-test then runs again";
 
 /// Why a line is not a command.
@@ -81,6 +94,12 @@ pub fn parse(line: &str) -> Result<Command, ParseError> {
     "poke" => Command::Poke {
       axis: words.next().and_then(axis).ok_or(ParseError::BadArguments)?
     },
+    "backlash" => Command::Backlash {
+      axis: words.next().and_then(axis).ok_or(ParseError::BadArguments)?
+    },
+    "hysteresis" => Command::Hysteresis {
+      axis: words.next().and_then(axis).ok_or(ParseError::BadArguments)?
+    },
     "clear" => Command::Clear,
     "jog" => {
       let axis = words.next().and_then(axis).ok_or(ParseError::BadArguments)?;
@@ -98,18 +117,11 @@ pub fn parse(line: &str) -> Result<Command, ParseError> {
   Ok(command)
 }
 
-/// An axis by its console name, in the order of `align_core::axis` (case does not matter).
+/// An axis by its name (`Axis::name`; case does not matter).
 fn axis(word: &str) -> Option<Axis> {
-  let names = [
-    ("m1h", Axis::M1H),
-    ("m1v", Axis::M1V),
-    ("m2h", Axis::M2H),
-    ("m2v", Axis::M2V)
-  ];
-  names
-    .iter()
-    .find(|(name, _)| name.eq_ignore_ascii_case(word))
-    .map(|(_, axis)| *axis)
+  Axis::ALL
+    .into_iter()
+    .find(|axis| axis.name().eq_ignore_ascii_case(word))
 }
 
 #[cfg(test)]
@@ -127,6 +139,8 @@ mod tests {
     assert_eq!(parse("calibrate"), Ok(Command::Calibrate));
     assert_eq!(parse("align"), Ok(Command::Align));
     assert_eq!(parse("poke m2v"), Ok(Command::Poke { axis: Axis::M2V }));
+    assert_eq!(parse("backlash m1v"), Ok(Command::Backlash { axis: Axis::M1V }));
+    assert_eq!(parse("hysteresis M2H"), Ok(Command::Hysteresis { axis: Axis::M2H }));
     assert_eq!(
       parse("jog m1h 100"),
       Ok(Command::Jog {
@@ -173,6 +187,8 @@ mod tests {
     assert_eq!(parse("poke"), Err(ParseError::BadArguments));
     assert_eq!(parse("poke m5h"), Err(ParseError::BadArguments));
     assert_eq!(parse("align now"), Err(ParseError::BadArguments));
+    assert_eq!(parse("backlash"), Err(ParseError::BadArguments));
+    assert_eq!(parse("hysteresis m1h 8"), Err(ParseError::BadArguments));
   }
 
   #[test]
@@ -186,6 +202,8 @@ mod tests {
       "calibrate",
       "align",
       "poke",
+      "backlash",
+      "hysteresis",
       "clear"
     ] {
       assert!(HELP.lines().any(|line| line.starts_with(command)), "{command}");
