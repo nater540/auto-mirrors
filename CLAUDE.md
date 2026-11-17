@@ -43,11 +43,12 @@ Stop at the end of each milestone and report to the owner (hand-off section 6).
   Pulling the rail jumper mid-move ended it as `RailLost`, pulling the permit jumper as `Stopped`, each with its
   steps counted and the record suspect; a move on channel 1 was refused; no coil LED lit during reset or boot.
   The torque margin test of addendum A.6 waits for the real mount.
-- M5 coordinator: started. Host-tested so far: the state machine of reference 7.3 (`align_core::coordinator`, whose
-  extra states await the owner's sign-off), the watch over the nodes, readings, moves, and the coordinator's own
-  heartbeat and inhibit level (`coordinator_logic`). The firmware's first step is the bus alone: it sends its
-  heartbeat with motion always inhibited and shows the nodes on its console, on a second Feather ESP32-C6 that
-  talks to the node through SN65HVD230 transceivers. The state machine, the relay, and the Ruida I/O come next.
+- M5 coordinator: started. Host-tested: the state machine of reference 7.3 (`align_core::coordinator`, whose extra
+  states await the owner's sign-off), the watch over the nodes, readings, moves, the coordinator's heartbeat and
+  inhibit level, and all of it together (`coordinator_logic::orchestrator`). The firmware, on a second Feather
+  ESP32-C6 that talks to the node through SN65HVD230 transceivers, runs the interlock: its console's `jog` arms the
+  relay output, waits for its feedback, sends INHIBIT 0 and the MOVE_REL, and disarms. On the bench the relay
+  output is the node's permit and the feedback a jumper. Measurement (FootSW, SHOT, the sensor) comes next.
 - M6 bring-up tools, M7 Ruida UDP (optional, read-only): not started.
 - Sensor track (`docs/SENSOR_PLAN.md`): S0 protocol, S1 `sensor-logic`, and S2 `firmware/sensor` done, with five
   buttons instead of a detector (owner, 2026-11-15). S3, the detector's method, waits for the detector, which is
@@ -177,6 +178,8 @@ Reference 5.4 and addendum A.8 leave these open; `align-proto` decides them, and
   sequence number or the config key.
 - **The bench console** (`just monitor node`, then `help`) drives motors only in bench mode with the permit present.
   On the bench there is no switched rail: the firmware checks are the only layer, which the flash notice says.
+  Its `zero` makes a channel's present position zero and trusted (the commissioning position the soft limits
+  count from), in bench mode with no coordinator heard; nothing moves.
 - **After the 2026-11-15 nemesis review:** a move's coils are released by a guard held for the move, so a timed
   out or dropped move cannot leave them on, and the stepper counts its steps so a cut-off move still reports them.
   The record carries its direction sign (format 2) and is written suspect before every move. A silent or restarted
@@ -209,6 +212,19 @@ Reference 5.4 and addendum A.8 leave these open; `align-proto` decides them, and
   to 0x2D and 0x34, the move's sequence number as detail) ends the move as `MoveFault::Refused`.
 - Time going backward, a move past `move_timeout_ms` (a backstop to the nodes' own), and a failed self-test in
   Idle each stop everything. `Coordinator::motion_allowed` gives the level for repeating INHIBIT to the nodes.
+
+`crates/coordinator-logic/src/orchestrator.rs` opens with the rules of a move; these shape the firmware:
+
+- **INHIBIT 0 goes out before the MOVE_REL, on the one transmit queue**, and a MOVE_REL is resent only while
+  Moving. The inhibit level goes out with every heartbeat and at once when it changes.
+- **The relay feedback reads high when the laser loop is open**, through the relay's normally open auxiliary
+  contact, with a pull-down: a broken wire reads closed, so it can never arm a move. Status and fire sense are
+  active low with pull-ups, as an optocoupler pulls them; their polarity on the Mod5 is UNVERIFIED (open item 9).
+- **Every node that appears or restarts gets each of its axes' soft limits and direction sign by CONFIG.** Which
+  channel turns which screw is `orchestrator::WIRING`, PROVISIONAL: channel 0 horizontal, channel 1 vertical.
+- **Only the nodes the firmware expects gate the self-test and inhibit when lost** (the bench expects node 1 only).
+- **The heartbeat's state byte is the state's place in `State`**, 0 (Inhibited) to 8 (Fault): `state_code`.
+- **The coordinator's watchdog** resets the chip, and so releases the relay, if its 1 ms control loop stops.
 
 ## What the sensor settled (S1, S2)
 
@@ -261,8 +277,11 @@ One Cargo workspace, edition 2024, Rust 1.96.0 pinned. Dependencies and lints ar
   and one move in flight (`moves`: MOVE_REL with `finish_plus` clear, MOVE_DONE or a refusal FAULT back, resent
   while late, per-node sequence numbers). `link` sends the coordinator's heartbeat and inhibit level and keeps what
   each node last said; `console` parses the coordinator's console.
-- `firmware/coordinator` (`align-coordinator`): the bus only so far. Heartbeat and INHIBIT 1 every 100 ms, the
-  nodes watched, `status` on the console. Drives no pin but TWAI. Pins in `src/board.rs`, PROVISIONAL for a Feather.
+  `orchestrator` runs all of it with the state machine: the self-test, the nodes configured, and a move armed,
+  sent, and disarmed.
+- `firmware/coordinator` (`align-coordinator`): the orchestrator on TWAI, the relay drive and its feedback, the
+  Status and fire sense inputs, the watchdog, and the console (`status`, `jog`, `stop`, `clear`). No FootSW yet.
+  Pins in `src/board.rs`, PROVISIONAL for a Feather.
 
 Dependency direction: firmware and `align-sim` depend on `align-core`, `align-proto`, `stepper`, `node-logic`,
 `sensor-logic`, and `coordinator-logic`; `node-logic` depends on the first three, `sensor-logic` and

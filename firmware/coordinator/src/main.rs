@@ -1,16 +1,18 @@
-//! Coordinator firmware for the ESP32-C6 (milestone M5), first step: the bus.
+//! Coordinator firmware for the ESP32-C6 (milestone M5): the interlock and moves over the bus.
 //!
-//! The decisions are in `coordinator-logic`, tested on the host; this file wires them to the hardware.
-//! Every pin is in `board.rs`, which is PROVISIONAL until the coordinator board exists.
+//! The decisions are in `coordinator-logic` (`Orchestrator`), tested on the host; this file wires them to the
+//! hardware. Every pin is in `board.rs`, which is PROVISIONAL until the coordinator board exists.
 //!
-//! What this image does to hardware: it starts TWAI and sends its heartbeat with motion inhibited. It never sends
-//! INHIBIT 0, MOVE_REL, or CONFIG, so no node moves a motor or changes a setting on its command. It drives no other
-//! pin: the relay, FootSW, and the Ruida inputs arrive with the state machine (`align_core::coordinator`).
+//! What this image does to hardware: it drives the relay output, which on the bench is the node's motor permit,
+//! only as the state machine of reference 7.3 commands; a node moves a motor only after the relay's feedback
+//! confirms the laser loop open and INHIBIT 0 has gone out. It reads the relay feedback, Status, and fire sense, and
+//! drives nothing else: FootSW and measurement come with the sensor.
 //!
 //! Tasks:
-//! - `clock`: ticks the link every 10 ms (the heartbeat and the inhibit level out, lost nodes found).
-//! - `can`: receives and decodes frames for the link, and sends what it queues. Recovers from bus-off.
-//! - `console_task`: the console over USB-Serial-JTAG; replies go to the log.
+//! - `control`: every millisecond, samples the inputs and hands them, the frames received, and the console's
+//!   commands to the orchestrator, which owns the relay output. Feeds the watchdog.
+//! - `can`: receives and decodes frames for `control`, and sends what it queues. Recovers from bus-off.
+//! - `console_task`: reads the console over USB-Serial-JTAG and queues its commands; replies go to the log.
 //!
 //! `FLASH_NOTICE.txt`, beside this crate's `Cargo.toml`, states what the image does to motors and I/O.
 //! `just flash` prints it and asks before flashing, and the image logs it at boot.
@@ -25,17 +27,15 @@
 
 mod board;
 
-use core::cell::RefCell;
 use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use align_core::config::Config;
 use align_proto::{Envelope, Message, NodeId, PROTOCOL_VERSION};
 use coordinator_logic::console::{self, Command};
-use coordinator_logic::link::{Beacon, Link};
 use coordinator_logic::nodes::{Change, WATCHED};
+use coordinator_logic::orchestrator::{CoordinatorIo, Inputs, Orchestrator, Report, Setup, WIRING};
 use embassy_executor::Spawner;
 use embassy_futures::select::{Either, select};
-use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel as Queue;
 use embassy_time::{Duration, Instant, Ticker, Timer, with_timeout};
@@ -44,7 +44,10 @@ use embedded_io_async::Read as _;
 use esp_backtrace as _;
 use esp_hal::Async;
 use esp_hal::clock::CpuClock;
-use esp_hal::timer::timg::TimerGroup;
+use esp_hal::gpio::{Input, InputConfig, Level, Output, OutputConfig, Pull};
+use esp_hal::peripherals::TIMG1;
+use esp_hal::time::Duration as HalDuration;
+use esp_hal::timer::timg::{MwdtStage, TimerGroup, Wdt};
 use esp_hal::twai::{BaudRate, EspTwaiFrame, Twai};
 use esp_hal::usb::usb_serial_jtag::{UsbSerialJtag, UsbSerialJtagRx};
 use log::{error, info, warn};
@@ -56,47 +59,65 @@ const FLASH_NOTICE: &str = include_str!("../FLASH_NOTICE.txt");
 esp_bootloader_esp_idf::esp_app_desc!();
 
 /// Firmware version, reported in the heartbeat.
-const FW_VERSION: u8 = 1;
+const FW_VERSION: u8 = 2;
 
 /// 250 kbit/s (reference 5.3; an UNVERIFIED choice for a 2 to 3 m drag-chain bus), as the nodes.
 const BAUD_RATE: BaudRate = BaudRate::B250K;
 
-/// What this image says about itself: always inhibited. The heartbeat's state byte has no defined values until the
-/// state machine runs here; 0 is the place of `align_core::coordinator::State::Inhibited`, its first state.
-const BEACON: Beacon = Beacon {
-  state: 0,
-  inhibited: true
-};
-
-/// How often the link is ticked: a tenth of the heartbeat period, so a heartbeat is at most 10 ms late.
-const TICK_MS: u64 = 10;
+/// PROVISIONAL: the nodes the self-test needs. The bench has the mirror 1 node only; the machine needs both mirror
+/// nodes, and the sensor once measurement runs here.
+const EXPECTED: &[NodeId] = &[NodeId::MIRROR_1];
 
 /// Longest console line; a longer one is discarded rather than run truncated.
 const LINE_LEN: usize = 80;
 
 type Raw = CriticalSectionRawMutex;
 
-static LINK: Mutex<Raw, RefCell<Option<Link>>> = Mutex::new(RefCell::new(None));
 static FRAMES_OUT: Queue<Raw, Envelope, 16> = Queue::new();
-/// The controller's error counters and bus-off state as the `can` task last read them, for the console.
+static FRAMES_IN: Queue<Raw, Envelope, 16> = Queue::new();
+static COMMANDS: Queue<Raw, Command, 4> = Queue::new();
+/// The controller's error counters and bus-off state as the `can` task last read them, for `status`.
 static TX_ERRORS: AtomicU8 = AtomicU8::new(0);
 static RX_ERRORS: AtomicU8 = AtomicU8::new(0);
 static BUS_OFF: AtomicBool = AtomicBool::new(false);
-
-/// Runs `f` on the link. `None` before the link exists, or if it is already borrowed (a bug here: nothing called
-/// from inside `f` reaches the link again).
-fn with_link<R>(f: impl FnOnce(&mut Link) -> R) -> Option<R> {
-  LINK.lock(|cell| cell.try_borrow_mut().ok()?.as_mut().map(f))
-}
 
 fn now_ms() -> u64 {
   Instant::now().as_millis()
 }
 
-/// Queues a frame for the `can` task.
-fn send(envelope: Envelope) {
-  if FRAMES_OUT.try_send(envelope).is_err() {
-    warn!("CAN transmit queue full: dropped {:?}", envelope.message);
+/// The firmware side of [`CoordinatorIo`]: the transmit queue, the relay output, and the log.
+struct Firmware<'a> {
+  relay: &'a mut Output<'static>
+}
+
+impl CoordinatorIo for Firmware<'_> {
+  fn send(&mut self, envelope: Envelope) {
+    if FRAMES_OUT.try_send(envelope).is_err() {
+      warn!("CAN transmit queue full: dropped {:?}", envelope.message);
+    }
+  }
+
+  fn set_relay(&mut self, energized: bool) {
+    self.relay.set_level(Level::from(energized));
+  }
+
+  fn report(&mut self, report: Report) {
+    match report {
+      Report::State(state) => info!("state {state:?}"),
+      Report::Outcome(outcome) => info!("outcome {outcome:?}"),
+      Report::Node { node, change } => report_node(node, change),
+      Report::Configured { node } => info!(
+        "node {} ({}): soft limits and direction signs sent",
+        node.get(),
+        name(node)
+      ),
+      Report::MoveSent { axis, steps } => info!("{axis:?}: {steps} steps sent"),
+      Report::MoveEnded { axis, result } => match result {
+        Ok(pos_steps) => info!("{axis:?}: done, at {pos_steps} steps"),
+        Err(fault) => warn!("{axis:?}: {fault}")
+      },
+      Report::MoveDropped { axis } => warn!("{axis:?}: the move was dropped before it was sent")
+    }
   }
 }
 
@@ -136,7 +157,7 @@ fn name(node: NodeId) -> &'static str {
 }
 
 /// Logs a change in what is known about a node.
-fn report(node: NodeId, change: Change) {
+fn report_node(node: NodeId, change: Change) {
   let id = node.get();
   let name = name(node);
   match change {
@@ -145,6 +166,23 @@ fn report(node: NodeId, change: Change) {
     Change::Lost => warn!("node {id} ({name}): lost, no heartbeat within the timeout"),
     Change::ProtocolMismatch { version } => {
       warn!("node {id} ({name}): protocol version {version}, not {PROTOCOL_VERSION}; not counted as present");
+    }
+  }
+}
+
+/// The inputs `control` samples, each read in its logical sense (see `board.rs` for the polarities).
+struct Sensed {
+  relay_feedback: Input<'static>,
+  status: Input<'static>,
+  fire: Input<'static>
+}
+
+impl Sensed {
+  fn read(&self) -> Inputs {
+    Inputs {
+      loop_open: self.relay_feedback.is_high(),
+      job_running: self.status.is_low(),
+      firing: self.fire.is_low()
     }
   }
 }
@@ -164,8 +202,20 @@ async fn main(spawner: Spawner) -> ! {
     info!("{line}");
   }
 
+  // The relay output first, low: released before anything else runs.
   let pins = board_pins!(peripherals);
-  LINK.lock(|cell| cell.replace(Some(Link::new(&settings.node, FW_VERSION))));
+  let relay = Output::new(pins.relay, Level::Low, OutputConfig::default());
+  let sensed = Sensed {
+    relay_feedback: Input::new(pins.relay_feedback, InputConfig::default().with_pull(Pull::Down)),
+    status: Input::new(pins.status, InputConfig::default().with_pull(Pull::Up)),
+    fire: Input::new(pins.fire, InputConfig::default().with_pull(Pull::Up))
+  };
+  let orchestrator = Orchestrator::new(Setup {
+    config: settings,
+    fw_version: FW_VERSION,
+    expected: EXPECTED,
+    wiring: WIRING
+  });
 
   let twai = board::twai(peripherals.TWAI0, pins.twai_tx, pins.twai_rx, BAUD_RATE)
     .into_async()
@@ -182,7 +232,16 @@ async fn main(spawner: Spawner) -> ! {
       }
     };
   }
-  spawn!(clock());
+  // The watchdog resets the chip, and with it the relay output, if `control` stops feeding it: a panic spins with
+  // interrupts masked, and a hang stops the loop. The nodes stop on their own when the heartbeat stops; the reset
+  // also drops the motor permit. The node's timeout is used: nothing here measured a better one.
+  let mut watchdog = TimerGroup::new(peripherals.TIMG1).wdt;
+  watchdog.set_timeout(
+    MwdtStage::Stage0,
+    HalDuration::from_millis(u64::from(settings.node.watchdog_timeout_ms))
+  );
+  watchdog.enable();
+  spawn!(control(orchestrator, relay, sensed, watchdog));
   spawn!(can(twai));
   spawn!(console_task(usb_rx));
   info!("coordinator ready; `help` on this console lists the commands");
@@ -193,18 +252,44 @@ async fn main(spawner: Spawner) -> ! {
 }
 
 #[embassy_executor::task]
-async fn clock() {
-  let mut ticker = Ticker::every(Duration::from_millis(TICK_MS));
+async fn control(
+  mut orchestrator: Orchestrator,
+  mut relay: Output<'static>,
+  sensed: Sensed,
+  mut watchdog: Wdt<TIMG1<'static>>
+) {
+  let mut ticker = Ticker::every(Duration::from_millis(1));
   loop {
+    watchdog.feed();
     let now = now_ms();
-    if let Some(lost) = with_link(|link| link.tick(now, BEACON, &mut send)) {
-      for (node, change) in WATCHED.iter().zip(lost) {
-        if let Some(change) = change {
-          report(*node, change);
-        }
+    let inputs = sensed.read();
+    let mut io = Firmware { relay: &mut relay };
+    while let Ok(envelope) = FRAMES_IN.try_receive() {
+      orchestrator.on_frame(now, envelope, &mut io);
+    }
+    while let Ok(command) = COMMANDS.try_receive() {
+      execute(now, command, inputs, &mut orchestrator, &mut io);
+    }
+    orchestrator.tick(now, inputs, &mut io);
+    ticker.next().await;
+  }
+}
+
+fn execute(now: u64, command: Command, inputs: Inputs, orchestrator: &mut Orchestrator, io: &mut Firmware<'_>) {
+  match command {
+    Command::Help => {
+      for line in console::HELP.lines() {
+        info!("{line}");
       }
     }
-    ticker.next().await;
+    Command::Status => status(inputs, orchestrator),
+    Command::Jog { axis, steps } => {
+      if let Err(error) = orchestrator.request_move(now, axis, steps, io) {
+        warn!("{axis:?}: {error}");
+      }
+    }
+    Command::Stop => orchestrator.stop(io),
+    Command::Clear => orchestrator.clear_fault(now, io)
   }
 }
 
@@ -266,21 +351,19 @@ async fn can(mut twai: Twai<'static, Async>) {
   }
 }
 
-/// A decoded frame: the link keeps heartbeats and STATUS, and the rest that matters is logged.
+/// A decoded frame: queued for `control`, and a node's FAULT logged, since the orchestrator acts only on those
+/// that end a move.
 fn heard(envelope: Envelope) {
-  let now = now_ms();
-  if let Some(Some((node, change))) = with_link(|link| link.on_frame(now, envelope)) {
-    report(node, change);
-  }
-  let id = envelope.node.get();
-  match envelope.message {
-    Message::Fault { channel, code, detail } => warn!(
-      "node {id}: FAULT on channel {}, code {:#04x}, detail {detail}",
+  if let Message::Fault { channel, code, detail } = envelope.message {
+    warn!(
+      "node {}: FAULT on channel {}, code {:#04x}, detail {detail}",
+      envelope.node.get(),
       channel.get(),
       code.0
-    ),
-    Message::MoveDone(done) => info!("node {id}: {done:?}"),
-    _ => {}
+    );
+  }
+  if FRAMES_IN.try_send(envelope).is_err() {
+    warn!("CAN receive queue full: dropped {:?}", envelope.message);
   }
 }
 
@@ -304,7 +387,14 @@ async fn console_task(mut rx: UsbSerialJtagRx<'static, Async>) {
           warn!("line longer than {LINE_LEN} characters: discarded");
         } else if !text.trim().is_empty() {
           info!("> {text}");
-          execute(text);
+          match console::parse(text) {
+            Ok(command) => {
+              if COMMANDS.try_send(command).is_err() {
+                warn!("busy: command dropped");
+              }
+            }
+            Err(error) => warn!("{error}")
+          }
         }
         len = 0;
         overlong = false;
@@ -321,23 +411,31 @@ async fn console_task(mut rx: UsbSerialJtagRx<'static, Async>) {
   }
 }
 
-fn execute(text: &str) {
-  match console::parse(text) {
-    Err(error) => warn!("{error}"),
-    Ok(Command::Help) => {
-      for line in console::HELP.lines() {
-        info!("{line}");
-      }
-    }
-    Ok(Command::Status) => status()
-  }
-}
-
-/// Prints the bus, and what each node last said.
-fn status() {
+/// Prints the state, the inputs, the bus, and what each node last said.
+fn status(inputs: Inputs, orchestrator: &Orchestrator) {
   info!(
-    "up {} ms, motion inhibited (this image never allows it); bus: transmit errors {}, receive errors {}{}",
-    now_ms(),
+    "state {:?}; relay {}, motion {}",
+    orchestrator.state(),
+    if orchestrator.relay_energized() {
+      "energized"
+    } else {
+      "released"
+    },
+    if orchestrator.motion_allowed() {
+      "allowed"
+    } else {
+      "inhibited"
+    }
+  );
+  info!(
+    "inputs: laser loop {}, job {}, fire {}; up {} ms",
+    if inputs.loop_open { "open" } else { "closed" },
+    if inputs.job_running { "running" } else { "idle" },
+    if inputs.firing { "active" } else { "idle" },
+    now_ms()
+  );
+  info!(
+    "bus: transmit errors {}, receive errors {}{}",
     TX_ERRORS.load(Ordering::Acquire),
     RX_ERRORS.load(Ordering::Acquire),
     if BUS_OFF.load(Ordering::Acquire) {
@@ -346,28 +444,27 @@ fn status() {
       ""
     }
   );
-  with_link(|link| {
-    for node in WATCHED {
-      let id = node.get();
-      let name = name(node);
-      let Some(heard) = link.heard(node) else {
-        continue;
-      };
-      let presence = if link.present(node) { "present" } else { "not present" };
-      match (heard.state, heard.fw_version, heard.uptime_ms) {
-        (Some(state), Some(fw_version), Some(uptime_ms)) => info!(
-          "node {id} ({name}): {presence}; last heartbeat: state {state}, firmware {fw_version}, uptime {uptime_ms} ms"
-        ),
-        _ => info!("node {id} ({name}): never heard")
-      }
-      for status in heard.status.iter().flatten() {
-        info!(
-          "  channel {}: position {} steps, flags {:?}",
-          status.channel.get(),
-          status.pos_steps,
-          status.flags
-        );
-      }
+  let link = orchestrator.link();
+  for node in WATCHED {
+    let id = node.get();
+    let name = name(node);
+    let Some(heard) = link.heard(node) else {
+      continue;
+    };
+    let presence = if link.present(node) { "present" } else { "not present" };
+    match (heard.state, heard.fw_version, heard.uptime_ms) {
+      (Some(state), Some(fw_version), Some(uptime_ms)) => info!(
+        "node {id} ({name}): {presence}; last heartbeat: state {state}, firmware {fw_version}, uptime {uptime_ms} ms"
+      ),
+      _ => info!("node {id} ({name}): never heard")
     }
-  });
+    for status in heard.status.iter().flatten() {
+      info!(
+        "  channel {}: position {} steps, flags {:?}",
+        status.channel.get(),
+        status.pos_steps,
+        status.flags
+      );
+    }
+  }
 }
