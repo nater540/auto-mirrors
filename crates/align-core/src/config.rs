@@ -360,6 +360,39 @@ impl TorqueTest {
   };
 }
 
+/// The bring-up measurements of one axis through the beam: its backlash and its hysteresis (reference 3.4,
+/// addendum A.5). The procedures are in [`crate::bringup`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BringUp {
+  /// FIRM (reference 3.4): measurements at the starting position before anything else moves, for the noise and the
+  /// drift. At least 2, at most [`crate::bringup::MAX_REPEAT_SHOTS`].
+  pub repeat_shots: u8,
+  /// FIRM (addendum A.5): the backlash search. Each trial moves the axis back by this many steps and returns it
+  /// without overshoot. Positive and increasing.
+  pub backlash_trials_steps: [i32; 5],
+  /// FIRM (reference 3.4): a backlash trial moved the beam when its shift is more than this many sigmas of a shift.
+  pub detect_sigmas: f32,
+  /// FIRM (reference 3.4): the hysteresis cycle spans this many poke sizes either side of the starting position.
+  pub hysteresis_amplitude_pokes: i32,
+  /// FIRM (reference 3.4): moves in each half of the hysteresis cycle, with a measurement after each. At most
+  /// [`crate::bringup::MAX_MOVES_PER_HALF`].
+  pub hysteresis_moves_per_half: u8,
+  /// FIRM (addendum A.5): the overshoot is twice the measured backlash, and never less than this.
+  pub overshoot_floor_steps: i32
+}
+
+impl BringUp {
+  /// The procedures of reference 3.4 with the backlash search of addendum A.5.
+  pub const STARTING: Self = Self {
+    repeat_shots: 3,
+    backlash_trials_steps: [8, 16, 32, 64, 128],
+    detect_sigmas: 3.0,
+    hysteresis_amplitude_pokes: 2,
+    hysteresis_moves_per_half: 8,
+    overshoot_floor_steps: 60
+  };
+}
+
 /// The whole configuration.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Config {
@@ -378,7 +411,9 @@ pub struct Config {
   /// The sensor node's SHOT handling.
   pub sensor_timing: SensorTiming,
   /// The coordinator's interlock and measurement timing.
-  pub coordinator: CoordinatorTiming
+  pub coordinator: CoordinatorTiming,
+  /// The bring-up measurements of backlash and hysteresis.
+  pub bring_up: BringUp
 }
 
 impl Config {
@@ -391,7 +426,8 @@ impl Config {
     node: NodeTiming::STARTING,
     torque_test: TorqueTest::STARTING,
     sensor_timing: SensorTiming::STARTING,
-    coordinator: CoordinatorTiming::STARTING
+    coordinator: CoordinatorTiming::STARTING,
+    bring_up: BringUp::STARTING
   };
 }
 
@@ -479,6 +515,19 @@ mod tests {
     assert_eq!(solver.max_iterations, 4);
     assert_close(solver.cond_max, 50.0, 0.0);
     assert_close(solver.prediction_mismatch_frac, 0.5, 0.0);
+  }
+
+  #[test]
+  fn the_bring_up_is_the_reference_3_4_procedure_with_the_addendum_a5_search() {
+    let bring_up = Config::default().bring_up;
+    assert_eq!(bring_up.repeat_shots, 3);
+    assert_eq!(bring_up.backlash_trials_steps, [8, 16, 32, 64, 128]);
+    assert_close(bring_up.detect_sigmas, 3.0, 0.0);
+    assert_eq!(
+      (bring_up.hysteresis_amplitude_pokes, bring_up.hysteresis_moves_per_half),
+      (2, 8)
+    );
+    assert_eq!(bring_up.overshoot_floor_steps, 60);
   }
 
   #[test]

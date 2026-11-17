@@ -3,7 +3,8 @@
 //!
 //! [`Aligner`] owns an [`Actuator`], a [`BeamSensor`], the configuration, and what the coordinator knows about
 //! each axis. It strictly alternates moving and measuring. Every outcome that is not success is an
-//! [`AlignFault`] value.
+//! [`AlignFault`] value. The bring-up measurements of [`crate::bringup`] are methods of it too, so that they keep
+//! its account of each axis and its checks.
 //!
 //! What the documents leave open, and what is done here:
 //!
@@ -39,8 +40,9 @@ use nalgebra::Vector4;
 
 use crate::approach::{self, LastDir, SoftLimits};
 use crate::axis::{Axis, PerAxis};
+use crate::bringup;
 use crate::calibration::{self, Calibration};
-use crate::config::{Config, Solver};
+use crate::config::{BringUp, Config, Solver};
 use crate::measurement::{HeadOffset, Shots};
 use crate::quadrant::ReadingFault;
 use crate::rig::{Actuator, BeamSensor, MoveFault, SensorFault};
@@ -116,8 +118,9 @@ pub enum AlignFault {
   /// Readings arrived but failed the validity checks on every allowed shot. Coarse acquisition is required.
   #[error("reading rejected: {0}")]
   Reading(ReadingFault),
-  /// A calibration poke barely moved the measurement: the axis is dead or disconnected.
-  #[error("axis {axis:?}: the calibration poke did not move the beam")]
+  /// A poke barely moved the beam: the axis is dead or disconnected. A calibration reports it, and so do the
+  /// bring-up measurements, for the poke or the cycle that finds an axis's direction.
+  #[error("axis {axis:?}: a poke did not move the beam")]
   WeakColumn {
     /// The axis.
     axis: Axis
@@ -306,25 +309,36 @@ impl<A: Actuator, S: BeamSensor> Aligner<A, S> {
   /// and returns where it would leave the axis. A later approach is checked from there, so that a sequence of
   /// moves (a poke and its return, or the four axes of a step) is refused whole before any of it runs.
   fn check_approach(&self, axis: Axis, from: Planned, delta_steps: i32) -> Result<Planned, AlignFault> {
+    let plan = approach::plan(delta_steps, from.last_dir, self.config.motion.overshoot_steps);
+    self.check_legs(axis, from, plan.legs())
+  }
+
+  /// Checks moves of `legs` from `from` against the per-move cap and the soft limits, without moving, and returns
+  /// where they would leave the axis. A leg of zero steps moves nothing, but its position is still checked: an axis
+  /// outside its limits is refused even an approach that would bring it back.
+  fn check_legs(&self, axis: Axis, from: Planned, legs: impl IntoIterator<Item = i32>) -> Result<Planned, AlignFault> {
     let motion = self.config.motion;
-    let plan = approach::plan(delta_steps, from.last_dir, motion.overshoot_steps);
     let limits = SoftLimits::for_axis(&motion, axis);
     let longest = u32::try_from(motion.max_move_steps).unwrap_or(0);
-    let mut target_steps = from.pos_steps;
-    for leg in plan.legs() {
+    let mut planned = from;
+    for leg in legs {
       if leg.unsigned_abs() > longest {
         return Err(AlignFault::MoveTooLong { axis, steps: leg });
       }
-      target_steps = target_steps.saturating_add(i64::from(leg));
+      let target_steps = planned.pos_steps.saturating_add(i64::from(leg));
       if !limits.contains(target_steps) {
         return Err(AlignFault::SoftLimit { axis, target_steps });
       }
+      planned = Planned {
+        pos_steps: target_steps,
+        last_dir: match leg.signum() {
+          1 => LastDir::Plus,
+          -1 => LastDir::Minus,
+          _ => planned.last_dir
+        }
+      };
     }
-    // Every approach ends going plus; one with no legs starts from plus.
-    Ok(Planned {
-      pos_steps: target_steps,
-      last_dir: LastDir::Plus
-    })
+    Ok(planned)
   }
 
   /// Measures the Jacobian by poking each axis, and stores it.
@@ -785,11 +799,48 @@ fn check_config(config: &Config, sum_ref: f32) -> Result<(), AlignFault> {
       "judge_noise_sigmas must be a positive number"
     )
   ];
-  match checks.into_iter().find(|(ok, _)| !ok) {
+  match checks
+    .into_iter()
+    .chain(bring_up_checks(&config.bring_up))
+    .find(|(ok, _)| !ok)
+  {
     Some((_, what)) => Err(AlignFault::Config(what)),
     None => Ok(())
   }
 }
+
+/// The checks of [`check_config`] on the bring-up measurements, each with what it requires.
+fn bring_up_checks(bring_up: &BringUp) -> [(bool, &'static str); 6] {
+  let trials = &bring_up.backlash_trials_steps;
+  [
+    (
+      (2..=bringup::MAX_REPEAT_SHOTS).contains(&bring_up.repeat_shots),
+      "repeat_shots must be at least 2 and at most MAX_REPEAT_SHOTS"
+    ),
+    (
+      trials.first().is_some_and(|first| *first > 0) && trials.windows(2).all(|pair| pair.first() < pair.last()),
+      "backlash_trials_steps must be positive and increasing"
+    ),
+    (
+      positive(bring_up.detect_sigmas),
+      "detect_sigmas must be a positive number"
+    ),
+    (
+      bring_up.hysteresis_amplitude_pokes > 0,
+      "hysteresis_amplitude_pokes must be positive"
+    ),
+    (
+      (1..=bringup::MAX_MOVES_PER_HALF).contains(&bring_up.hysteresis_moves_per_half),
+      "hysteresis_moves_per_half must be at least 1 and at most MAX_MOVES_PER_HALF"
+    ),
+    (
+      bring_up.overshoot_floor_steps >= 0,
+      "overshoot_floor_steps must not be negative"
+    )
+  ]
+}
+
+mod bringup_procedures;
 
 #[cfg(test)]
 mod tests;

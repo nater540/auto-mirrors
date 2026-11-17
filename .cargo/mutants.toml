@@ -14,6 +14,9 @@ examine_globs = [
   "crates/align-core/src/units.rs",
   # The procedure has no unit tests of its own: the closed-loop tests in align-sim are what hold it.
   "crates/align-core/src/aligner.rs",
+  # The bring-up measurements: where they move an axis, and what play and hysteresis they report from the beam.
+  "crates/align-core/src/bringup.rs",
+  "crates/align-core/src/aligner/bringup_procedures.rs",
   # When the relay may open the laser loop and the motors may move.
   "crates/align-core/src/coordinator.rs",
   # What a node takes a frame to mean, and whether it runs a move: a wrong byte here moves a screw.

@@ -7,6 +7,7 @@
 
 use align_core::aligner::AlignReport;
 use align_core::axis::{Axis, PerAxis};
+use align_core::bringup::Play;
 use align_core::config::{Config, DirSign};
 use align_core::coordinator::{FaultReason, State};
 use align_core::rig::MoveFault;
@@ -285,4 +286,31 @@ fn a_coordinator_that_stops_dead_mid_move_leaves_the_node_to_stop_on_its_own() {
   assert!(after < 1_000);
   system.run_for(5_000);
   assert_eq!(system.world().commanded_steps(Axis::M1H), after, "and it stays stopped");
+}
+
+#[test]
+fn the_bring_up_measured_through_the_whole_system_finds_the_model_s_play() {
+  // The realistic machine: 20 steps of backlash, and seats that stick for 3.
+  let rig = rig(Scenario::realistic(3));
+  let mut aligner = rig.aligner(characterized()).unwrap();
+  let mut entries = Vec::new();
+  let backlash = block_on(aligner.measure_backlash(Axis::M1H, &mut |entry| entries.push(*entry))).unwrap();
+  let Play::Bracket {
+    above_steps,
+    up_to_steps
+  } = backlash.play
+  else {
+    panic!("{backlash}");
+  };
+  assert!(up_to_steps >= 23 && above_steps < 26, "{backlash}");
+  let hysteresis = block_on(aligner.measure_hysteresis(Axis::M1H, &mut |entry| entries.push(*entry))).unwrap();
+  let width = hysteresis.width_steps.unwrap();
+  assert!((19.0..=25.0).contains(&width), "{hysteresis}");
+  assert!(entries.iter().all(|entry| entry.to_string().starts_with("BU1,")));
+  let mut system = rig.system_mut();
+  // The last move ended as the relay began to release.
+  system.run_for(100);
+  assert_eq!(system.stats().rejected, 0);
+  assert_eq!(system.state(), State::Idle);
+  assert_eq!(system.world().commanded_steps(Axis::M1H), 0, "back where it started");
 }

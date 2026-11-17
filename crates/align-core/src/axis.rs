@@ -23,6 +23,16 @@ impl Axis {
   /// Every axis, in the fixed order.
   pub const ALL: [Axis; AXIS_COUNT] = [Axis::M1H, Axis::M1V, Axis::M2H, Axis::M2V];
 
+  /// The axis's name on the consoles and in the logs.
+  pub const fn name(self) -> &'static str {
+    match self {
+      Axis::M1H => "m1h",
+      Axis::M1V => "m1v",
+      Axis::M2H => "m2h",
+      Axis::M2V => "m2v"
+    }
+  }
+
   /// Position of this axis in `q`.
   pub const fn index(self) -> usize {
     match self {
@@ -96,6 +106,11 @@ mod tests {
       assert_eq!(axis.index(), position);
     }
     assert_eq!(Axis::ALL, [Axis::M1H, Axis::M1V, Axis::M2H, Axis::M2V]);
+  }
+
+  #[test]
+  fn each_axis_is_named_as_the_consoles_name_it() {
+    assert_eq!(Axis::ALL.map(Axis::name), ["m1h", "m1v", "m2h", "m2v"]);
   }
 
   #[test]

@@ -163,6 +163,54 @@ fn each_range_is_held_at_its_edges() {
   }
 }
 
+#[test]
+fn the_bring_up_ranges_are_held_at_their_edges() {
+  use crate::bringup::{MAX_MOVES_PER_HALF, MAX_REPEAT_SHOTS};
+  let cases: [Case; 16] = [
+    (|c| c.bring_up.repeat_shots = 1, Some("repeat_shots")),
+    (|c| c.bring_up.repeat_shots = 2, None),
+    (|c| c.bring_up.repeat_shots = MAX_REPEAT_SHOTS, None),
+    (|c| c.bring_up.repeat_shots = MAX_REPEAT_SHOTS + 1, Some("repeat_shots")),
+    (
+      |c| c.bring_up.backlash_trials_steps = [0, 16, 32, 64, 128],
+      Some("backlash_trials_steps")
+    ),
+    (
+      |c| c.bring_up.backlash_trials_steps = [8, 16, 16, 64, 128],
+      Some("backlash_trials_steps")
+    ),
+    (|c| c.bring_up.backlash_trials_steps = [1, 2, 3, 4, 5], None),
+    (|c| c.bring_up.detect_sigmas = 0.0, Some("detect_sigmas")),
+    (|c| c.bring_up.detect_sigmas = f32::NAN, Some("detect_sigmas")),
+    (
+      |c| c.bring_up.hysteresis_amplitude_pokes = 0,
+      Some("hysteresis_amplitude_pokes")
+    ),
+    (
+      |c| c.bring_up.hysteresis_moves_per_half = 0,
+      Some("hysteresis_moves_per_half")
+    ),
+    (|c| c.bring_up.hysteresis_moves_per_half = 1, None),
+    (|c| c.bring_up.hysteresis_moves_per_half = MAX_MOVES_PER_HALF, None),
+    (
+      |c| c.bring_up.hysteresis_moves_per_half = MAX_MOVES_PER_HALF + 1,
+      Some("hysteresis_moves_per_half")
+    ),
+    (|c| c.bring_up.overshoot_floor_steps = -1, Some("overshoot_floor_steps")),
+    (|c| c.bring_up.overshoot_floor_steps = 0, None)
+  ];
+  for (index, (change, expected)) in cases.into_iter().enumerate() {
+    let what = rejected(change);
+    match expected {
+      None => assert_eq!(what, None, "case {index}"),
+      Some(name) => assert!(
+        what.is_some_and(|what| what.starts_with(name)),
+        "case {index}: {what:?}"
+      )
+    }
+  }
+}
+
 fn aligner(config: &Config) -> Aligner<Unreached, Unreached> {
   Aligner::new(Unreached, Unreached, *config, SUM_REF).unwrap()
 }
@@ -192,6 +240,56 @@ fn a_checked_approach_ends_where_its_legs_do_and_going_plus() {
     (7, LastDir::Plus),
     "no legs: nothing changes"
   );
+}
+
+#[test]
+fn checked_legs_leave_the_axis_going_the_way_its_last_moving_leg_went() {
+  let aligner = aligner(&Config::default());
+  let cases: [(LastDir, &[i32], i64, LastDir); 6] = [
+    (LastDir::Plus, &[-5], -5, LastDir::Minus),
+    (LastDir::Minus, &[5], 5, LastDir::Plus),
+    (LastDir::Unknown, &[5, -8], -3, LastDir::Minus),
+    (LastDir::Unknown, &[-8, 5], -3, LastDir::Plus),
+    (LastDir::Minus, &[0], 0, LastDir::Minus),
+    (LastDir::Unknown, &[-5, 0], -5, LastDir::Minus)
+  ];
+  for (from_dir, legs, pos_steps, last_dir) in cases {
+    let from = Planned {
+      pos_steps: 0,
+      last_dir: from_dir
+    };
+    let to = aligner.check_legs(Axis::M1H, from, legs.iter().copied()).unwrap();
+    assert_eq!(
+      (to.pos_steps, to.last_dir),
+      (pos_steps, last_dir),
+      "{from_dir:?} {legs:?}"
+    );
+  }
+}
+
+#[test]
+fn a_procedure_s_starting_approach_is_checked_in_full_even_after_a_plus_move() {
+  let mut config = Config::default();
+  config.motion.soft_min_steps = PerAxis::splat(0);
+  config.motion.soft_max_steps = PerAxis::splat(1000);
+  // [-100, 1100] with the margin. The approach overshoots by 120 even from plus, which only the bottom axis leaves.
+  let plus_at = |pos_steps| AxisState {
+    pos_steps,
+    last_dir: LastDir::Plus,
+    ..AxisState::default()
+  };
+  let mut axes = PerAxis::splat(plus_at(200));
+  axes.m2_h = plus_at(0);
+  let aligner = aligner(&config).with_axes(axes);
+  assert_eq!(
+    aligner.check_start(Axis::M2H).map(|to| to.pos_steps),
+    Err(AlignFault::SoftLimit {
+      axis: Axis::M2H,
+      target_steps: -120
+    })
+  );
+  let to = aligner.check_start(Axis::M1V).unwrap();
+  assert_eq!((to.pos_steps, to.last_dir), (200, LastDir::Plus));
 }
 
 #[test]
