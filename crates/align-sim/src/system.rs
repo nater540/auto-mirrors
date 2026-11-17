@@ -16,6 +16,10 @@
 //!   Status down ([`Hardware::job`]). The world is measured at the first dot; each dot shows the sensor its point.
 //! - **The sensor** is the sensor node's own logic, with a method that reads the dot being fired.
 //!
+//! A test can also make things go wrong: a stray fire ([`System::fire_for`]), a job started at the Ruida's own panel
+//! ([`System::start_job_at_ruida`]), or a coordinator that stops dead with its outputs where they were
+//! ([`System::crash_coordinator`]), and see whether the nodes stop.
+//!
 //! [`SystemRig`] puts all of it behind the `Actuator` and `BeamSensor` traits of `align-core`, so the aligner that
 //! will run on the coordinator runs here against the bus, the nodes, and the interlock.
 //!
@@ -318,7 +322,11 @@ pub struct System {
   /// What the coordinator reported, with the time.
   reports: Vec<(u64, Report)>,
   /// Classes whose next frame is to be dropped, one entry per frame.
-  drops: Vec<Class>
+  drops: Vec<Class>,
+  /// A stray fire, active until this time.
+  stray_fire_until_ms: Option<u64>,
+  /// The coordinator has stopped dead: it neither runs nor hears nor sends, and its outputs stay where they were.
+  coordinator_down: bool
 }
 
 impl System {
@@ -369,8 +377,38 @@ impl System {
       status: false,
       firing: false,
       reports: Vec::new(),
-      drops: Vec::new()
+      drops: Vec::new(),
+      stray_fire_until_ms: None,
+      coordinator_down: false
     }
+  }
+
+  /// Fires the laser for `duration_ms` from now, outside any job: a stray or manual fire.
+  pub fn fire_for(&mut self, duration_ms: u64) {
+    self.stray_fire_until_ms = Some(self.now_ms + duration_ms);
+  }
+
+  /// Starts the canned job as the Ruida's own start button would, without FootSW.
+  pub fn start_job_at_ruida(&mut self) {
+    if self.job.is_none() {
+      self.job = Some((self.now_ms, None));
+    }
+  }
+
+  /// Stops the coordinator dead, as a hang would: no tick, no frames in or out, and the relay drive left as it was.
+  /// The firmware's watchdog would reset it and release the relay; this leaves the nodes on their own.
+  pub fn crash_coordinator(&mut self) {
+    self.coordinator_down = true;
+  }
+
+  /// Asks the coordinator for a move and returns at once; the move runs as the system steps.
+  ///
+  /// # Errors
+  ///
+  /// The coordinator's [`RequestError`] when it refuses the move.
+  pub fn start_move(&mut self, axis: Axis, delta_steps: i32) -> Result<(), RequestError> {
+    let now = self.now_ms;
+    self.with_coordinator(|coordinator, io| coordinator.request_move(now, axis, delta_steps, io))
   }
 
   /// Drops the next frame of `class` that any device sends, as a queue overflow would.
@@ -415,12 +453,15 @@ impl System {
     for index in 0..self.nodes.len() {
       self.run_motor(now, index);
     }
+    let stray_fire = self.stray_fire_until_ms.is_some_and(|until_ms| now < until_ms);
     let inputs = Inputs {
       loop_open: self.relay.contacts,
       job_running: self.status,
-      firing: self.firing
+      firing: self.firing || stray_fire
     };
-    self.with_coordinator(|coordinator, io| coordinator.tick(now, inputs, io));
+    if !self.coordinator_down {
+      self.with_coordinator(|coordinator, io| coordinator.tick(now, inputs, io));
+    }
     let permit = self.relay.contacts;
     for index in 0..self.nodes.len() {
       self.with_node(index, |node, io| {
@@ -533,7 +574,7 @@ impl System {
         self.stats.rejected += 1;
         continue;
       };
-      if from != Device::Coordinator {
+      if from != Device::Coordinator && !self.coordinator_down {
         self.with_coordinator(|coordinator, io| coordinator.on_frame(now, envelope, io));
       }
       for index in 0..self.nodes.len() {

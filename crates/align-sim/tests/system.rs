@@ -8,7 +8,7 @@
 use align_core::aligner::AlignReport;
 use align_core::axis::{Axis, PerAxis};
 use align_core::config::{Config, DirSign};
-use align_core::coordinator::State;
+use align_core::coordinator::{FaultReason, State};
 use align_core::rig::MoveFault;
 use align_proto::{Class, NodeId};
 use align_sim::block_on;
@@ -208,4 +208,77 @@ fn a_lost_reading_is_asked_for_again_and_the_measurement_completes() {
     .filter(|(_, report)| matches!(report, Report::MeasurementEnded { .. }))
     .count();
   assert_eq!(ended, 1);
+}
+
+// --- the interlock across the devices ---------------------------------------------------------------------------
+
+/// How a move of `axis` ended, as the coordinator reported it.
+fn ended(system: &System, axis: Axis) -> Option<Result<i32, MoveFault>> {
+  system.reports().iter().find_map(|(_, report)| match report {
+    Report::MoveEnded {
+      axis: ended_axis,
+      result
+    } if *ended_axis == axis => Some(*result),
+    _ => None
+  })
+}
+
+/// A long move under way: 1000 steps asked, about 2 s (some 380 steps) in.
+fn moving(rig: &SystemRig) -> i64 {
+  let mut system = rig.system_mut();
+  system.start_move(Axis::M1H, 1_000).unwrap();
+  system.run_for(2_000);
+  let so_far = system.world().commanded_steps(Axis::M1H);
+  assert!((300..500).contains(&so_far), "{so_far}");
+  so_far
+}
+
+#[test]
+fn a_stray_fire_during_a_move_faults_the_coordinator_and_the_motor_stops_within_a_step() {
+  let rig = rig(Scenario::IDEAL);
+  let before = moving(&rig);
+  let mut system = rig.system_mut();
+  system.fire_for(10);
+  system.run_for(1_000);
+  let after = system.world().commanded_steps(Axis::M1H);
+  assert!(after - before <= 1, "{before} -> {after}");
+  assert_eq!(system.state(), State::Fault(FaultReason::FireWhileArmed));
+  // The node's count is the steps it issued, which is where the screw is.
+  match ended(&system, Axis::M1H) {
+    Some(Err(MoveFault::Stopped { pos_steps } | MoveFault::RailLost { pos_steps })) => {
+      assert_eq!(i64::from(pos_steps), after);
+    }
+    other => panic!("{other:?}")
+  }
+}
+
+#[test]
+fn a_job_started_at_the_ruida_during_a_move_faults_the_coordinator_and_the_motor_stops() {
+  let rig = rig(Scenario::IDEAL);
+  moving(&rig);
+  let mut system = rig.system_mut();
+  system.start_job_at_ruida();
+  let started = system.world().commanded_steps(Axis::M1H);
+  system.run_for(1_000);
+  let after = system.world().commanded_steps(Axis::M1H);
+  // The Status line rises 50 ms after the start: ten steps at most.
+  assert!(after - started <= 11, "{started} -> {after}");
+  assert_eq!(system.state(), State::Fault(FaultReason::JobWhileArmed));
+  assert!(ended(&system, Axis::M1H).is_some_and(|result| result.is_err()));
+}
+
+#[test]
+fn a_coordinator_that_stops_dead_mid_move_leaves_the_node_to_stop_on_its_own() {
+  let rig = rig(Scenario::IDEAL);
+  let before = moving(&rig);
+  let mut system = rig.system_mut();
+  system.crash_coordinator();
+  system.run_for(2_000);
+  let after = system.world().commanded_steps(Axis::M1H);
+  // The relay stays energized; the node stops when the last heartbeat is older than 300 ms: 60 steps at most,
+  // plus the up to 100 ms since that heartbeat.
+  assert!(after - before <= 80, "{before} -> {after}");
+  assert!(after < 1_000);
+  system.run_for(5_000);
+  assert_eq!(system.world().commanded_steps(Axis::M1H), after, "and it stays stopped");
 }
