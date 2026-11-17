@@ -49,8 +49,9 @@ Stop at the end of each milestone and report to the owner (hand-off section 6).
   ESP32-C6 that talks to the node through SN65HVD230 transceivers, runs the interlock: its console's `jog` arms the
   relay output, waits for its feedback, sends INHIBIT 0 and the MOVE_REL, and disarms. On the bench the relay
   output is the node's permit and the feedback a jumper (wired and flashed: not yet). Its `measure` pulses FootSW,
-  sends a SHOT per burst, and collects the sensor's readings: host-tested only, since no sensor board or Ruida is
-  on the bench. Next: the aligner on the coordinator, through the orchestrator.
+  sends a SHOT per burst, and collects the sensor's readings, and `calibrate`, `align`, and `poke` run the aligner
+  through the same interlock (`coordinator_logic::requests`). Measurement and the procedure are host-tested only,
+  through the whole-system simulation: no sensor board or Ruida is on the bench.
 - M6 bring-up tools, M7 Ruida UDP (optional, read-only): not started.
 - Sensor track (`docs/SENSOR_PLAN.md`): S0 protocol, S1 `sensor-logic`, and S2 `firmware/sensor` done, with five
   buttons instead of a detector (owner, 2026-11-15). S3, the detector's method, waits for the detector, which is
@@ -264,6 +265,20 @@ The review of the orchestrator on 2026-11-17 (four defects, each with the test t
 - Left as they are: a node loss found by the tick inhibits 1 ms after the beacon; a `stop` during the quiet time still
   energizes the relay later and disarms at once, with nothing moved.
 
+The alignment procedure on the coordinator (`coordinator_logic::requests`, the firmware's `procedure` task):
+
+- **The aligner asks one move or measurement at a time, and the control loop starts it when it can**: in Idle, and
+  a measurement only `settle_ms` (200 ms, UNVERIFIED) after the last move ended; nothing else applies the settle
+  time. A request the coordinator refuses, or that waits 60 s, fails at once as the aligner knows a failure: a move
+  as `MoveFault::Refused` with code 0 (`COORDINATOR_REFUSED`, which no node sends), a measurement as NoReading.
+- **The procedure starts from the nodes' STATUS** (`requests::starting_axes`): the aligner keeps its own state of an
+  axis where the node's count agrees, takes the node's count with the last direction unknown where it differs, and
+  holds an axis lost while its node has not reported it.
+- **Any fault of the procedure faults the coordinator**, cleared by hand: reference 7.3 lists a stall and three
+  invalid shots, and stopping on the others too means someone looks before the next run.
+- **The whole-system simulation asks through the same `Requests`**, so its tests and `just sweep --system` cover
+  the code the firmware runs.
+
 ## What the sensor settled (S1, S2)
 
 - **Five buttons are the reading until the detector exists** (owner, 2026-11-15). No detector processing is built;
@@ -319,9 +334,11 @@ One Cargo workspace, edition 2024, Rust 1.96.0 pinned. Dependencies and lints ar
   while late, per-node sequence numbers). `link` sends the coordinator's heartbeat and inhibit level and keeps what
   each node last said; `console` parses the coordinator's console.
   `orchestrator` runs all of it with the state machine: the self-test, the nodes configured, a move armed, sent,
-  and disarmed, and a measurement started, shot, and read.
+  and disarmed, and a measurement started, shot, and read. `requests` carries the aligner's moves and measurements
+  to it one at a time, and gives the aligner the nodes' counts before a procedure.
 - `firmware/coordinator` (`align-coordinator`): the orchestrator on TWAI, the relay drive and its feedback, FootSW,
-  the Status and fire sense inputs, the watchdog, and the console (`status`, `jog`, `stop`, `measure`, `clear`).
+  the Status and fire sense inputs, the watchdog, the aligner in its own task, and the console (`status`, `jog`,
+  `stop`, `measure`, `calibrate`, `align`, `poke`, `clear`).
   Pins in `src/board.rs`, PROVISIONAL for a Feather.
 
 Dependency direction: firmware and `align-sim` depend on `align-core`, `align-proto`, `stepper`, `node-logic`,

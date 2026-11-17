@@ -1,4 +1,5 @@
-//! Coordinator firmware for the ESP32-C6 (milestone M5): the interlock and moves over the bus.
+//! Coordinator firmware for the ESP32-C6 (milestone M5): the interlock, moves and measurements over the bus, and the
+//! alignment procedure.
 //!
 //! The decisions are in `coordinator-logic` (`Orchestrator`), tested on the host; this file wires them to the
 //! hardware. Every pin is in `board.rs`, which is PROVISIONAL until the coordinator board exists.
@@ -6,7 +7,8 @@
 //! What this image does to hardware: it drives the relay output, which on the bench is the node's motor permit,
 //! only as the state machine of reference 7.3 commands; a node moves a motor only after the relay's feedback
 //! confirms the laser loop open and INHIBIT 0 has gone out. It pulses FootSW, which starts the Ruida's job, only for
-//! a `measure` in Idle with the relay released. It reads the relay feedback, Status, and fire sense.
+//! a measurement in Idle with the relay released. It reads the relay feedback, Status, and fire sense. The console's
+//! `calibrate`, `align`, and `poke` move and measure through the same orchestrator, one request at a time.
 //!
 //! Tasks:
 //! - `control`: every millisecond, samples the inputs and hands them, the frames received, and the console's
@@ -15,6 +17,9 @@
 //! - `fire_sense`: keeps the fire input's level and latches each of its edges from the pin's interrupt, so that a
 //!   dot shorter than a millisecond, or one during a late loop, still reaches the next sample.
 //! - `logger`: logs what the orchestrator reports, from a queue.
+//! - `procedure`: runs the aligner (`align_core::aligner::Aligner`). Its moves and measurements go to `control` as
+//!   requests (`coordinator_logic::requests`) and come back as completions; a fault of the procedure faults the
+//!   coordinator, cleared by hand.
 //! - `can`: receives and decodes frames for `control`, and sends what it queues. Recovers from bus-off.
 //! - `console_task`: reads the console over USB-Serial-JTAG and queues its commands; replies go to the log.
 //!
@@ -33,15 +38,21 @@ mod board;
 
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 
+use align_core::aligner::{AlignFault, Aligner};
+use align_core::axis::{Axis, PerAxis};
 use align_core::config::Config;
+use align_core::measurement::Shots;
+use align_core::rig::{Actuator, BeamSensor, MoveFault, SensorFault};
 use align_proto::{Envelope, Message, NodeId, PROTOCOL_VERSION};
 use coordinator_logic::console::{self, Command};
 use coordinator_logic::nodes::{Change, WATCHED};
 use coordinator_logic::orchestrator::{CoordinatorIo, Inputs, Orchestrator, Report, Setup, WIRING};
+use coordinator_logic::requests::{Completion, Reported, Request, Requests, reported, starting_axes};
 use embassy_executor::Spawner;
 use embassy_futures::select::{Either, select};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel as Queue;
+use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Instant, Ticker, Timer, with_timeout};
 use embedded_can::Frame as _;
 use embedded_io_async::Read as _;
@@ -75,6 +86,12 @@ const EXPECTED: &[NodeId] = &[NodeId::MIRROR_1];
 /// Longest console line; a longer one is discarded rather than run truncated.
 const LINE_LEN: usize = 80;
 
+/// How long one of the procedure's requests may wait for the coordinator to take it.
+const REQUEST_WAIT_MS: u32 = 60_000;
+
+/// Reports one pass of the control loop can hold before they are drained; the rest are counted as dropped.
+const REPORTS_PER_PASS: usize = 16;
+
 type Raw = CriticalSectionRawMutex;
 
 /// Room for a burst: a node's six CONFIG frames, the heartbeat, the inhibit level, ESTOP, and a move.
@@ -92,6 +109,29 @@ static REPORTS_DROPPED: AtomicU32 = AtomicU32::new(0);
 /// last looked.
 static FIRE_ACTIVE: AtomicBool = AtomicBool::new(false);
 static FIRE_EDGE: AtomicBool = AtomicBool::new(false);
+/// The procedure's request to `control`, and its completion back: one at a time.
+static REQUESTS: Queue<Raw, Request, 1> = Queue::new();
+static COMPLETION: Signal<Raw, Completion> = Signal::new();
+/// A procedure to run, with what the nodes last reported of each axis, from `control`.
+static PROCEDURES: Queue<Raw, Procedure, 1> = Queue::new();
+/// The procedure ended in a fault: `control` faults the coordinator.
+static PROCEDURE_FAULT: Signal<Raw, ()> = Signal::new();
+static PROCEDURE_RUNNING: AtomicBool = AtomicBool::new(false);
+
+/// What the procedure is asked to do.
+#[derive(Clone, Copy, Debug)]
+enum ProcedureKind {
+  Calibrate,
+  Align,
+  Poke(Axis)
+}
+
+/// A procedure, and the nodes' counts it starts from.
+#[derive(Clone, Copy, Debug)]
+struct Procedure {
+  kind: ProcedureKind,
+  reported: PerAxis<Option<Reported>>
+}
 
 fn now_ms() -> u64 {
   Instant::now().as_millis()
@@ -103,9 +143,47 @@ struct Outputs {
   footsw: Output<'static>
 }
 
-/// The firmware side of [`CoordinatorIo`]: the transmit queue, the outputs, and the log.
+/// The reports of one pass of the control loop, drained at its end into the log and the requests.
+struct PassReports {
+  reports: [Option<Report>; REPORTS_PER_PASS],
+  len: usize
+}
+
+impl PassReports {
+  const fn new() -> Self {
+    Self {
+      reports: [None; REPORTS_PER_PASS],
+      len: 0
+    }
+  }
+
+  fn push(&mut self, report: Report) {
+    match self.reports.get_mut(self.len) {
+      Some(slot) => {
+        *slot = Some(report);
+        self.len += 1;
+      }
+      None => {
+        REPORTS_DROPPED.fetch_add(1, Ordering::AcqRel);
+      }
+    }
+  }
+
+  /// Hands every report to `each`, in order, and empties the pass.
+  fn drain(&mut self, mut each: impl FnMut(Report)) {
+    for slot in self.reports.iter_mut().take(self.len) {
+      if let Some(report) = slot.take() {
+        each(report);
+      }
+    }
+    self.len = 0;
+  }
+}
+
+/// The firmware side of [`CoordinatorIo`]: the transmit queue, the outputs, and this pass's reports.
 struct Firmware<'a> {
-  outputs: &'a mut Outputs
+  outputs: &'a mut Outputs,
+  reports: &'a mut PassReports
 }
 
 impl CoordinatorIo for Firmware<'_> {
@@ -124,9 +202,7 @@ impl CoordinatorIo for Firmware<'_> {
   }
 
   fn report(&mut self, report: Report) {
-    if REPORTS.try_send(report).is_err() {
-      REPORTS_DROPPED.fetch_add(1, Ordering::AcqRel);
-    }
+    self.reports.push(report);
   }
 }
 
@@ -288,6 +364,7 @@ async fn main(spawner: Spawner) -> ! {
   watchdog.enable();
   spawn!(fire_sense(fire));
   spawn!(logger());
+  spawn!(procedure());
   spawn!(control(orchestrator, outputs, sensed, watchdog));
   spawn!(can(twai));
   spawn!(console_task(usb_rx));
@@ -307,26 +384,160 @@ async fn control(
 ) {
   let mut ticker = Ticker::every(Duration::from_millis(1));
   let mut bus_was_off = false;
+  let mut requests = Requests::new(Config::default().motion.settle_ms, REQUEST_WAIT_MS);
+  let mut reports = PassReports::new();
   loop {
     watchdog.feed();
     let now = now_ms();
     let inputs = sensed.read();
-    let mut io = Firmware { outputs: &mut outputs };
-    // Reference 7.3: bus-off is a fault, cleared by hand, even though the controller recovers on its own.
-    let bus_off = BUS_OFF.load(Ordering::Acquire);
-    if bus_off && !bus_was_off {
-      orchestrator.fault(now, &mut io);
+    let started = {
+      let mut io = Firmware {
+        outputs: &mut outputs,
+        reports: &mut reports
+      };
+      // Reference 7.3: bus-off is a fault, cleared by hand, even though the controller recovers on its own.
+      let bus_off = BUS_OFF.load(Ordering::Acquire);
+      if bus_off && !bus_was_off {
+        orchestrator.fault(now, &mut io);
+      }
+      bus_was_off = bus_off;
+      if PROCEDURE_FAULT.try_take().is_some() {
+        orchestrator.fault(now, &mut io);
+      }
+      while let Ok(envelope) = FRAMES_IN.try_receive() {
+        orchestrator.on_frame(now, envelope, &mut io);
+      }
+      while let Ok(command) = COMMANDS.try_receive() {
+        execute(now, command, inputs, &mut orchestrator, &mut io);
+      }
+      if !requests.busy()
+        && let Ok(request) = REQUESTS.try_receive()
+      {
+        // Not busy, so it is taken.
+        let _ = requests.submit(now, request);
+      }
+      orchestrator.tick(now, inputs, &mut io);
+      requests.poll(now, &mut orchestrator, &mut io)
+    };
+    if let Some(completion) = started {
+      COMPLETION.signal(completion);
     }
-    bus_was_off = bus_off;
-    while let Ok(envelope) = FRAMES_IN.try_receive() {
-      orchestrator.on_frame(now, envelope, &mut io);
-    }
-    while let Ok(command) = COMMANDS.try_receive() {
-      execute(now, command, inputs, &mut orchestrator, &mut io);
-    }
-    orchestrator.tick(now, inputs, &mut io);
+    reports.drain(|report| {
+      if let Some(completion) = requests.on_report(now, &report) {
+        COMPLETION.signal(completion);
+      }
+      if REPORTS.try_send(report).is_err() {
+        REPORTS_DROPPED.fetch_add(1, Ordering::AcqRel);
+      }
+    });
     ticker.next().await;
   }
+}
+
+/// The aligner's actuator and sensor: each move and measurement is a request to `control`, answered by its
+/// completion.
+#[derive(Clone, Copy)]
+struct BusRig;
+
+/// Sends one request to `control` and waits for its completion.
+async fn ask(request: Request) -> Completion {
+  COMPLETION.reset();
+  REQUESTS.send(request).await;
+  COMPLETION.wait().await
+}
+
+impl Actuator for BusRig {
+  async fn move_rel(&mut self, axis: Axis, delta_steps: i32) -> Result<i32, MoveFault> {
+    match ask(Request::Move {
+      axis,
+      steps: delta_steps
+    })
+    .await
+    {
+      Completion::Move(result) => result,
+      Completion::Measure(_) => Err(MoveFault::NoAnswer)
+    }
+  }
+}
+
+impl BeamSensor for BusRig {
+  async fn measure(&mut self) -> Result<Shots, SensorFault> {
+    match ask(Request::Measure).await {
+      Completion::Measure(result) => result,
+      Completion::Move(_) => Err(SensorFault::NoReading)
+    }
+  }
+}
+
+#[embassy_executor::task]
+async fn procedure() {
+  // The configuration `main` uses, built here: a task takes no borrowed arguments.
+  let config = Config::default();
+  // The sensor reports sums relative to its reference, so the aligner's reference sum is 1. The aligner keeps its
+  // calibration and its axes between procedures.
+  let mut aligner = match Aligner::new(BusRig, BusRig, config, 1.0) {
+    Ok(aligner) => aligner,
+    Err(fault) => {
+      error!("the alignment procedure refuses its configuration: {fault}");
+      return;
+    }
+  };
+  loop {
+    let Procedure { kind, reported } = PROCEDURES.receive().await;
+    PROCEDURE_RUNNING.store(true, Ordering::Release);
+    let axes = starting_axes(aligner.axes(), &reported);
+    aligner = aligner.with_axes(axes);
+    if let Err(fault) = run_procedure(&mut aligner, kind, config.motion.poke_steps).await {
+      // Any fault of the procedure stops the coordinator until cleared: someone looks before the next run.
+      warn!("{kind:?}: {fault}; the coordinator is faulted until `clear`");
+      PROCEDURE_FAULT.signal(());
+    }
+    PROCEDURE_RUNNING.store(false, Ordering::Release);
+  }
+}
+
+async fn run_procedure(
+  aligner: &mut Aligner<BusRig, BusRig>,
+  kind: ProcedureKind,
+  poke_steps: i32
+) -> Result<(), AlignFault> {
+  match kind {
+    ProcedureKind::Calibrate => {
+      let calibration = aligner.calibrate().await?;
+      info!("calibrated: condition number {:.2}", calibration.cond);
+    }
+    ProcedureKind::Align => {
+      let report = aligner.align().await?;
+      info!(
+        "aligned: {} steps, {} recalibrations, residual {:.4}, condition number {:.2}, head offset ({:+.3}, {:+.3}){}",
+        report.iterations,
+        report.recalibrations,
+        report.residual_norm,
+        report.cond,
+        report.head_offset.h_norm,
+        report.head_offset.v_norm,
+        if report.needs_mechanical_centering {
+          ", mechanical centering needed"
+        } else {
+          ""
+        }
+      );
+    }
+    ProcedureKind::Poke(axis) => {
+      let mut sensor = BusRig;
+      let before = sensor.measure().await.map_err(AlignFault::Sensor)?;
+      aligner.approach(axis, poke_steps).await?;
+      let after = sensor.measure().await.map_err(AlignFault::Sensor)?;
+      aligner.approach(axis, poke_steps.saturating_neg()).await?;
+      #[expect(clippy::cast_precision_loss, reason = "a poke is a few thousand steps at most")]
+      let column = (after.measurement() - before.measurement()) / poke_steps as f32;
+      info!(
+        "poke {axis:?} by {poke_steps} steps: column ({:+.5}, {:+.5}, {:+.5}, {:+.5}) per step",
+        column.x, column.y, column.z, column.w
+      );
+    }
+  }
+  Ok(())
 }
 
 #[embassy_executor::task]
@@ -369,7 +580,25 @@ fn execute(now: u64, command: Command, inputs: Inputs, orchestrator: &mut Orches
         warn!("measure: {error}");
       }
     }
+    Command::Calibrate => start_procedure(ProcedureKind::Calibrate, orchestrator),
+    Command::Align => start_procedure(ProcedureKind::Align, orchestrator),
+    Command::Poke { axis } => start_procedure(ProcedureKind::Poke(axis), orchestrator),
     Command::Clear => orchestrator.clear_fault(now, io)
+  }
+}
+
+/// Hands a procedure to the `procedure` task with what the nodes last reported of each axis.
+fn start_procedure(kind: ProcedureKind, orchestrator: &Orchestrator) {
+  if PROCEDURE_RUNNING.load(Ordering::Acquire) {
+    warn!("{kind:?}: a procedure is running");
+    return;
+  }
+  let procedure = Procedure {
+    kind,
+    reported: reported(orchestrator.link(), &WIRING)
+  };
+  if PROCEDURES.try_send(procedure).is_err() {
+    warn!("{kind:?}: a procedure is already waiting to start");
   }
 }
 
@@ -494,7 +723,7 @@ async fn console_task(mut rx: UsbSerialJtagRx<'static, Async>) {
 /// Prints the state, the inputs, the bus, and what each node last said.
 fn status(inputs: Inputs, orchestrator: &Orchestrator) {
   info!(
-    "state {:?}; relay {}, motion {}",
+    "state {:?}; relay {}, motion {}; procedure {}",
     orchestrator.state(),
     if orchestrator.relay_energized() {
       "energized"
@@ -505,6 +734,11 @@ fn status(inputs: Inputs, orchestrator: &Orchestrator) {
       "allowed"
     } else {
       "inhibited"
+    },
+    if PROCEDURE_RUNNING.load(Ordering::Acquire) {
+      "running"
+    } else {
+      "idle"
     }
   );
   info!(

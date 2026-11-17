@@ -1,10 +1,12 @@
-align-coordinator: interlock, moves, and measurement (milestone M5), PROVISIONAL pins for an Adafruit Feather ESP32-C6
+align-coordinator: interlock, moves, measurement, alignment (M5), PROVISIONAL pins for an Adafruit Feather ESP32-C6
 
-Motors:      moved only by the console's `jog`, through the state machine of reference 7.3: in Idle with the node
-             present, after 500 ms without a fire, the relay is energized; once its feedback reads the laser loop
-             open, read in a later millisecond than the energize, INHIBIT 0 goes out and then one MOVE_REL with
-             `finish_plus` clear. When the node answers (or not, after 3 tries), INHIBIT 1 goes out and the relay
-             is released; an answer of a soft limit or a lost rail then faults. Every other INHIBIT says inhibited.
+Motors:      moved only by the console's `jog`, `calibrate`, `align`, and `poke` (the last three run the alignment
+             procedure one move at a time, its axes started from the nodes' STATUS). Every move goes through the
+             state machine of reference 7.3: in Idle with the node present, after 500 ms without a fire, the relay
+             is energized; once its feedback reads the laser loop open, in a later millisecond than the energize,
+             INHIBIT 0 goes out and then one MOVE_REL with `finish_plus` clear. When the node answers (or not, after
+             3 tries), INHIBIT 1 goes out and the relay is released; an answer of a soft limit or a lost rail then
+             faults. Every other INHIBIT says inhibited.
              A node that hears this heartbeat refuses console moves (bench moves need a silent bus).
              On every node that appears or restarts it sets each axis's soft limits (-4400 to 4400 steps) and
              direction sign (forward) by CONFIG.
@@ -13,13 +15,13 @@ Interlock:   GPIO 22 (Feather MO) drives the relay, high to energize; low at boo
              A fault (fire or job while armed, feedback disagreeing, a lost node, a node's pin fault, lost rail or
              move timeout, a soft limit, CAN bus-off) releases the relay at once and sends ESTOP, again with every
              heartbeat until the console's `clear`. Losing the node of a move inhibits too.
-Ruida I/O:   GPIO 3 (A4) drives FootSW's optocoupler, high = active: high for up to 200 ms only on the console's
-             `measure`, in Idle with the relay released and the sensor node present (on the machine this starts the
-             Ruida's job, which fires the laser), and low again as soon as the job stops waiting to start; low at
-             boot, at reset, and otherwise. No move is armed while it is high. GPIO 2 (A5) reads Status,
-             pulled up, low = job running; GPIO 7 reads fire sense, pulled up, low = firing, and latches its edges
-             by interrupt. Both polarities UNVERIFIED (hand-off open item 9). Each burst of fire is a SHOT to every
-             node.
+Ruida I/O:   GPIO 3 (A4) drives FootSW's optocoupler, high = active: high for up to 200 ms only for a measurement
+             (`measure`, or one the procedure takes 200 ms after its last move) in Idle, with the relay released
+             and the sensor node present. On the machine this starts the Ruida's job, which fires the laser. It goes
+             low again as soon as the job stops waiting to start, and is low at boot, at reset, and otherwise; no
+             move is armed while it is high. GPIO 2 (A5) reads Status, pulled up, low = job running; GPIO 7 reads
+             fire sense, pulled up, low = firing, and latches its edges by interrupt. Both polarities UNVERIFIED
+             (hand-off open item 9). Each burst of fire is a SHOT to every node.
 Bus:         TWAI through an SN65HVD230 transceiver: TX on GPIO 23 (MI) to CTX, RX on GPIO 1 (A0) from CRX.
              250 kbit/s, normal mode. A heartbeat and the inhibit level every 100 ms, the inhibit at once on change.
 Other I/O:   none. Every other GPIO stays in its reset state, among them the Feather's RGB LED and I2C power
