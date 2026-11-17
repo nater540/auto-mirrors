@@ -27,9 +27,9 @@
 //! | Rail sense (`rail_ok`) | 7 | 7 | in, pull-down | down |
 //! | Arm pulse to the charge pump | 0 | 0 | out | low: not armed |
 //!
-//! VERIFIED on the bench (2026-11-17): no coil pin is pulled up between reset and the firmware's first instruction.
-//! None of the ULN2003's four LEDs lit while the reset button was held or while the board booted.
-//! Repeat the check on every new board.
+//! VERIFIED on the bench (2026-11-17): no coil is driven on between reset and the firmware's first instruction.
+//! None of the ULN2003's four LEDs lit while the reset button was held or while the board booted. This says nothing
+//! of weak pulls, which could not light them either; it is the coil that matters. Repeat on every new board.
 //!
 //! UNVERIFIED: whether the transceiver's CTX input floats dominant while GPIO 23 is in its reset state. If it does,
 //! a reset of this board holds the bus for the length of the boot, and the other boards see bus errors, not frames.
