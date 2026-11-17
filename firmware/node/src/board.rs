@@ -25,8 +25,9 @@
 //! | Rail sense (`rail_ok`) | 7 | 7 | in, pull-down | down |
 //! | Arm pulse to the charge pump | 0 | 0 | out | low: not armed |
 //!
-//! UNVERIFIED: whether a coil pin has a pull-up between reset and the firmware's first instruction. The ULN2003's
-//! four LEDs show it: none may light while the reset button is held or while the board boots.
+//! VERIFIED on the bench (2026-11-17): no coil pin is pulled up between reset and the firmware's first instruction.
+//! None of the ULN2003's four LEDs lit while the reset button was held or while the board booted.
+//! Repeat the check on every new board.
 
 use align_proto::NodeId;
 use esp_hal::Blocking;

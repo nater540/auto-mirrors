@@ -40,7 +40,9 @@ Stop at the end of each milestone and report to the owner (hand-off section 6).
   turn, not the configured 2037.8864). Four turns of 2048 steps each came back to the same tick, and 40 steps each
   way moved 7 ticks (7.03 predicted), so gear play unloaded is under half a degree. The first move after the shaft
   was turned by hand unpowered came up about 1 degree short of the rest, not yet explained.
-  Still to run: the stop when the permit drops mid-move, the refusal of channel 1, and no coil LED lit during reset.
+  Pulling the rail jumper mid-move ended it as `RailLost`, pulling the permit jumper as `Stopped`, each with its
+  steps counted and the record suspect; a move on channel 1 was refused; no coil LED lit during reset or boot.
+  The torque margin test of addendum A.6 waits for the real mount.
 - M5 coordinator: started. Host-tested so far: the state machine of reference 7.3 (`align_core::coordinator`, whose
   extra states await the owner's sign-off) and the watch over the nodes (`coordinator_logic::nodes`). The firmware
   is still the M0 scaffold.
