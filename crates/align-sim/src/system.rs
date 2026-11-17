@@ -38,6 +38,7 @@ use align_core::quadrant::Reading as BeamReading;
 use align_core::rig::{Actuator, BeamSensor, MoveFault, SensorFault};
 use align_proto::{Channel, Class, Envelope, NodeId, SUM_Q_ONE, SUM_Q_SATURATED, SensorResult};
 use coordinator_logic::orchestrator::{CoordinatorIo, Inputs, Orchestrator, Report, RequestError, Setup, WIRING, Wire};
+use coordinator_logic::requests::{COORDINATOR_REFUSED, Completion, Request, Requests};
 use embedded_can::{Frame, Id, StandardId};
 use node_logic::{MAX_CHANNELS, MoveOutcome, MoveRequest, Node, NodeIo, NodeSetup, Restored};
 use sensor_logic::{ButtonBench, Reading as ShotReading, SensorIo, SensorNode, SensorSetup, ShotMethod};
@@ -53,6 +54,9 @@ const MOTOR_NODES: [NodeId; 2] = [NodeId::MIRROR_1, NodeId::MIRROR_2];
 
 /// How long FootSW must be held for the Ruida to start the job (reference 6.6).
 const FOOTSW_HOLD_MS: u64 = 100;
+
+/// How long a request may wait for the coordinator to take it: the firmware's own limit.
+const REQUEST_WAIT_MS: u32 = 60_000;
 
 /// The canned job, in milliseconds from its start. UNVERIFIED placeholders: the gantry's travel between the points
 /// sets the gaps on the machine.
@@ -326,7 +330,12 @@ pub struct System {
   /// A stray fire, active until this time.
   stray_fire_until_ms: Option<u64>,
   /// The coordinator has stopped dead: it neither runs nor hears nor sends, and its outputs stay where they were.
-  coordinator_down: bool
+  coordinator_down: bool,
+  /// The procedure's requests, as the firmware's control loop keeps them, and the last completion.
+  requests: Requests,
+  completion: Option<Completion>,
+  /// How many of the reports `requests` has seen.
+  reports_seen: usize
 }
 
 impl System {
@@ -379,7 +388,10 @@ impl System {
       reports: Vec::new(),
       drops: Vec::new(),
       stray_fire_until_ms: None,
-      coordinator_down: false
+      coordinator_down: false,
+      requests: Requests::new(config.motion.settle_ms, REQUEST_WAIT_MS),
+      completion: None,
+      reports_seen: 0
     }
   }
 
@@ -467,6 +479,7 @@ impl System {
     };
     if !self.coordinator_down {
       self.with_coordinator(|coordinator, io| coordinator.tick(now, inputs, io));
+      self.run_requests(now);
     }
     let permit = self.relay.contacts;
     for index in 0..self.nodes.len() {
@@ -499,75 +512,64 @@ impl System {
     done(self)
   }
 
-  /// Waits for Idle, asks the coordinator for the move, and runs until it ends.
+  /// Asks for the move through the coordinator's requests, as the firmware's procedure does, and runs until it
+  /// completes.
   ///
   /// # Errors
   ///
-  /// The move's [`MoveFault`]. A coordinator that never reaches Idle, or ends no move within a minute, is
-  /// [`MoveFault::NoAnswer`]; one that refuses the move is [`MoveFault::Refused`] with code 0, which no node sends.
+  /// The move's [`MoveFault`]. One the coordinator could not start, or that did not complete within a minute, is
+  /// [`MoveFault::Refused`] with code [`COORDINATOR_REFUSED`], or [`MoveFault::NoAnswer`].
   pub fn move_rel(&mut self, axis: Axis, delta_steps: i32) -> Result<i32, MoveFault> {
-    const LIMIT_MS: u64 = 60_000;
-    if !self.run_until(LIMIT_MS, |system| system.state() == State::Idle) {
-      return Err(MoveFault::NoAnswer);
+    match self.ask(Request::Move {
+      axis,
+      steps: delta_steps
+    }) {
+      Some(Completion::Move(result)) => result,
+      Some(Completion::Measure(_)) => Err(MoveFault::NoAnswer),
+      None => Err(MoveFault::Refused {
+        code: COORDINATOR_REFUSED
+      })
     }
-    let mark = self.reports.len();
-    let now = self.now_ms;
-    let requested = self.with_coordinator(|coordinator, io| coordinator.request_move(now, axis, delta_steps, io));
-    if requested.is_err() {
-      return Err(MoveFault::Refused { code: 0 });
-    }
-    let mut ended = None;
-    self.run_until(LIMIT_MS, |system| {
-      ended = system
-        .reports
-        .get(mark..)
-        .into_iter()
-        .flatten()
-        .find_map(|(_, report)| match report {
-          Report::MoveEnded {
-            axis: ended_axis,
-            result
-          } if *ended_axis == axis => Some(*result),
-          Report::MoveDropped { axis: dropped } if *dropped == axis => Some(Err(MoveFault::NoAnswer)),
-          _ => None
-        });
-      ended.is_some()
-    });
-    ended.unwrap_or(Err(MoveFault::NoAnswer))
   }
 
-  /// Waits for Idle, asks the coordinator for a measurement, and runs until it ends.
+  /// Asks for a measurement through the coordinator's requests, as the firmware's procedure does, and runs until it
+  /// completes.
   ///
   /// # Errors
   ///
-  /// The measurement's [`SensorFault`]. A coordinator that never reaches Idle, refuses, or ends no measurement
-  /// within a minute is [`SensorFault::NoReading`].
+  /// The measurement's [`SensorFault`]; one the coordinator could not start or end in time is
+  /// [`SensorFault::NoReading`].
   pub fn measure(&mut self) -> Result<Shots, SensorFault> {
-    const LIMIT_MS: u64 = 60_000;
-    if !self.run_until(LIMIT_MS, |system| system.state() == State::Idle) {
-      return Err(SensorFault::NoReading);
+    match self.ask(Request::Measure) {
+      Some(Completion::Measure(result)) => result,
+      _ => Err(SensorFault::NoReading)
     }
-    let mark = self.reports.len();
-    let now = self.now_ms;
-    let requested: Result<(), RequestError> =
-      self.with_coordinator(|coordinator, io| coordinator.request_measurement(now, io));
-    if requested.is_err() {
-      return Err(SensorFault::NoReading);
+  }
+
+  /// Submits a request and runs until it completes, for at most a minute past its own wait limit.
+  fn ask(&mut self, request: Request) -> Option<Completion> {
+    const LIMIT_MS: u64 = 120_000;
+    self.completion = None;
+    self.requests.submit(self.now_ms, request).ok()?;
+    self.run_until(LIMIT_MS, |system| system.completion.is_some());
+    self.completion.take()
+  }
+
+  /// Starts the waiting request when the coordinator can take it, and finds its end among the reports made since
+  /// the last step, as the firmware's control loop does.
+  fn run_requests(&mut self, now: u64) {
+    let mut requests = self.requests;
+    let started = self.with_coordinator(|coordinator, io| requests.poll(now, coordinator, io));
+    if let Some(completion) = started {
+      self.completion = Some(completion);
     }
-    let mut ended = None;
-    self.run_until(LIMIT_MS, |system| {
-      ended = system
-        .reports
-        .get(mark..)
-        .into_iter()
-        .flatten()
-        .find_map(|(_, report)| match report {
-          Report::MeasurementEnded { result } => Some(*result),
-          _ => None
-        });
-      ended.is_some()
-    });
-    ended.unwrap_or(Err(SensorFault::NoReading))
+    for (_, report) in self.reports.get(self.reports_seen..).unwrap_or(&[]) {
+      if let Some(completion) = requests.on_report(now, report) {
+        self.completion = Some(completion);
+      }
+    }
+    self.reports_seen = self.reports.len();
+    self.requests = requests;
   }
 
   /// Delivers the frames due by `now` to every device but their sender.

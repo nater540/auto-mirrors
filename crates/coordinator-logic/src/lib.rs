@@ -8,6 +8,8 @@
 //! - [`moves`]: one move in flight on a node, its MOVE_REL sent again while its answer is late.
 //! - [`orchestrator`]: all of it with the state machine: the self-test, the nodes configured, and a move armed,
 //!   sent, and disarmed in the order of reference 7.3.
+//! - [`requests`]: the alignment procedure's moves and measurements, one at a time, started when the coordinator can
+//!   take them and ended by its reports.
 //! - [`console`]: the commands of the coordinator's USB console.
 //!
 //! The coordinator's state machine, which gates the relay and the motors, is `align_core::coordinator`; this crate
@@ -20,3 +22,4 @@ pub mod moves;
 pub mod nodes;
 pub mod orchestrator;
 pub mod readings;
+pub mod requests;

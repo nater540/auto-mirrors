@@ -457,8 +457,9 @@ impl Orchestrator {
     self.handle(now_ms, Event::ClearFault, io);
   }
 
-  /// The firmware's own bus went off (reference 7.3: bus-off is a fault): everything stops until cleared by hand.
-  pub fn bus_off(&mut self, now_ms: u64, io: &mut impl CoordinatorIo) {
+  /// A fault found outside the orchestrator: the firmware's own CAN bus-off, or the alignment procedure's (an axis
+  /// not responding, three invalid shots). Reference 7.3 lists both; everything stops until cleared by hand.
+  pub fn fault(&mut self, now_ms: u64, io: &mut impl CoordinatorIo) {
     self.handle(now_ms, Event::ProcedureFault, io);
   }
 

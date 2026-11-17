@@ -422,7 +422,7 @@ fn a_bus_off_faults_the_coordinator() {
   let (mut orchestrator, mut bench) = idle();
   orchestrator.request_move(1_001, Axis::M1H, 1_000, &mut bench).unwrap();
   orchestrator.tick(1_002, follow(&bench), &mut bench);
-  orchestrator.bus_off(1_003, &mut bench);
+  orchestrator.fault(1_003, &mut bench);
   assert_eq!(orchestrator.state(), State::Fault(FaultReason::Procedure));
   assert!(!bench.relay);
   assert!(!orchestrator.motion_allowed());
@@ -1151,7 +1151,7 @@ proptest! {
           };
           orchestrator.on_frame(now_ms, fault, &mut bench);
         }
-        Step::BusOff => orchestrator.bus_off(now_ms, &mut bench),
+        Step::BusOff => orchestrator.fault(now_ms, &mut bench),
         Step::ClearFault => orchestrator.clear_fault(now_ms, &mut bench),
         Step::SensorHeartbeat => orchestrator.on_frame(now_ms, sensor_beat(now_ms), &mut bench),
         Step::RequestMeasurement => {

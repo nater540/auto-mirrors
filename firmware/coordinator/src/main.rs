@@ -315,7 +315,7 @@ async fn control(
     // Reference 7.3: bus-off is a fault, cleared by hand, even though the controller recovers on its own.
     let bus_off = BUS_OFF.load(Ordering::Acquire);
     if bus_off && !bus_was_off {
-      orchestrator.bus_off(now, &mut io);
+      orchestrator.fault(now, &mut io);
     }
     bus_was_off = bus_off;
     while let Ok(envelope) = FRAMES_IN.try_receive() {
