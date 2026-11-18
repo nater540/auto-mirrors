@@ -21,6 +21,12 @@ fuzz/coverage/
 flamegraph.svg
 perf.data*
 
+# Python (tools/beamviz): the environment uv makes, and caches. uv.lock is committed.
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+
 # Secrets and per-machine environment. Commit a `.env.example` instead.
 .env
 .env.*

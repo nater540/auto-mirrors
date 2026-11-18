@@ -1,0 +1,34 @@
+[project]
+name = "beamviz"
+version = "0.1.0"
+description = "The aligner of align-core run against a ray-traced model of the flying optics, and animated"
+requires-python = ">=3.12"
+dependencies = [
+  "numpy>=2.2",
+  "matplotlib>=3.10"
+]
+
+[project.scripts]
+beamviz = "beamviz.cli:main"
+
+[dependency-groups]
+dev = [
+  "pytest>=8.3",
+  "ruff>=0.11"
+]
+
+[build-system]
+requires = ["uv_build>=0.11.28,<0.12.0"]
+build-backend = "uv_build"
+
+[tool.ruff]
+line-length = 120
+indent-width = 2
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "N", "SIM", "RUF", "PL"]
+# Physics code compares against tolerances and names its constants in place.
+ignore = ["PLR2004", "PLR0913", "PLR0915", "PLR0912"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -134,6 +134,17 @@ sweep-margins runs="5000": _sim
     echo "chance that a step is skipped"
     for chance in 0.01 0.05 0.2; do row "  skip $chance" --skip "$chance"; done
 
+# The aligner against a ray-traced machine in Python, animated: `just beamviz`, `--save run.gif`, `--help`
+[group('simulator')]
+beamviz *args: _sim
+    uv run --project tools/beamviz beamviz {{ args }}
+
+# The ray-traced machine's lint and tests (uv fetches numpy and matplotlib the first time; not part of `ci`)
+[group('simulator')]
+beamviz-check: _sim
+    uv run --project tools/beamviz ruff check tools/beamviz
+    uv run --project tools/beamviz pytest -q tools/beamviz
+
 # Release build of the simulator binary
 [private]
 _sim:
