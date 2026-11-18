@@ -810,7 +810,7 @@ fn check_config(config: &Config, sum_ref: f32) -> Result<(), AlignFault> {
 }
 
 /// The checks of [`check_config`] on the bring-up measurements, each with what it requires.
-fn bring_up_checks(bring_up: &BringUp) -> [(bool, &'static str); 6] {
+fn bring_up_checks(bring_up: &BringUp) -> [(bool, &'static str); 7] {
   let trials = &bring_up.backlash_trials_steps;
   [
     (
@@ -836,6 +836,10 @@ fn bring_up_checks(bring_up: &BringUp) -> [(bool, &'static str); 6] {
     (
       bring_up.overshoot_floor_steps >= 0,
       "overshoot_floor_steps must not be negative"
+    ),
+    (
+      bring_up.noise_floor_norm.is_finite() && bring_up.noise_floor_norm >= 0.0,
+      "noise_floor_norm must be a number, zero or more"
     )
   ]
 }

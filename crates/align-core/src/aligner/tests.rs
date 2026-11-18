@@ -166,7 +166,7 @@ fn each_range_is_held_at_its_edges() {
 #[test]
 fn the_bring_up_ranges_are_held_at_their_edges() {
   use crate::bringup::{MAX_MOVES_PER_HALF, MAX_REPEAT_SHOTS};
-  let cases: [Case; 16] = [
+  let cases: [Case; 20] = [
     (|c| c.bring_up.repeat_shots = 1, Some("repeat_shots")),
     (|c| c.bring_up.repeat_shots = 2, None),
     (|c| c.bring_up.repeat_shots = MAX_REPEAT_SHOTS, None),
@@ -197,7 +197,14 @@ fn the_bring_up_ranges_are_held_at_their_edges() {
       Some("hysteresis_moves_per_half")
     ),
     (|c| c.bring_up.overshoot_floor_steps = -1, Some("overshoot_floor_steps")),
-    (|c| c.bring_up.overshoot_floor_steps = 0, None)
+    (|c| c.bring_up.overshoot_floor_steps = 0, None),
+    (|c| c.bring_up.noise_floor_norm = -0.001, Some("noise_floor_norm")),
+    (|c| c.bring_up.noise_floor_norm = f32::NAN, Some("noise_floor_norm")),
+    (
+      |c| c.bring_up.noise_floor_norm = f32::INFINITY,
+      Some("noise_floor_norm")
+    ),
+    (|c| c.bring_up.noise_floor_norm = 0.0, None)
   ];
   for (index, (change, expected)) in cases.into_iter().enumerate() {
     let what = rejected(change);

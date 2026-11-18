@@ -9,7 +9,10 @@ use align_core::aligner::{AlignFault, Aligner, AxisState};
 use align_core::approach::LastDir;
 use align_core::axis::{Axis, PerAxis};
 use align_core::bringup::{BacklashReport, Entry, HysteresisReport, MAX_MOVES_PER_HALF, Phase, Play, Sample, Trial};
-use align_core::config::Config;
+use align_core::config::{BringUp, Config, ReadAt};
+use align_core::measurement::Shots;
+use align_core::quadrant::Reading;
+use align_core::rig::{BeamSensor, SensorFault};
 use align_sim::block_on;
 use align_sim::rig::Rig;
 use align_sim::world::{AxisModel, REALISTIC_POSITION_NOISE_NORM, Record, Scenario};
@@ -427,4 +430,180 @@ fn an_axis_whose_position_is_unknown_is_not_measured() {
     Err(AlignFault::PositionUnknown { axis: Axis::M1V })
   );
   assert!(rig.world().log().is_empty());
+}
+
+/// The machine's sensor as a bench with one fixed target reads it: A is the beam, and B and C swing far wider than
+/// any noise, so a procedure that looked at them would take them for noise or for motion.
+struct OnlyA {
+  rig: Rig,
+  measured: u32
+}
+
+impl BeamSensor for OnlyA {
+  async fn measure(&mut self) -> Result<Shots, SensorFault> {
+    let shots = self.rig.measure().await?;
+    self.measured += 1;
+    let swing = if self.measured.is_multiple_of(2) { 0.3 } else { -0.3 };
+    let elsewhere = Reading {
+      h_norm: swing,
+      v_norm: -swing,
+      sum: shots.a.sum
+    };
+    Ok(Shots {
+      a: shots.a,
+      b: elsewhere,
+      c: elsewhere
+    })
+  }
+}
+
+#[expect(
+  clippy::unwrap_used,
+  reason = "a test helper; a configuration the aligner refuses fails the test"
+)]
+fn bench_aligner(rig: &Rig, read_at: ReadAt) -> Aligner<Rig, OnlyA> {
+  let sensor = OnlyA {
+    rig: rig.clone(),
+    measured: 0
+  };
+  Aligner::new(rig.clone(), sensor, bench_config(rig, read_at), sum_ref(rig)).unwrap()
+}
+
+/// A bench's configuration: the machine's mechanics, the beam read where `read_at` says, and seven repeats, which
+/// give one place's noise to 12 degrees of freedom as three give it at three places.
+fn bench_config(rig: &Rig, read_at: ReadAt) -> Config {
+  Config {
+    mechanics: rig.world().scenario().mechanics,
+    bring_up: BringUp {
+      read_at,
+      repeat_shots: 7,
+      ..BringUp::STARTING
+    },
+    ..Config::default()
+  }
+}
+
+#[expect(clippy::cast_possible_truncation, reason = "the alignment code works in f32")]
+fn sum_ref(rig: &Rig) -> f32 {
+  rig.world().scenario().beam.sum_ref as f32
+}
+
+#[test]
+fn a_bench_that_reads_only_at_a_brackets_the_play_and_measures_the_sensor_s_noise() {
+  #[expect(clippy::cast_possible_truncation, reason = "the alignment code works in f32")]
+  let sensor = REALISTIC_POSITION_NOISE_NORM as f32;
+  for axis in [Axis::M1H, Axis::M1V] {
+    for play in [10, 20, 40, 80] {
+      let mut sigma_total = 0.0;
+      for seed in 0..RUNS {
+        let rig = machine(play, 0, seed);
+        let mut entries = Vec::new();
+        let report =
+          block_on(bench_aligner(&rig, ReadAt::AOnly).measure_backlash(axis, &mut |entry| entries.push(*entry)))
+            .unwrap();
+        let (above, up_to) = bracket(&report);
+        let case = format!("{axis:?}, play {play}, seed {seed}: ({above}, {up_to}]");
+        assert!(up_to > i32::try_from(play).unwrap(), "{case}");
+        assert!(
+          f32::from(i16::try_from(above).unwrap()) < float(play) + 2.0 * report.resolution_steps(),
+          "{case}, resolution {}",
+          report.resolution_steps()
+        );
+        sigma_total += report.repeatability.sigma_norm;
+      }
+      // Pooled over all six, the four coordinates never read would make the noise look sqrt(3) times smaller.
+      #[expect(clippy::cast_precision_loss, reason = "a handful of runs")]
+      let mean = sigma_total / RUNS as f32;
+      assert!(
+        (mean - sensor).abs() < 0.15 * sensor,
+        "{axis:?}, play {play}: mean sigma {mean}"
+      );
+    }
+  }
+}
+
+#[test]
+fn a_bench_that_reads_only_at_a_reads_the_hysteresis_loop_without_bias() {
+  // Read at one place, the loop's width carries about 2.2 steps of noise (one sigma; 200 runs at each play), so the
+  // mean over 40 runs is held to a step, and every run to 8 steps (the worst of 600 runs was 6.8).
+  const BENCH_RUNS: u64 = 40;
+  for play in [0, 20, 40] {
+    let mut total = 0.0;
+    for seed in 0..BENCH_RUNS {
+      let rig = machine(play, 0, seed);
+      let report = block_on(bench_aligner(&rig, ReadAt::AOnly).measure_hysteresis(Axis::M1H, &mut |_| {})).unwrap();
+      let error = report.width_steps.unwrap() - float(play);
+      assert!(error.abs() < 8.0, "play {play}, seed {seed}: {report}");
+      total += error;
+    }
+    #[expect(clippy::cast_precision_loss, reason = "a handful of runs")]
+    let mean = total / BENCH_RUNS as f32;
+    assert!(mean.abs() < 1.0, "play {play}: mean error {mean} steps");
+  }
+}
+
+/// A person's readings of the noiseless machine at A: rounded to `resolution_norm`, so that a dot that has not moved
+/// reads exactly the same again.
+struct ReadByEye {
+  rig: Rig,
+  resolution_norm: f32
+}
+
+impl BeamSensor for ReadByEye {
+  async fn measure(&mut self) -> Result<Shots, SensorFault> {
+    let shots = self.rig.measure().await?;
+    let round = |norm: f32| (norm / self.resolution_norm).round() * self.resolution_norm;
+    let a = Reading {
+      h_norm: round(shots.a.h_norm),
+      v_norm: round(shots.a.v_norm),
+      sum: shots.a.sum
+    };
+    Ok(Shots { a, b: a, c: a })
+  }
+}
+
+#[test]
+fn readings_that_repeat_exactly_are_judged_with_the_noise_floor() {
+  let floor_norm = 0.002;
+  for play in [10, 20, 40] {
+    let rig = noiseless(play);
+    let mut config = bench_config(&rig, ReadAt::AOnly);
+    config.bring_up.noise_floor_norm = floor_norm;
+    let sensor = ReadByEye {
+      rig: rig.clone(),
+      resolution_norm: 0.004
+    };
+    let mut aligner = Aligner::new(rig.clone(), sensor, config, sum_ref(&rig)).unwrap();
+    let report = block_on(aligner.measure_backlash(Axis::M1H, &mut |_| {})).unwrap();
+    #[expect(clippy::float_cmp, reason = "the floor is copied, not computed")]
+    {
+      assert_eq!(
+        report.repeatability.sigma_norm, floor_norm,
+        "the repeats read exactly alike"
+      );
+    }
+    let (above, up_to) = bracket(&report);
+    let case = format!(
+      "play {play}: ({above}, {up_to}], resolution {}",
+      report.resolution_steps()
+    );
+    assert!(report.resolution_steps() > 0.0, "{case}");
+    assert!(up_to > i32::try_from(play).unwrap(), "{case}");
+    assert!(
+      f32::from(i16::try_from(above).unwrap()) < float(play) + 2.0 * report.resolution_steps(),
+      "{case}"
+    );
+  }
+}
+
+#[test]
+fn the_places_not_read_are_what_would_otherwise_spoil_the_noise() {
+  // The same sensor judged at all three places: B and C swing by 0.6 between measurements, which is what the noise
+  // then comes out as. This is what the setting guards against.
+  let rig = machine(20, 0, 1);
+  let report = block_on(bench_aligner(&rig, ReadAt::AllThree).measure_backlash(Axis::M1H, &mut |_| {}));
+  match report {
+    Ok(report) => assert!(report.repeatability.sigma_norm > 0.1, "{report}"),
+    Err(fault) => assert!(matches!(fault, AlignFault::WeakColumn { .. }), "{fault:?}")
+  }
 }

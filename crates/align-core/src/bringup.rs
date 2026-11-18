@@ -29,7 +29,14 @@
 //!   coordinate.
 //! - **The noise is measured** from the repeats (each coordinate's deviation from its mean, pooled over the six),
 //!   not taken from the configuration, whose noise is a placeholder. "More than 3 sigma" is read as 3 sigmas of a
-//!   shift, the difference of two measurements: `3 * sqrt(2)` sigmas of a coordinate.
+//!   shift, the difference of two measurements: `3 * sqrt(2)` sigmas of a coordinate. The configuration's noise
+//!   floor, zero on the machine, is the least it is taken as: a person reading a paper target repeats a reading
+//!   exactly, and would otherwise be judged noiseless.
+//! - **A bench with one fixed target reads the beam at A only** (`config::ReadAt::AOnly`). The other four
+//!   coordinates are zeroed, and the noise is pooled and judged over A's two. Three repeats then give the noise to 4
+//!   degrees of freedom, against 12 at three places: take seven. Read at one place, the loop's width is unbiased
+//!   but noisier, about 2.2 steps (one sigma) at the realistic noise on mirror 1's horizontal axis, against under 3
+//!   steps for every run at three places (simulator, 200 runs at each of 0, 20, and 40 steps of play).
 //! - **Each trial is judged against the measurement just before it**, the previous trial's return, not against the
 //!   first: a sticking seat leaves the mirror a step or two from where it was after a return, which would otherwise
 //!   read as motion in the next trial.
@@ -59,6 +66,7 @@ use core::f32::consts::SQRT_2;
 use core::fmt;
 
 use crate::axis::Axis;
+use crate::config::ReadAt;
 use crate::measurement::Shots;
 
 /// The first field of every bring-up log line, with the version of the format.
@@ -150,7 +158,8 @@ impl fmt::Display for Sample {
 /// How repeatable the starting position read.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Repeatability {
-  /// One sigma of a coordinate, pooled over the six: the sensor's noise with the motors still.
+  /// One sigma of a coordinate, pooled over the coordinates read: the sensor's noise with the motors still, or the
+  /// configured floor where that is larger (`config::BringUp::noise_floor_norm`). The procedure was judged by it.
   pub sigma_norm: f32,
   /// The last repeat less the first, along the axis's direction: a mirror still moving after the settle time.
   pub drift_norm: f32
@@ -331,16 +340,22 @@ impl fmt::Display for HysteresisReport {
   }
 }
 
-/// The six coordinates of a measurement, in the order of the log.
-pub fn coordinates(shots: &Shots) -> Coordinates {
-  [
+/// The six coordinates of a measurement, in the order of the log. Those not read are zero, so that no distance or
+/// projection sees them.
+pub fn coordinates(shots: &Shots, read_at: ReadAt) -> Coordinates {
+  let all = [
     shots.a.h_norm,
     shots.a.v_norm,
     shots.b.h_norm,
     shots.b.v_norm,
     shots.c.h_norm,
     shots.c.v_norm
-  ]
+  ];
+  let mut kept = [0.0_f32; 6];
+  for (slot, value) in kept.iter_mut().zip(all).take(read_at.coordinates()) {
+    *slot = value;
+  }
+  kept
 }
 
 /// The mean of measurements, coordinate by coordinate. `None` for none.
@@ -359,9 +374,10 @@ pub(crate) fn mean(of: &[Coordinates]) -> Option<Coordinates> {
   Some(sum.map(|total| total / count))
 }
 
-/// One sigma of a coordinate, from measurements of one position: each coordinate's deviations from its own mean,
-/// pooled over the six (`n - 1` degrees of freedom each). `None` for fewer than two measurements.
-pub(crate) fn pooled_sigma(repeats: &[Coordinates]) -> Option<f32> {
+/// One sigma of a coordinate, from measurements of one position as [`coordinates`] gives them: each coordinate's
+/// deviations from its own mean, pooled over those read (`n - 1` degrees of freedom each). `None` for fewer than two
+/// measurements.
+pub(crate) fn pooled_sigma(repeats: &[Coordinates], read_at: ReadAt) -> Option<f32> {
   let center = mean(repeats)?;
   let freedom = repeats.len().checked_sub(1).filter(|freedom| *freedom > 0)?;
   let squares: f32 = repeats
@@ -374,7 +390,7 @@ pub(crate) fn pooled_sigma(repeats: &[Coordinates]) -> Option<f32> {
     })
     .sum();
   #[expect(clippy::cast_precision_loss, reason = "a handful of repeats")]
-  let degrees = (6 * freedom) as f32;
+  let degrees = (read_at.coordinates() * freedom) as f32;
   Some(libm::sqrtf(squares / degrees))
 }
 
@@ -389,16 +405,19 @@ pub(crate) fn shift_threshold_norm(detect_sigmas: f32, sigma_norm: f32) -> f32 {
   detect_sigmas * SQRT_2 * sigma_norm
 }
 
-/// The way the beam moved from `from` to `to`, if it moved further than noise over all six coordinates:
-/// [`shift_threshold_norm`] times `sqrt(6)`, the distance two measurements of one position stand apart. `None` for a
-/// move no larger than that.
+/// The way the beam moved from `from` to `to`, if it moved further than noise over the coordinates read:
+/// [`shift_threshold_norm`] times the square root of their number (six, or two at one place), the distance two
+/// measurements of one position stand apart. `None` for a move no larger than that.
 pub(crate) fn moved_direction(
   from: &Coordinates,
   to: &Coordinates,
   detect_sigmas: f32,
-  sigma_norm: f32
+  sigma_norm: f32,
+  read_at: ReadAt
 ) -> Option<Direction> {
-  let noise = shift_threshold_norm(detect_sigmas, sigma_norm) * libm::sqrtf(6.0);
+  #[expect(clippy::cast_precision_loss, reason = "two or six")]
+  let read = read_at.coordinates() as f32;
+  let noise = shift_threshold_norm(detect_sigmas, sigma_norm) * libm::sqrtf(read);
   if distance(from, to) > noise {
     Direction::between(from, to)
   } else {
@@ -493,21 +512,36 @@ mod tests {
     }
   }
 
-  #[test]
-  #[expect(clippy::float_cmp, reason = "the coordinates are copied, not computed")]
-  fn the_six_coordinates_are_h_and_v_at_a_then_b_then_c() {
-    let shots = Shots {
+  fn spread_shots() -> Shots {
+    Shots {
       a: reading(0.1, 0.2),
       b: reading(0.3, 0.4),
       c: reading(0.5, 0.6)
-    };
-    assert_eq!(coordinates(&shots), [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]);
+    }
+  }
+
+  #[test]
+  #[expect(clippy::float_cmp, reason = "the coordinates are copied, not computed")]
+  fn the_six_coordinates_are_h_and_v_at_a_then_b_then_c() {
+    assert_eq!(
+      coordinates(&spread_shots(), ReadAt::AllThree),
+      [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
+    );
+  }
+
+  #[test]
+  #[expect(clippy::float_cmp, reason = "the coordinates are copied or zeroed, not computed")]
+  fn a_bench_that_reads_only_at_a_keeps_its_two_coordinates_and_zeroes_the_rest() {
+    assert_eq!(
+      coordinates(&spread_shots(), ReadAt::AOnly),
+      [0.1, 0.2, 0.0, 0.0, 0.0, 0.0]
+    );
   }
 
   #[test]
   fn readings_that_never_change_have_no_noise() {
     let same = [0.1, -0.2, 0.3, 0.0, 0.5, 0.25];
-    assert_eq!(pooled_sigma(&[same, same, same]), Some(0.0));
+    assert_eq!(pooled_sigma(&[same, same, same], ReadAt::AllThree), Some(0.0));
   }
 
   #[test]
@@ -515,8 +549,18 @@ mod tests {
     // One coordinate reads 0 then 0.06: its mean is 0.03, its squares 2 * 0.03^2, over six degrees of freedom.
     let mut second = [0.0; 6];
     second[3] = 0.06;
-    let sigma = pooled_sigma(&[[0.0; 6], second]).unwrap();
+    let sigma = pooled_sigma(&[[0.0; 6], second], ReadAt::AllThree).unwrap();
     assert_close(sigma, libm::sqrtf(2.0 * 0.03 * 0.03 / 6.0), 1e-7);
+  }
+
+  #[test]
+  fn the_noise_of_one_place_is_pooled_over_its_two_coordinates() {
+    // The same deviation over two degrees of freedom: sqrt(2 * 0.03^2 / 2) is 0.03 itself. Pooled over six, the
+    // four coordinates that are never read would make the noise look sqrt(3) times smaller than it is.
+    let mut second = [0.0; 6];
+    second[1] = 0.06;
+    let sigma = pooled_sigma(&[[0.0; 6], second], ReadAt::AOnly).unwrap();
+    assert_close(sigma, 0.03, 1e-7);
   }
 
   #[test]
@@ -530,29 +574,42 @@ mod tests {
     // The noise of a distance: 3 * sqrt(2) * 0.002 * sqrt(6) = 0.020_784_61.
     let still = [0.0; 6];
     let along_h = |moved_norm: f32| [moved_norm, 0.0, 0.0, 0.0, 0.0, 0.0];
-    assert_eq!(moved_direction(&still, &along_h(0.0207), 3.0, 0.002), None);
+    let all = ReadAt::AllThree;
+    assert_eq!(moved_direction(&still, &along_h(0.0207), 3.0, 0.002, all), None);
     assert_eq!(
-      moved_direction(&still, &along_h(0.0209), 3.0, 0.002),
+      moved_direction(&still, &along_h(0.0209), 3.0, 0.002, all),
       Direction::between(&still, &along_h(1.0))
     );
     let noise = shift_threshold_norm(3.0, 0.002) * libm::sqrtf(6.0);
     assert_eq!(
-      moved_direction(&still, &along_h(noise), 3.0, 0.002),
+      moved_direction(&still, &along_h(noise), 3.0, 0.002, all),
       None,
       "a move of exactly the noise is not motion"
     );
-    assert!(moved_direction(&still, &along_h(noise.next_up()), 3.0, 0.002).is_some());
+    assert!(moved_direction(&still, &along_h(noise.next_up()), 3.0, 0.002, all).is_some());
     assert_eq!(
-      moved_direction(&still, &still, 3.0, 0.0),
+      moved_direction(&still, &still, 3.0, 0.0, all),
       None,
       "no move, even without noise"
     );
   }
 
   #[test]
+  fn a_move_seen_at_one_place_has_a_direction_beyond_the_noise_of_a_distance_over_its_two_coordinates() {
+    // The noise of a distance over two coordinates: 3 * sqrt(2) * 0.002 * sqrt(2) = 0.012.
+    let still = [0.0; 6];
+    let along_h = |moved_norm: f32| [moved_norm, 0.0, 0.0, 0.0, 0.0, 0.0];
+    assert_eq!(
+      moved_direction(&still, &along_h(0.0119), 3.0, 0.002, ReadAt::AOnly),
+      None
+    );
+    assert!(moved_direction(&still, &along_h(0.0121), 3.0, 0.002, ReadAt::AOnly).is_some());
+  }
+
+  #[test]
   fn one_measurement_has_no_noise_to_pool() {
-    assert_eq!(pooled_sigma(&[[0.0; 6]]), None);
-    assert_eq!(pooled_sigma(&[]), None);
+    assert_eq!(pooled_sigma(&[[0.0; 6]], ReadAt::AllThree), None);
+    assert_eq!(pooled_sigma(&[], ReadAt::AOnly), None);
   }
 
   #[test]

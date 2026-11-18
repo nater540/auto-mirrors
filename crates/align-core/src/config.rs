@@ -378,7 +378,14 @@ pub struct BringUp {
   /// [`crate::bringup::MAX_MOVES_PER_HALF`].
   pub hysteresis_moves_per_half: u8,
   /// FIRM (addendum A.5): the overshoot is twice the measured backlash, and never less than this.
-  pub overshoot_floor_steps: i32
+  pub overshoot_floor_steps: i32,
+  /// FIRM (hand-off 3.2): where a measurement reads the beam. The machine reads it at A, B, and C; a bench with one
+  /// fixed target reads it at A only.
+  pub read_at: ReadAt,
+  /// FIRM: the least noise of a coordinate that a measurement is judged with, normalized. Zero on the machine, whose
+  /// sensor's noise is measured from the repeats. A person reading a dot off a paper target sets it from how finely
+  /// they read: their readings of a dot that has not moved repeat exactly, and would otherwise be judged noiseless.
+  pub noise_floor_norm: f32
 }
 
 impl BringUp {
@@ -389,8 +396,30 @@ impl BringUp {
     detect_sigmas: 3.0,
     hysteresis_amplitude_pokes: 2,
     hysteresis_moves_per_half: 8,
-    overshoot_floor_steps: 60
+    overshoot_floor_steps: 60,
+    read_at: ReadAt::AllThree,
+    noise_floor_norm: 0.0
   };
+}
+
+/// Where a bring-up measurement reads the beam.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReadAt {
+  /// At A, B, and C: the machine's three-position measurement.
+  AllThree,
+  /// At A only: a bench with one fixed target, before the test frame exists. B and C are left out of every judgment,
+  /// whatever the sensor returns for them.
+  AOnly
+}
+
+impl ReadAt {
+  /// How many of a measurement's six coordinates are read. A's two come first.
+  pub const fn coordinates(self) -> usize {
+    match self {
+      ReadAt::AllThree => 6,
+      ReadAt::AOnly => 2
+    }
+  }
 }
 
 /// The read-only link to the Ruida controller over UDP (reference 6.1, 6.5; hand-off M7). The protocol is the
@@ -555,6 +584,12 @@ mod tests {
       (2, 8)
     );
     assert_eq!(bring_up.overshoot_floor_steps, 60);
+    assert_eq!(
+      bring_up.read_at,
+      ReadAt::AllThree,
+      "the machine reads the beam at A, B, and C"
+    );
+    assert_close(bring_up.noise_floor_norm, 0.0, 0.0);
   }
 
   #[test]

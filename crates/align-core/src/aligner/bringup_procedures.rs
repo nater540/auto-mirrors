@@ -8,6 +8,7 @@ use crate::bringup::{
   self, BacklashReport, Coordinates, Direction, Entry, HysteresisReport, MAX_MOVES_PER_HALF, MAX_REPEAT_SHOTS, Phase,
   Play, Repeatability, Sample, Trial
 };
+use crate::config::BringUp;
 use crate::rig::{Actuator, BeamSensor};
 
 use super::{AlignFault, Aligner, Planned};
@@ -41,9 +42,10 @@ impl Repeats {
     self.readings.get(..self.count).unwrap_or(&[])
   }
 
-  /// One sigma of a coordinate, and the mean of the repeats.
-  fn noise(&self) -> Result<(f32, Coordinates), AlignFault> {
-    bringup::pooled_sigma(self.taken())
+  /// One sigma of a coordinate, never below the configured floor, and the mean of the repeats.
+  fn noise(&self, bring_up: &BringUp) -> Result<(f32, Coordinates), AlignFault> {
+    bringup::pooled_sigma(self.taken(), bring_up.read_at)
+      .map(|sigma_norm| sigma_norm.max(bring_up.noise_floor_norm))
       .zip(bringup::mean(self.taken()))
       .ok_or(AlignFault::Config("repeat_shots must be at least 2"))
   }
@@ -90,7 +92,7 @@ impl<A: Actuator, S: BeamSensor> Aligner<A, S> {
     self.approach(axis, poke_steps.saturating_neg()).await?;
     let mut before = self.sample(origin, Phase::Reference, 0, observe).await?;
 
-    let (sigma_norm, center) = repeats.noise()?;
+    let (sigma_norm, center) = repeats.noise(&self.config.bring_up)?;
     let direction = self.direction_of(axis, &center, &poke, sigma_norm)?;
     let gauge = Gauge {
       direction,
@@ -209,7 +211,7 @@ impl<A: Actuator, S: BeamSensor> Aligner<A, S> {
     let (Some(&(_, lowest)), Some(&(_, highest))) = (up.first(), up.get(half)) else {
       return Err(AlignFault::WeakColumn { axis });
     };
-    let (sigma_norm, _) = repeats.noise()?;
+    let (sigma_norm, _) = repeats.noise(&self.config.bring_up)?;
     let direction = self.direction_of(axis, &lowest, &highest, sigma_norm)?;
     let project = |travelled: &[(i32, Coordinates); CYCLE_POINTS]| {
       let mut projected = [(0.0_f32, 0.0_f32); CYCLE_POINTS];
@@ -326,7 +328,8 @@ impl<A: Actuator, S: BeamSensor> Aligner<A, S> {
     to: &Coordinates,
     sigma_norm: f32
   ) -> Result<Direction, AlignFault> {
-    bringup::moved_direction(from, to, self.config.bring_up.detect_sigmas, sigma_norm).ok_or_else(|| {
+    let bring_up = &self.config.bring_up;
+    bringup::moved_direction(from, to, bring_up.detect_sigmas, sigma_norm, bring_up.read_at).ok_or_else(|| {
       self.axes.get_mut(axis).suspect = true;
       AlignFault::WeakColumn { axis }
     })
@@ -350,7 +353,7 @@ impl<A: Actuator, S: BeamSensor> Aligner<A, S> {
       pos_steps,
       shots
     }));
-    Ok(bringup::coordinates(&shots))
+    Ok(bringup::coordinates(&shots, self.config.bring_up.read_at))
   }
 }
 
