@@ -6,6 +6,8 @@
 //!   [`align_core::aligner::Aligner`] that will run on the coordinator runs here.
 //! - [`system`]: the whole system behind the same traits: the coordinator's orchestrator, the two mirror nodes, and
 //!   the sensor node on a simulated bus, with the relay, the motors, and the Ruida simulated around them.
+//! - [`external`]: a machine in another program behind the same traits, one line per move or measurement:
+//!   `tools/beamviz` answers with a ray-traced machine of its own.
 //! - [`block_on`]: runs the aligner's futures to completion on the host.
 //!
 //! Every number that describes the machine here (path lengths, beam radius, backlash, noise) is an UNVERIFIED
@@ -15,6 +17,7 @@ use core::future::Future;
 use core::pin::pin;
 use core::task::{Context, Poll, Waker};
 
+pub mod external;
 pub mod rig;
 pub mod system;
 pub mod world;

@@ -15,6 +15,7 @@ use align_core::rig::{Actuator, BeamSensor};
 use align_core::solver::Conditioning;
 use align_core::units;
 use align_sim::block_on;
+use align_sim::external::External;
 use align_sim::rig::Rig;
 use align_sim::system::{Hardware, System, SystemRig};
 use align_sim::world::{AxisModel, Beam, Geometry, Record, Scenario, World};
@@ -38,7 +39,10 @@ enum Command {
   Sweep(SweepArgs),
   /// Measure one axis's backlash, then its hysteresis, and print the `BU1` lines the coordinator's `backlash` and
   /// `hysteresis` print, on a machine whose play is known
-  BringUp(BringUpArgs)
+  BringUp(BringUpArgs),
+  /// Run one alignment against a machine in another program, one line per move or measurement on standard output,
+  /// answered on standard input (`align_sim::external`): `tools/beamviz` answers with a ray-traced machine
+  External(ExternalArgs)
 }
 
 /// The imperfections of the simulated machine. Every default is an UNVERIFIED placeholder.
@@ -124,6 +128,19 @@ struct SweepArgs {
 }
 
 #[derive(Args)]
+struct ExternalArgs {
+  /// The sum of the four quadrants for a centered beam, in the other program's units
+  #[arg(long, default_value_t = 1_000.0)]
+  sum_ref: f64,
+  /// Gaussian 1/e^2 beam radius at the head, in micrometers, from which the poke size is computed (as for `run`)
+  #[arg(long)]
+  beam_radius: Option<f64>,
+  /// The backlash the poke is kept to at least three times of, in steps (addendum A.3)
+  #[arg(long, default_value_t = 20)]
+  backlash: u32
+}
+
+#[derive(Args)]
 struct BringUpArgs {
   /// The axis: m1h, m1v, m2h, or m2v
   #[arg(long, default_value = "m1h", value_parser = parse_axis)]
@@ -150,7 +167,8 @@ fn main() -> anyhow::Result<()> {
   match cli.command {
     Command::Run(args) => run(&args, &mut out),
     Command::Sweep(args) => sweep(&args, &mut out),
-    Command::BringUp(args) => bring_up(&args, &mut out)
+    Command::BringUp(args) => bring_up(&args, &mut out),
+    Command::External(args) => external(&args, &mut out)
   }
 }
 
@@ -265,6 +283,22 @@ fn run(args: &RunArgs, out: &mut impl Write) -> anyhow::Result<()> {
       }
     )?;
   }
+  Ok(())
+}
+
+fn external(args: &ExternalArgs, out: &mut impl Write) -> anyhow::Result<()> {
+  let optics = Optics {
+    x_span: 0.0,
+    beam_radius: args.beam_radius,
+    divergence_urad: 0.0
+  };
+  let (config, _) = config_for(optics, args.backlash);
+  let machine = External::new(io::stdin().lock(), out);
+  #[expect(clippy::cast_possible_truncation, reason = "the alignment code works in f32")]
+  let sum_ref = args.sum_ref as f32;
+  let mut aligner = Aligner::new(machine.clone(), machine.clone(), config, sum_ref)?;
+  let outcome = block_on(aligner.align());
+  machine.finish(&outcome, aligner.calibration())?;
   Ok(())
 }
 
