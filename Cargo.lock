@@ -1768,6 +1768,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ruida-probe"
+version = "0.1.0"
+dependencies = [
+ "align-core",
+ "anyhow",
+ "clap",
+ "ruida-proto",
+]
+
+[[package]]
 name = "ruida-proto"
 version = "0.1.0"
 dependencies = [

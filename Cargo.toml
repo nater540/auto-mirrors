@@ -9,6 +9,7 @@ members = [
   "crates/sensor-logic",
   "crates/coordinator-logic",
   "crates/ruida-proto",
+  "crates/ruida-probe",
   "firmware/node",
   "firmware/sensor",
   "firmware/coordinator"
@@ -18,7 +19,8 @@ members = [
 # overrides this and will fail on the host; use the justfile recipes.
 default-members = [
   "crates/align-core", "crates/align-proto", "crates/align-sim", "crates/stepper", "crates/node-logic",
-  "crates/sensor-logic", "crates/coordinator-logic", "crates/ruida-proto"
+  "crates/sensor-logic", "crates/coordinator-logic", "crates/ruida-proto",
+  "crates/ruida-probe"
 ]
 
 [workspace.package]

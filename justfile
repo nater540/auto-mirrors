@@ -217,6 +217,19 @@ _firmware-crate crate:
         ;;
     esac
 
+# --- Ruida (talks to the laser controller over the network) ---------------
+#
+# Read-only until the owner confirms the first test of reference 6.5 passed on the Mod5 (hand-off M7): the probe
+# can send only the five memory reads of `ruida_proto::Query`, never a move, a job, or a key.
+
+# `--poll-s 30` polls the status and position after the five reads; `--sim` answers from a simulated controller on
+# loopback, so nothing leaves the computer.
+
+# The first test of reference 6.5, logged as RU1 lines: `just ruida-probe --controller <address>`, `--sim`, `--help`
+[group('ruida')]
+ruida-probe *args:
+    cargo run --release --quiet -p ruida-probe -- {{ args }}
+
 # --- dependencies and tools -------------------------------------------------
 
 # License, advisory, ban, and source gate over the host and the ESP32-C6 dependency trees (deny.toml)

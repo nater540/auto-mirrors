@@ -1,0 +1,22 @@
+[package]
+name = "ruida-probe"
+description = "The read-only first test of the Ruida link from a computer: five memory reads and polling, logged"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "ruida-probe"
+path = "src/main.rs"
+
+[dependencies]
+ruida-proto.workspace = true
+# The link's timeout, tries, and poll period, with their evidence (`align_core::config::RuidaLink`).
+align-core.workspace = true
+clap.workspace = true
+anyhow.workspace = true
+
+[lints]
+workspace = true
