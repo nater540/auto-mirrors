@@ -4,10 +4,12 @@
 //!   frames, start and stop moves, and write position records.
 //! - [`record`]: the position record kept in flash for each motor.
 //! - [`console`]: the commands of the bench console (addendum A.6 torque margin test, manual jogs).
+//! - [`bench_line`]: the bench console's fixed lines for a program that drives it.
 //!
 //! `firmware/node` wires these to TWAI, the stepper tasks, the arm pulse, flash, and USB-Serial-JTAG.
 #![no_std]
 
+pub mod bench_line;
 pub mod console;
 pub mod node;
 pub mod record;

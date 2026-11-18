@@ -51,6 +51,7 @@ use esp_hal::twai::{BaudRate, EspTwaiFrame, Twai};
 use esp_hal::usb::usb_serial_jtag::{UsbSerialJtag, UsbSerialJtagRx};
 use esp_storage::FlashStorage;
 use log::{error, info, warn};
+use node_logic::bench_line::{BenchEnd, BenchLine};
 use node_logic::console::{self, Command};
 use node_logic::{AxisRecord, MAX_CHANNELS, MoveOutcome, MoveRequest, Node, NodeIo, NodeSetup, Restored};
 use sequential_storage::cache::{Cache, Uncached};
@@ -606,15 +607,27 @@ async fn execute(text: &str, rx: &mut UsbSerialJtagRx<'static, Async>) {
     }
     Ok(Command::Status) => {
       with_node(|node, _| {
+        let (permit, rail) = (PERMIT.load(Ordering::Acquire), RAIL_OK.load(Ordering::Acquire));
+        info!("state {:?}, permit {permit}, rail {rail}", node.state());
         info!(
-          "state {:?}, permit {}, rail {}",
-          node.state(),
-          PERMIT.load(Ordering::Acquire),
-          RAIL_OK.load(Ordering::Acquire)
+          "{}",
+          BenchLine::Status {
+            state: node.state(),
+            permit,
+            rail
+          }
         );
         for channel in (0..board::POPULATED_CHANNELS).filter_map(Channel::new) {
           if let Some(axis) = node.axis(channel) {
             info!("channel {}: {:?}", channel.get(), axis);
+            info!(
+              "{}",
+              BenchLine::Channel {
+                channel: channel.get(),
+                pos_steps: axis.record.pos_steps,
+                suspect: axis.record.suspect
+              }
+            );
           }
         }
       });
@@ -670,9 +683,19 @@ async fn execute(text: &str, rx: &mut UsbSerialJtagRx<'static, Async>) {
 }
 
 /// Runs one bench move and waits for it. Any key stops it. Returns whether it completed.
+///
+/// Ends with one [`BenchLine`] for a program at the console: the move's end and the count after it, or its refusal.
 async fn bench_move(channel: u8, steps: i32, period_us: Option<u32>, rx: &mut UsbSerialJtagRx<'static, Async>) -> bool {
   let (Some(channel), Some(period_us)) = (Channel::new(channel), period_us) else {
     warn!("no such channel or rate");
+    // A rate of zero, or a channel past the bus's eight, both checked again by the node.
+    info!(
+      "{}",
+      BenchLine::Refused {
+        channel,
+        reason: node_logic::BenchRefused::OutOfBounds
+      }
+    );
     return false;
   };
   MOVE_FINISHED.reset();
@@ -680,6 +703,13 @@ async fn bench_move(channel: u8, steps: i32, period_us: Option<u32>, rx: &mut Us
     Some(Ok(())) => {}
     Some(Err(error)) => {
       warn!("{error}");
+      info!(
+        "{}",
+        BenchLine::Refused {
+          channel: channel.get(),
+          reason: error
+        }
+      );
       return false;
     }
     None => return false
@@ -701,5 +731,16 @@ async fn bench_move(channel: u8, steps: i32, period_us: Option<u32>, rx: &mut Us
       MOVE_FINISHED.wait().await
     }
   };
+  if let Some(axis) = with_node(|node, _| node.axis(channel)).flatten() {
+    info!(
+      "{}",
+      BenchLine::Moved {
+        channel: channel.get(),
+        end: BenchEnd::of(&outcome),
+        pos_steps: axis.record.pos_steps,
+        suspect: axis.record.suspect
+      }
+    );
+  }
   matches!(outcome, MoveOutcome::Finished { end: MoveEnd::Done, .. })
 }
