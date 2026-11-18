@@ -92,8 +92,22 @@ Stop at the end of each milestone and report to the owner (hand-off section 6).
 - The alignment procedure is `align_core::aligner::Aligner`, generic over the `Actuator` and `BeamSensor` traits
   (`align_core::rig`). Both traits are `async`, because a move or a measurement takes seconds on the machine. The
   simulator and the coordinator run the same procedure.
-- Three adopted recommendations await the owner's sign-off (ESP32-C6, the three-position measurement, the
-  force-guided relay as primary interlock). Build to them.
+- **The ESP32-C6 on every board: signed off by the owner, 2026-11-17.** Two adopted recommendations still await
+  sign-off (the three-position measurement, the force-guided relay as primary interlock), as do the coordinator's
+  three states beyond reference 7.3 (CollectingReadings, ArmingMove, Disarming). Build to them.
+
+## The test frame (owner, 2026-11-17)
+
+The first physical alignment runs on a 2040 extrusion frame of about 600 mm Y and 800 mm X travel, with no Ruida and
+a green laser pointer for the tube. Not built yet; no measurement exists for it.
+
+- **The gantry and the head are pushed by hand to marked stops** at A, B, and C; the coordinator's console asks for
+  each position and waits for the operator to confirm it.
+- **The mounts are the same Cloudray Series E** as the laser's, so the configured mechanics apply.
+- **The pointer stays on.** The sensor reads when the coordinator asks; there is no job, no FootSW, and no fire.
+  The coordinator's measurement through the Ruida (reference 6.7) needs a seam for this, not built yet.
+- The small-beam finding of M2 (below, "The thresholds assume a CO2-sized beam") applies: expand the pointer's beam
+  to about 3 mm radius or more.
 
 ## What the simulator settled (M2)
 
