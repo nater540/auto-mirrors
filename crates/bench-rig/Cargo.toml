@@ -1,0 +1,26 @@
+[package]
+name = "bench-rig"
+description = "The bring-up of one axis on a bench: a node's motor through its USB console, the beam read by eye"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "bench-rig"
+path = "src/main.rs"
+
+[dependencies]
+align-core.workspace = true
+# The fixed console lines (`node_logic::bench_line`) and the console's own command parser, for the test node.
+node-logic.workspace = true
+# `block_on`, the host executor the simulator already runs the aligner with.
+align-sim.workspace = true
+serial2.workspace = true
+thiserror.workspace = true
+clap.workspace = true
+anyhow.workspace = true
+
+[lints]
+workspace = true

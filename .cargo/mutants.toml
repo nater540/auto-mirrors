@@ -29,6 +29,8 @@ examine_globs = [
   "crates/node-logic/src/node.rs",
   "crates/node-logic/src/record.rs",
   "crates/node-logic/src/console.rs",
+  # What a program at the bench console reads a move's end and the node's count as.
+  "crates/node-logic/src/bench_line.rs",
   # What the sensor answers, when, and to whom.
   "crates/sensor-logic/src/node.rs",
   "crates/sensor-logic/src/buttons.rs",
@@ -44,14 +46,19 @@ examine_globs = [
   "crates/ruida-proto/src/swizzle.rs",
   "crates/ruida-proto/src/packet.rs",
   "crates/ruida-proto/src/value.rs",
-  "crates/ruida-proto/src/exchange.rs"
+  "crates/ruida-proto/src/exchange.rs",
+  # Which line answers a bench move, when a move is stopped, and what the bench may start on.
+  "crates/bench-rig/src/console.rs",
+  "crates/bench-rig/src/motors.rs",
+  "crates/bench-rig/src/eye.rs",
+  "crates/bench-rig/src/procedure.rs"
 ]
 
 # The firmware crates cannot build on the host, so the workspace is never tested as a whole. A mutant in
 # align-core is judged by its own tests and by the simulator's; one in another crate by that crate's own.
 test_package = [
   "align-core", "align-sim", "align-proto", "stepper", "node-logic", "sensor-logic", "coordinator-logic", "ruida-proto",
-  "ruida-probe"
+  "ruida-probe", "bench-rig"
 ]
 
 # The three fields of an identifier occupy disjoint bits, so combining them with `^` instead of `|` gives the same

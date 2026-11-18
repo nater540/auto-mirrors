@@ -58,8 +58,9 @@ change.
 | proptest | 1.12 | `std`, no default features | Property tests, host only. |
 | rand | 0.10.4 | | Simulator only: seeded sensor noise and skipped steps. In 0.10 the convenience methods are on `RngExt`, not `Rng`. |
 | rand_distr | 0.6.0 | | Simulator only: the standard normal distribution. |
-| clap | 4.6 | `derive` | Simulator command line. |
-| anyhow | 1.0.104 | | Simulator command line, at the top level of the binary only. |
+| clap | 4.6 | `derive` | The command lines of the simulator, the Ruida probe, and the bench rig. |
+| anyhow | 1.0.104 | | The same command lines, at the top level of each binary only. |
+| serial2 | 0.2.39 | | Bench rig: a node's USB console from the computer. BSD-2-Clause or Apache-2.0, released 2026-10-26. `serialport` 4.10.1 is MPL-2.0, which deny.toml does not allow, and pulls libudev by default. Opening a port does not touch DTR or RTS. |
 
 ## Checked, not yet a dependency
 

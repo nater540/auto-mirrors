@@ -241,6 +241,12 @@ _firmware-crate crate:
 ruida-probe *args:
     cargo run --release --quiet -p ruida-probe -- {{ args }}
 
+# One axis's backlash or hysteresis on a bench, read by eye off a paper target. TALKS TO HARDWARE: it moves the
+# motor on the node named, after you type `go`. `just bench-rig --motor m1h=<port>:0 --reading-mm 0.25 backlash m1h`
+[group('board')]
+bench-rig *args:
+    cargo run --release --quiet -p bench-rig -- {{ args }}
+
 # --- dependencies and tools -------------------------------------------------
 
 # License, advisory, ban, and source gate over the host and the ESP32-C6 dependency trees (deny.toml)

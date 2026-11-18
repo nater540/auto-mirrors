@@ -10,6 +10,7 @@ members = [
   "crates/coordinator-logic",
   "crates/ruida-proto",
   "crates/ruida-probe",
+  "crates/bench-rig",
   "firmware/node",
   "firmware/sensor",
   "firmware/coordinator"
@@ -20,7 +21,7 @@ members = [
 default-members = [
   "crates/align-core", "crates/align-proto", "crates/align-sim", "crates/stepper", "crates/node-logic",
   "crates/sensor-logic", "crates/coordinator-logic", "crates/ruida-proto",
-  "crates/ruida-probe"
+  "crates/ruida-probe", "crates/bench-rig"
 ]
 
 [workspace.package]
@@ -38,6 +39,7 @@ node-logic = { path = "crates/node-logic" }
 sensor-logic = { path = "crates/sensor-logic" }
 coordinator-logic = { path = "crates/coordinator-logic" }
 ruida-proto = { path = "crates/ruida-proto" }
+align-sim = { path = "crates/align-sim" }
 
 nalgebra = { version = "=0.35.0", default-features = false, features = ["libm"] }
 libm = "0.2.16"
@@ -56,6 +58,8 @@ rand = "0.10.4"
 rand_distr = "0.6.0"
 clap = { version = "4.6", features = ["derive"] }
 anyhow = "1.0.104"
+# The bench rig's serial port to a node's USB console. `serialport` is MPL-2.0, which deny.toml does not allow.
+serial2 = "0.2.39"
 
 # Firmware only. Exact pins: these crates change API between minor releases and must move together. The reasons
 # and the upgrade procedure are in docs/VERSIONS.md.
