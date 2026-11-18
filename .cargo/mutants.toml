@@ -38,6 +38,8 @@ examine_globs = [
   "crates/coordinator-logic/src/readings.rs",
   # Which answer ends a move, and when a move is sent again or given up.
   "crates/coordinator-logic/src/moves.rs",
+  # Which stored Jacobian the coordinator starts from after a reboot: a wrong byte there drives the screws.
+  "crates/coordinator-logic/src/stored.rs",
   # What reaches the Ruida controller, and what its answers are read as: a wrong byte there is a command it runs.
   "crates/ruida-proto/src/swizzle.rs",
   "crates/ruida-proto/src/packet.rs",

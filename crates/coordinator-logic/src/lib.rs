@@ -11,6 +11,7 @@
 //! - [`requests`]: the alignment procedure's moves and measurements, one at a time, started when the coordinator can
 //!   take them and ended by its reports.
 //! - [`console`]: the commands of the coordinator's USB console.
+//! - [`stored`]: the calibration and the last good alignment as the coordinator keeps them in flash (reference 3.6).
 //!
 //! The coordinator's state machine, which gates the relay and the motors, is `align_core::coordinator`; this crate
 //! turns bus traffic into its events. `firmware/coordinator` wires both to TWAI and, later, the Ruida I/O.
@@ -23,3 +24,4 @@ pub mod nodes;
 pub mod orchestrator;
 pub mod readings;
 pub mod requests;
+pub mod stored;
