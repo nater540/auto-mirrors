@@ -55,7 +55,10 @@ Stop at the end of each milestone and report to the owner (hand-off section 6).
 - M6 bring-up tools: built and host-tested, not run on hardware (it needs the sensor and a Ruida). The coordinator's
   `backlash <axis>` brackets one axis's play through the beam and `hysteresis <axis>` cycles it through its loop
   (reference 3.4, `align_core::bringup`), each logging `BU1` lines for the owner to paste back.
-- M7 Ruida UDP (optional, read-only): not started.
+- M7 Ruida UDP (optional, read-only): built and host-tested, not run against a controller. `ruida-proto` can build
+  only the five memory reads of reference 6.4 and reads the answers; `just ruida-probe --controller <address>` runs
+  the first test of reference 6.5 from a computer, logging `RU1` lines. The coordinator does not use it: it has no
+  network yet.
 - Sensor track (`docs/SENSOR_PLAN.md`): S0 protocol, S1 `sensor-logic`, and S2 `firmware/sensor` done, with five
   buttons instead of a detector (owner, 2026-11-15). S3, the detector's method, waits for the detector, which is
   likely a pyroelectric quad; do not build detector processing before then.
@@ -311,6 +314,33 @@ The alignment procedure on the coordinator (`coordinator_logic::requests`, the f
 - Through the whole system on the placeholder job timing, a backlash measurement took 96 s and a hysteresis cycle
   113 s.
 
+## What the Ruida link settled (M7)
+
+`crates/ruida-proto/src/lib.rs` and `crates/ruida-proto/src/exchange.rs` open with the rules; these shape what follows.
+
+- **Only the five memory reads can be built** (`ruida_proto::Query`: card ID, mainboard version, status, X, Y). No
+  function encodes another command, and none may be added until the owner confirms that the read-only test of
+  reference 6.5 passed on the Mod5 (hand-off M7). The probe's tests check every datagram it sent against the five.
+- **The magic is fixed at 0x88** (RDC644XG). The controller runs whatever it unswizzles, and a checksum over the wire
+  bytes is right at any magic: sent at 0x88 to a controller at 0x11 or 0x38, each query reads as other bytes with
+  command bytes among them (the tests in `packet` list them). Do not add a magic option. A silent controller means
+  checking the address and the port first (reference 6.5 step 3).
+- **The checksum basis is found, not assumed**: swizzled first, as MeerK40t's `udp_connection.py` and jnweiger's
+  `protocol.md` both sum the scrambled bytes; plain after a NAK while the basis is unknown; then whichever basis was
+  answered or acknowledged, for the rest of the run.
+- **A query is sent again only after a NAK**, at most `RuidaLink::query_tries` (2) times in all, never for silence.
+- **Reference 6.4 shows a read's answer with two values; MeerK40t reads one.** The decoder reads the first and keeps
+  a second when a whole one follows, and the log shows both. Reference 6.3's `dec35` folds into a `u32`, which drops
+  3 of the 35 bits: values are kept whole, and positions are read signed, as MeerK40t reads them.
+- **A data byte at or above 0x80 makes an answer unreadable** (reference 6.3: such bytes start commands), which is
+  what a wrong magic looks like. An unreadable datagram, an enquiry, or an answer at another address is logged and
+  passed over.
+- **The first test runs from a computer, not the coordinator**, which has no network (reference 5.6: Wi-Fi, or a
+  W5500 on a wire; undecided). `ruida_proto::Exchange` does no I/O and is `no_std`, so the coordinator can run it.
+- **The log is `RU1` lines**: every datagram both ways with its wire bytes, its unswizzled bytes, and its meaning,
+  then each reading or failure, then a summary. `just ruida-probe --sim` prints them for a simulated controller
+  (AS MODELED, on loopback), which is the reference for reading a pasted log.
+
 ## What the sensor settled (S1, S2)
 
 - **Five buttons are the reading until the detector exists** (owner, 2026-11-15). No detector processing is built;
@@ -374,10 +404,16 @@ One Cargo workspace, edition 2024, Rust 1.96.0 pinned. Dependencies and lints ar
   the Status and fire sense inputs, the watchdog, the aligner in its own task, and the console (`status`, `jog`,
   `stop`, `measure`, `calibrate`, `align`, `poke`, `backlash`, `hysteresis`, `clear`).
   Pins in `src/board.rs`, PROVISIONAL for a Feather.
+- `crates/ruida-proto`: `no_std`. The Ruida controller's UDP protocol, read-only: the byte scrambling (`swizzle`),
+  the five memory reads and what the controller's datagrams say (`packet`), the 35-bit values and status bits
+  (`value`), and one query from its packet to its reading without I/O (`exchange`).
+- `crates/ruida-probe` (`ruida-probe`): `std`. The first test of reference 6.5 over a UDP socket (`probe`), and a
+  simulated controller on loopback (`sim`) for its tests and `--sim`.
 
 Dependency direction: firmware and `align-sim` depend on `align-core`, `align-proto`, `stepper`, `node-logic`,
 `sensor-logic`, and `coordinator-logic`; `node-logic` depends on the first three, `sensor-logic` and
-`coordinator-logic` on the first two; `align-core` depends on none of them.
+`coordinator-logic` on the first two; `align-core` depends on none of them. `ruida-proto` depends on none of them
+either, and `ruida-probe` on it and `align-core` (for `config::RuidaLink`).
 HAL types never enter the `crates/` libraries.
 
 The firmware crates are workspace members but not `default-members`: a plain `cargo build`, `cargo test`, or
@@ -406,6 +442,7 @@ just sweep --runs 5000     # convergence against conditioning (the Y span); --x-
 just sweep --system        # the same through the whole system (bus, nodes, interlock), with the simulated time
 just bring-up --axis m2v   # one axis's backlash and hysteresis on a machine of known play, with the `BU1` lines
 just sweep-margins         # how much stick-slip, noise, backlash, and step loss the thresholds tolerate
+just ruida-probe --sim     # the Ruida first test against a simulated controller on loopback, with the `RU1` lines
 just deny                  # licenses, advisories, bans, and sources (deny.toml)
 just outdated              # the pinned crates against crates.io
 just doctor                # the tools the recipes need, and what is missing
@@ -425,7 +462,9 @@ After changing the protocol, a node's logic, or the orchestrator, `cargo test -p
 test that holds the devices to each other; a unit test that encodes the same mistake on both sides cannot.
 
 **The board recipes talk to hardware: `flash`, `boot-log`, `monitor`, `reset`, `board-info`, `ports`.** The flash
-gate and the boot log check are in `scripts/board.sh`.
+gate and the boot log check are in `scripts/board.sh`. **`just ruida-probe --controller <address>` talks to the laser
+controller**: only the five reads, to the address given. It runs on the owner's word in the same session, from a
+computer with LightBurn closed (reference 6.5 step 1).
 
 - `just flash node` (or `coordinator`) is the only way to flash. It prints the crate's `FLASH_NOTICE.txt` and needs
   it acknowledged: the crate name typed at a terminal, or `ALIGN_FLASH_ACK=<crate>:<hash>` without one. The hash is
