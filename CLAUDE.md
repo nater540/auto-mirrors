@@ -345,8 +345,10 @@ The alignment procedure on the coordinator (`coordinator_logic::requests`, the f
 
 - **Five buttons are the reading until the detector exists** (owner, 2026-11-15). No detector processing is built;
   the detector is likely a pyroelectric quad, and its method is planned and reviewed before it is built (S3).
-- **Buttons connect to 3V3 with internal pull-downs** (active high), on GPIO 18 to 21 (A to D) and 10 (center);
+- **Buttons connect to 3V3 with internal pull-downs** (active high), on GPIO 18 to 21 (A to D) and 2 (center);
   TWAI keeps GPIO 22 and 23. A broken wire reads as not pressed.
+- **The sensor's board is a Seeed XIAO ESP32C6** (owner, 2026-11-17: a C3-sized board, keeping one chip everywhere).
+  Every pin it uses is on the XIAO's edge; the center button moved from GPIO 10, which the XIAO does not bring out.
 - **The position is taken when the SHOT arrives**; nothing held is centered; a rejected chord (opposite corners,
   three buttons or more) reports NoShot. Readings go out `reply_delay_ms` (200) after the SHOT, in shot order.
 - **Bench mode** (console or SENSOR_CMD Bench) makes a chord fire a bench shot and ignores SHOT frames; outside it,
@@ -388,8 +390,8 @@ One Cargo workspace, edition 2024, Rust 1.96.0 pinned. Dependencies and lints ar
   `ShotMethod` that reads a shot: the buttons by default, the simulated beam in `align-sim`), the five bench
   buttons (`buttons`: debounce, chords, positions), and its console.
 - `firmware/sensor` (`align-sensor`): wires `sensor-logic` to TWAI, five button inputs, and the USB console. Drives
-  no output pin and writes no flash. Pins in `src/board.rs`, PROVISIONAL for a development board of its own; they
-  assume a DevKitC-1 (GPIO 10 and 20 are not on a Feather's headers) and need a new table for the board it gets.
+  no output pin and writes no flash. Pins in `src/board.rs`, PROVISIONAL for a Seeed XIAO ESP32C6, the sensor's
+  own board (GPIO 20 is not on a Feather's headers, so a Feather needs a new table).
 - `crates/coordinator-logic`: `no_std`. The coordinator's bus side, turning traffic into the state machine's events:
   so far the watch over the nodes (`nodes`: present, lost, restarted, or another protocol version, judged from
   heartbeats the way the nodes judge the coordinator), and the sensor's readings paired with a job's shots

@@ -1,22 +1,27 @@
-//! Every pin of the sensor node, in one place. PROVISIONAL: chosen for a bare ESP32-C6 development board of its own,
-//! with five buttons standing in for the detector (`docs/SENSOR_PLAN.md`, revision 4, sections 7.3 and 7.5).
+//! Every pin of the sensor node, in one place. PROVISIONAL: chosen for a Seeed XIAO ESP32C6 (owner, 2026-11-17), the
+//! sensor's own board, with five buttons standing in for the detector (`docs/SENSOR_PLAN.md`, revision 4, sections
+//! 7.3 and 7.5). Every pin used is on the XIAO's edge (D0 to D10); the XIAO name is in the table.
 //!
 //! Rules applied:
-//! - No strapping pin (GPIO4, 5, 8, 9, 15): a button held at reset could change the boot.
-//! - GPIO12 and 13 stay with USB-Serial-JTAG (the console and the log), GPIO16 and 17 with UART0.
+//! - No strapping pin (GPIO4, 5, 8, 9, 15): a button held at reset could change the boot. On the XIAO, GPIO 9 is its
+//!   boot button and GPIO 15 its LED.
+//! - GPIO12 and 13 stay with USB-Serial-JTAG (the console and the log), GPIO16 and 17 (D6, D7) with UART0.
+//! - GPIO 3 and 14 run the XIAO's antenna switch, and stay in their reset state: the sensor uses no radio.
 //! - GPIO 22 and 23 are TWAI transmit and receive, as on the motor node, ready for a transceiver.
 //! - Buttons connect to 3V3 and the inputs are pulled down (active high): a broken wire reads as not pressed, and a
 //!   ULN2003 input on the same pin, should this image ever run on a motor board, is held off rather than pulled on.
 //!
-//! | Signal | GPIO | Direction | At boot |
-//! |---|---|---|---|
-//! | Button A, upper right | 18 | in, pull-down | not pressed |
-//! | Button B, upper left | 19 | in, pull-down | not pressed |
-//! | Button C, lower left | 20 | in, pull-down | not pressed |
-//! | Button D, lower right | 21 | in, pull-down | not pressed |
-//! | Button center | 10 | in, pull-down | not pressed |
-//! | TWAI, one-wire loopback on the bench | 22 | open drain, pull-up | recessive |
-//! | (TWAI receive with a transceiver) | 23 | unused on the bench | reset state |
+//! | Signal | GPIO | XIAO | Direction | At boot |
+//! |---|---|---|---|---|
+//! | Button A, upper right | 18 | D10 | in, pull-down | not pressed |
+//! | Button B, upper left | 19 | D8 | in, pull-down | not pressed |
+//! | Button C, lower left | 20 | D9 | in, pull-down | not pressed |
+//! | Button D, lower right | 21 | D3 | in, pull-down | not pressed |
+//! | Button center | 2 | D2 | in, pull-down | not pressed |
+//! | TWAI, one-wire loopback on the bench | 22 | D4 | open drain, pull-up | recessive |
+//! | (TWAI receive with a transceiver) | 23 | D5 | unused on the bench | reset state |
+//!
+//! The center button was on GPIO 10 for a DevKitC-1; the XIAO does not bring GPIO 10 out.
 
 use esp_hal::Blocking;
 use esp_hal::gpio::{AnyPin, Flex};
@@ -47,7 +52,7 @@ macro_rules! board_pins {
         $p.GPIO19.into(),
         $p.GPIO20.into(),
         $p.GPIO21.into(),
-        $p.GPIO10.into()
+        $p.GPIO2.into()
       ],
       twai_tx: $p.GPIO22.into()
     }

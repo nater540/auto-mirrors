@@ -301,6 +301,8 @@ and 16 and 17 (UART0). Strapping pins 4, 5, 8, 9, and 15 can change the boot if 
 enters download mode).
 **Recommendation: a second ESP32-C6 development board for the sensor**, with the buttons on GPIO 18 to 21 and 10,
 and TWAI on GPIO 22 and 23 as on the motor node (built in revision 4).
+2026-11-17: the owner chose a Seeed XIAO ESP32C6 for the sensor, a board the size of a C3's. It does not bring out
+GPIO 10, so the center button moved to GPIO 2 (XIAO D2); the other pins are on its edge as they are.
 Two boards also allow a real two-node bus: both controllers in no-transceiver mode with their TWAI pins wired
 together, open drain, which is what esp-hal's `new_no_transceiver` is for. On one board, the fallback is GPIO 1, 16,
 17, 23, and 4, with UART0 and the TWAI receive reservation given up and a warning not to hold the GPIO 4 button at
