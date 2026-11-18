@@ -55,6 +55,9 @@ Stop at the end of each milestone and report to the owner (hand-off section 6).
 - M6 bring-up tools: built and host-tested, not run on hardware (it needs the sensor and a Ruida). The coordinator's
   `backlash <axis>` brackets one axis's play through the beam and `hysteresis <axis>` cycles it through its loop
   (reference 3.4, `align_core::bringup`), each logging `BU1` lines for the owner to paste back.
+  The same procedures run on a bench before the test frame exists (owner, 2026-11-18: one motor first, four soon):
+  `just bench-rig` drives the node's motor through its USB console and asks the operator where the pointer's dot is
+  on a paper target. Host-tested against a fake node; not run on hardware.
 - M7 Ruida UDP (optional, read-only): built and host-tested, not run against a controller. `ruida-proto` can build
   only the five memory reads of reference 6.4 and reads the answers; `just ruida-probe --controller <address>` runs
   the first test of reference 6.5 from a computer, logging `RU1` lines. The coordinator does not use it: it has no
@@ -218,7 +221,12 @@ Reference 5.4 and addendum A.8 leave these open; `align-proto` decides them, and
   and RX on GPIO 1 (A0), on the node and the coordinator alike. A frame then needs a second node to acknowledge it:
   a board alone on the bus logs its failed sends once a second, and esp-hal aborts each one at error passive.
 - **The Feather has clean header pins for one motor channel only** (GPIO 3, 2, 21, 22 for IN1 to IN4); channel 1 is
-  unpopulated there (`board::CHANNELS`). Two channels on one board wait for the node board.
+  unpopulated there (`board::CHANNELS`). Two channels on one board wait for the node board. By Espressif's published
+  pinout (not checked on a board), an ESP32-C6-DevKitC-1 has 14 usable pins, and a two-channel node needs 13.
+- **The bench console prints fixed lines for a program** beside its lines for people (`node_logic::bench_line`):
+  `BENCH1,status`, one `BENCH1,channel` a channel, and a `BENCH1,moved` or `BENCH1,refused` at the end of every bench
+  move. A program drives the console as a person does; it must never act on a `Debug` print. Bench moves are refused
+  while the node hears a coordinator, so the bench rig needs the coordinator off its bus.
 
 ## What the coordinator settled (M5)
 
@@ -334,6 +342,18 @@ The alignment procedure on the coordinator (`coordinator_logic::requests`, the f
   machine of known play, which is the reference for reading a pasted log.
 - Through the whole system on the placeholder job timing, a backlash measurement took 96 s and a hysteresis cycle
   113 s.
+- **A bench with one fixed target reads the beam at A only** (`config::ReadAt::AOnly`): B and C are zeroed, and the
+  noise is pooled and judged over A's two coordinates. Pooled over six, the four never read make the noise look
+  sqrt(3) times smaller. Three repeats then give one place's noise only 4 degrees of freedom (12 at three places):
+  in the simulator, a play of 40 was bracketed at (48, 64] until seven repeats were taken. Read at one place, the
+  loop's width is unbiased but carries about 2.2 steps of noise (one sigma, 600 runs), against under 3 at three.
+- **Readings typed by a person repeat exactly**, so the measured noise of a still dot is zero and every misread
+  would count as motion. `BringUp::noise_floor_norm` (zero on the machine) is the least noise a measurement is
+  judged with; the bench sets it to the operator's reading uncertainty over the target's half-width. With a person
+  reading, the floor carries the noise, so the bench keeps three repeats.
+- **The poke must move the dot well beyond the reading's uncertainty.** The configured 45 steps is sized for a
+  detector at 1 m (addendum A.3); at 14 um a step per meter of throw, a paper target at 3 m read to 0.25 mm needs
+  about 200 (`--poke-steps`). The bracket's resolution there is about 25 steps, coarse against the aligner's few.
 
 ## What the ray-traced model showed (2026-11-17)
 
@@ -451,6 +471,10 @@ One Cargo workspace, edition 2024, Rust 1.96.0 pinned. Dependencies and lints ar
   (`value`), and one query from its packet to its reading without I/O (`exchange`).
 - `crates/ruida-probe` (`ruida-probe`): `std`. The first test of reference 6.5 over a UDP socket (`probe`), and a
   simulated controller on loopback (`sim`) for its tests and `--sim`.
+- `crates/bench-rig` (`bench-rig`): `std`. The bring-up of one axis on a bench: a node's console over a serial port
+  (`console`), the motors behind `Actuator` (`motors`), the operator's typed readings behind `BeamSensor` (`eye`), and
+  the bench's configuration and checks (`procedure`). Its tests run against a fake node on a thread (`fake_node`)
+  that answers with `node-logic`'s own parser and lines.
 
 - `tools/beamviz` (Python, uv): an exact ray-traced model of the machine (`optics`, `machine`), which `link` lets the
   aligner drive through `align-sim external`, and a matplotlib viewer of the run (`view`). Two-space indentation
@@ -460,7 +484,8 @@ One Cargo workspace, edition 2024, Rust 1.96.0 pinned. Dependencies and lints ar
 Dependency direction: firmware and `align-sim` depend on `align-core`, `align-proto`, `stepper`, `node-logic`,
 `sensor-logic`, and `coordinator-logic`; `node-logic` depends on the first three, `sensor-logic` and
 `coordinator-logic` on the first two; `align-core` depends on none of them. `ruida-proto` depends on none of them
-either, and `ruida-probe` on it and `align-core` (for `config::RuidaLink`).
+either, and `ruida-probe` on it and `align-core` (for `config::RuidaLink`). `bench-rig` depends on `align-core`,
+`node-logic` (the console's lines and parser), and `align-sim` (for `block_on`).
 HAL types never enter the `crates/` libraries.
 
 The firmware crates are workspace members but not `default-members`: a plain `cargo build`, `cargo test`, or
@@ -490,6 +515,7 @@ just sweep --system        # the same through the whole system (bus, nodes, inte
 just bring-up --axis m2v   # one axis's backlash and hysteresis on a machine of known play, with the `BU1` lines
 just sweep-margins         # how much stick-slip, noise, backlash, and step loss the thresholds tolerate
 just ruida-probe --sim     # the Ruida first test against a simulated controller on loopback, with the `RU1` lines
+just bench-rig --motor m1h=<port>:0 --reading-mm 0.25 --poke-steps 200 backlash m1h   # MOVES A MOTOR: see below
 just beamviz               # the aligner against a ray-traced machine in Python, shown; `--save run.gif`, `--help`
 just beamviz-check         # the ray-traced machine's lint and tests (not in `ci`: uv downloads numpy and matplotlib)
 just deny                  # licenses, advisories, bans, and sources (deny.toml)
@@ -514,6 +540,10 @@ test that holds the devices to each other; a unit test that encodes the same mis
 gate and the boot log check are in `scripts/board.sh`. **`just ruida-probe --controller <address>` talks to the laser
 controller**: only the five reads, to the address given. It runs on the owner's word in the same session, from a
 computer with LightBurn closed (reference 6.5 step 1).
+**`just bench-rig` moves a motor**: the one on the port named for the measured axis, in bench mode, after the
+operator at the terminal types `go`. It sends only `status` until a node of this firmware answers, and the node's
+own checks are the only layer on the bench. Claude does not run it against hardware: it is the owner's tool, run
+with someone at the screw.
 
 - `just flash node` (or `coordinator`) is the only way to flash. It prints the crate's `FLASH_NOTICE.txt` and needs
   it acknowledged: the crate name typed at a terminal, or `ALIGN_FLASH_ACK=<crate>:<hash>` without one. The hash is
