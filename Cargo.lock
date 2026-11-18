@@ -18,6 +18,7 @@ dependencies = [
  "align-core",
  "align-proto",
  "coordinator-logic",
+ "embassy-embedded-hal",
  "embassy-executor",
  "embassy-futures",
  "embassy-sync 0.8.0",
@@ -29,7 +30,9 @@ dependencies = [
  "esp-hal",
  "esp-println",
  "esp-rtos",
+ "esp-storage",
  "log",
+ "sequential-storage",
 ]
 
 [[package]]

@@ -28,7 +28,10 @@ Bus:         TWAI through an SN65HVD230 transceiver: TX on GPIO 23 (MI) to CTX, 
              250 kbit/s, normal mode. A heartbeat and the inhibit level every 100 ms, the inhibit at once on change.
 Other I/O:   none. Every other GPIO stays in its reset state, among them the Feather's RGB LED and I2C power
              (GPIO 20), its I2C pins (18, 19), and its LED (15).
-Flash:       nothing is written after boot.
+Flash:       the nvs partition holds the calibration and the last good alignment (reference 3.6). At boot they are
+             read; contents that do not read are erased, before the watchdog starts. A new calibration, and the
+             screws' positions after an alignment that converged, are written after the procedure ends, with no
+             move running: each flash operation masks interrupts and stalls the chip. Nothing else is written.
 Watchdog:    the TIMG1 watchdog resets the chip if not fed for 1 s; a reset releases the relay and FootSW.
 
 Bench wiring: SN65HVD230: 3V3 to 3V, GND to GND, CTX to MI, CRX to A0; CANH and CANL to the node's.

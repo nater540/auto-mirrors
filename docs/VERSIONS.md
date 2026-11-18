@@ -27,11 +27,11 @@ The esp-hal family changes API between minor releases. The crates below are pinn
 | esp-println | =0.18.0 | `esp32c6`, `log-04` | `log` back end over USB-Serial-JTAG. |
 | embassy-executor | =0.10.0 | `log` | Current release; the version esp-rtos 0.4.0 is built against. |
 | embassy-time | =0.5.1 | `log` | Current release (the template asks for 0.5.0; 0.5.1 is a patch). |
-| esp-storage | =0.10.0 | `esp32c6`, `embedded-storage` | Node: blocking flash access for the position records. Moves with the esp-hal family. |
+| esp-storage | =0.10.0 | `esp32c6`, `embedded-storage` | Node and coordinator: blocking flash access for their records. Moves with the esp-hal family. |
 | embassy-sync | 0.8.0 | | Node: the queues, the blocking mutex around the node, and the move-finished signal. |
 | embassy-futures | 0.1.2 | | Node: `select` of receive against transmit, and of a move against a key press. |
-| embassy-embedded-hal | 0.6.0 | no default features | Node: `BlockingAsync`, the adapter from esp-storage's blocking flash to the async flash sequential-storage takes. |
-| sequential-storage | 8.0.2 | no default features | Node: the record map on the `nvs` partition; it CRC-checks items and keeps the newest per key (reference 5.5). |
+| embassy-embedded-hal | 0.6.0 | no default features | Node and coordinator: `BlockingAsync`, the adapter from esp-storage's blocking flash to the async flash sequential-storage takes. |
+| sequential-storage | 8.0.2 | no default features | Node and coordinator: the record map on the `nvs` partition; it CRC-checks items and keeps the newest per key (reference 5.5). |
 | embedded-io-async | 0.7.0 | | Node: reading the console from USB-Serial-JTAG (esp-hal 1.2.2 implements 0.6 and 0.7). |
 | static_cell | 2.1.1 | | Node: the console line buffer. |
 

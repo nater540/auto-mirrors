@@ -285,6 +285,13 @@ The alignment procedure on the coordinator (`coordinator_logic::requests`, the f
   invalid shots, and stopping on the others too means someone looks before the next run.
 - **The whole-system simulation asks through the same `Requests`**, so its tests and `just sweep --system` cover
   the code the firmware runs.
+- **The calibration survives a reboot** (reference 3.6, `coordinator_logic::stored`): a new one, and the screws'
+  positions after an alignment that converged (`LastGood`), go to the `nvs` partition as the node's positions do,
+  written by the `procedure` task after the procedure ends. Each flash operation masks interrupts and stalls the
+  chip, so nothing may be in flight. At boot the calibration is handed to the aligner, which checks it like any
+  other (conditioning, direction signs) and measures again if it fails; `LastGood` is only logged so far. A record
+  that does not read is ignored; storage that does not read is erased before the watchdog starts. Without a usable
+  partition the coordinator runs on, keeping its calibration until reset: persistence saves pokes, not safety.
 
 ## What the bring-up settled (M6)
 
@@ -419,10 +426,11 @@ One Cargo workspace, edition 2024, Rust 1.96.0 pinned. Dependencies and lints ar
   each node last said; `console` parses the coordinator's console.
   `orchestrator` runs all of it with the state machine: the self-test, the nodes configured, a move armed, sent,
   and disarmed, and a measurement started, shot, and read. `requests` carries the aligner's moves and measurements
-  to it one at a time, and gives the aligner the nodes' counts before a procedure.
+  to it one at a time, and gives the aligner the nodes' counts before a procedure. `stored` lays out the
+  calibration and the last good alignment as the coordinator keeps them in flash.
 - `firmware/coordinator` (`align-coordinator`): the orchestrator on TWAI, the relay drive and its feedback, FootSW,
-  the Status and fire sense inputs, the watchdog, the aligner in its own task, and the console (`status`, `jog`,
-  `stop`, `measure`, `calibrate`, `align`, `poke`, `backlash`, `hysteresis`, `clear`).
+  the Status and fire sense inputs, the watchdog, the aligner in its own task, the calibration in flash, and the
+  console (`status`, `jog`, `stop`, `measure`, `calibrate`, `align`, `poke`, `backlash`, `hysteresis`, `clear`).
   Pins in `src/board.rs`, PROVISIONAL for a Feather.
 - `crates/ruida-proto`: `no_std`. The Ruida controller's UDP protocol, read-only: the byte scrambling (`swizzle`),
   the five memory reads and what the controller's datagrams say (`packet`), the 35-bit values and status bits

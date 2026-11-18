@@ -29,6 +29,10 @@ embassy-sync.workspace = true
 embassy-futures.workspace = true
 embedded-io-async.workspace = true
 embedded-can.workspace = true
+# The calibration and the last good alignment in flash (reference 3.6), as the node keeps its positions.
+embassy-embedded-hal.workspace = true
+esp-storage.workspace = true
+sequential-storage.workspace = true
 
 [lints]
 workspace = true
