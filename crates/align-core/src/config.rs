@@ -393,6 +393,30 @@ impl BringUp {
   };
 }
 
+/// The read-only link to the Ruida controller over UDP (reference 6.1, 6.5; hand-off M7). The protocol is the
+/// `ruida-proto` crate; for now only the probe on a computer uses it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RuidaLink {
+  /// UNVERIFIED (reference 6.1: MeerK40t's normal status timeout): a query with no answer this long after its last
+  /// packet has failed. The EduTech Wiki gives about 4 s for an ACK during a job upload.
+  pub reply_timeout_ms: u32,
+  /// FIRM (reference 6.5 step 3): a query is sent at most this many times while the controller answers NAK, the
+  /// second time summed the other way while the checksum basis is not known.
+  pub query_tries: u8,
+  /// UNVERIFIED (reference 6.1 and 6.5 step 6: MeerK40t polls every 0.2 s): queries start at most this often. A
+  /// third-party daemon advises a slower rate if uploads fail meanwhile.
+  pub poll_period_ms: u32
+}
+
+impl RuidaLink {
+  /// The starting values.
+  pub const STARTING: Self = Self {
+    reply_timeout_ms: 1_000,
+    query_tries: 2,
+    poll_period_ms: 200
+  };
+}
+
 /// The whole configuration.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Config {
@@ -413,7 +437,9 @@ pub struct Config {
   /// The coordinator's interlock and measurement timing.
   pub coordinator: CoordinatorTiming,
   /// The bring-up measurements of backlash and hysteresis.
-  pub bring_up: BringUp
+  pub bring_up: BringUp,
+  /// The read-only link to the Ruida controller.
+  pub ruida: RuidaLink
 }
 
 impl Config {
@@ -427,7 +453,8 @@ impl Config {
     torque_test: TorqueTest::STARTING,
     sensor_timing: SensorTiming::STARTING,
     coordinator: CoordinatorTiming::STARTING,
-    bring_up: BringUp::STARTING
+    bring_up: BringUp::STARTING,
+    ruida: RuidaLink::STARTING
   };
 }
 
@@ -528,6 +555,14 @@ mod tests {
       (2, 8)
     );
     assert_eq!(bring_up.overshoot_floor_steps, 60);
+  }
+
+  #[test]
+  fn the_ruida_link_waits_and_polls_as_meerk40t_does_and_retries_once() {
+    let ruida = Config::default().ruida;
+    assert_eq!(ruida.reply_timeout_ms, 1_000);
+    assert_eq!(ruida.query_tries, 2);
+    assert_eq!(ruida.poll_period_ms, 200);
   }
 
   #[test]

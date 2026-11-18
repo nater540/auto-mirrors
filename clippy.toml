@@ -6,10 +6,10 @@ allow-unwrap-in-tests = true
 allow-expect-in-tests = true
 allow-dbg-in-tests = true
 
-# Proper nouns and CAN message names (reference 5.4) that `doc_markdown` would otherwise want in backticks;
+# Proper nouns, the Ruida protocol sources (reference 6), and CAN message names (reference 5.4) that `doc_markdown` would otherwise want in backticks;
 # ".." keeps clippy's built-in list.
 doc-valid-idents = [
-  "ESP32", "ULN2003", "FootSW", "LightBurn",
+  "ESP32", "ULN2003", "FootSW", "LightBurn", "MeerK40t", "EduTech",
   "MOVE_REL", "MOVE_DONE", "SENSOR_CMD", "SENSOR_CMD_REPLY", "SENSOR_RESEND",
   ".."
 ]
