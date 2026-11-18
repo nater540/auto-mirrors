@@ -8,6 +8,7 @@ members = [
   "crates/node-logic",
   "crates/sensor-logic",
   "crates/coordinator-logic",
+  "crates/ruida-proto",
   "firmware/node",
   "firmware/sensor",
   "firmware/coordinator"
@@ -17,7 +18,7 @@ members = [
 # overrides this and will fail on the host; use the justfile recipes.
 default-members = [
   "crates/align-core", "crates/align-proto", "crates/align-sim", "crates/stepper", "crates/node-logic",
-  "crates/sensor-logic", "crates/coordinator-logic"
+  "crates/sensor-logic", "crates/coordinator-logic", "crates/ruida-proto"
 ]
 
 [workspace.package]
@@ -34,6 +35,7 @@ stepper = { path = "crates/stepper" }
 node-logic = { path = "crates/node-logic" }
 sensor-logic = { path = "crates/sensor-logic" }
 coordinator-logic = { path = "crates/coordinator-logic" }
+ruida-proto = { path = "crates/ruida-proto" }
 
 nalgebra = { version = "=0.35.0", default-features = false, features = ["libm"] }
 libm = "0.2.16"

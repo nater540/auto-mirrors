@@ -1,0 +1,16 @@
+[package]
+name = "ruida-proto"
+description = "The Ruida controller's UDP protocol, read-only: the swizzle, the checksum, five memory reads, and the replies"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

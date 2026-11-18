@@ -15,7 +15,8 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 target := "riscv32imac-unknown-none-elf"
 chip := "esp32c6"
 firmware_crates := "-p align-node -p align-sensor -p align-coordinator"
-no_std_crates := "-p align-core -p align-proto -p stepper -p node-logic -p sensor-logic -p coordinator-logic"
+no_std_crates := "-p align-core -p align-proto -p stepper -p node-logic -p sensor-logic -p coordinator-logic" + \
+    " -p ruida-proto"
 release_dir := "target" / target / "release"
 
 # The board actions: port selection, the flash gate, flashing, and the boot log check.
