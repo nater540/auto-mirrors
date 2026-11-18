@@ -314,6 +314,23 @@ The alignment procedure on the coordinator (`coordinator_logic::requests`, the f
 - Through the whole system on the placeholder job timing, a backlash measurement took 96 s and a hysteresis cycle
   113 s.
 
+## What the ray-traced model showed (2026-11-17)
+
+`tools/beamviz` traces the beam exactly in three dimensions: mounts tilted by their screw tips on the lever geometry,
+mirror 2 riding a Y travel that climbs, an X travel racked off square, a tube pointing off its line, and the sensor off
+the head's beam line. The aligner of `align-core` drives it unchanged, through `align-sim external`.
+
+- **It agrees with the documents and the Rust model**: a horizontal screw turns the beam by twice the plate's tilt and
+  a vertical one by the square root of two times it (reference 1.2, addendum A.9), and the Jacobian of a machine built
+  to the drawing has the Rust model's magnitudes to 0.1%. Mirror 2 does not move the beam between A and B.
+- **The aligner converges on it**: the default errors (legs up to 550 urad off their travel) align in two solver
+  steps, nine measurements and 31 moves, with each screw ending within about 5 steps of the exact solution.
+- **Converged is not zero.** The 0.02 tolerance on a 4 mm beam is about 40 um of spot walk over the travels, which
+  leaves each leg up to about 70 urad off its travel. That is what the hand-off's tolerance means on the machine.
+- **A poke measures a secant, not a tangent.** A 60-step poke of mirror 1 carries the spot at C from 0.5 to 1.6 mm off
+  center on a 4 mm beam, where the error function flattens: the measured entry came out 22% under the exact slope
+  (24.1 against 31.1, x1e-4 per step), as the secant over the poke predicts. The aligner converged anyway.
+
 ## What the Ruida link settled (M7)
 
 `crates/ruida-proto/src/lib.rs` and `crates/ruida-proto/src/exchange.rs` open with the rules; these shape what follows.
@@ -379,7 +396,8 @@ One Cargo workspace, edition 2024, Rust 1.96.0 pinned. Dependencies and lints ar
   is an UNVERIFIED placeholder and a scenario parameter, never configuration. `system` runs the whole system behind
   the same traits: the orchestrator, two `node-logic` nodes, and a `sensor-logic` node on a simulated bus (frames
   encoded and decoded), with the relay, the motors, and the Ruida simulated; `tests/system.rs` aligns through it.
-  `tests/bring_up.rs` holds the bring-up measurements to the model's known play.
+  `tests/bring_up.rs` holds the bring-up measurements to the model's known play. `external` puts a machine in
+  another program behind the two traits, one line per move or measurement (`align-sim external`).
 - `crates/stepper`: `no_std`. 28BYJ-48 full-step driver over `embedded_hal::digital::OutputPin` and the async
   `DelayNs`: stop flag, rail check, coils released on drop.
 - `crates/node-logic`: `no_std`. The motor node as a state machine (`node`, behind the `NodeIo` trait), its flash
@@ -411,6 +429,11 @@ One Cargo workspace, edition 2024, Rust 1.96.0 pinned. Dependencies and lints ar
   (`value`), and one query from its packet to its reading without I/O (`exchange`).
 - `crates/ruida-probe` (`ruida-probe`): `std`. The first test of reference 6.5 over a UDP socket (`probe`), and a
   simulated controller on loopback (`sim`) for its tests and `--sim`.
+
+- `tools/beamviz` (Python, uv): an exact ray-traced model of the machine (`optics`, `machine`), which `link` lets the
+  aligner drive through `align-sim external`, and a matplotlib viewer of the run (`view`). Two-space indentation
+  like everything else; `ruff check` lints it, and no formatter runs, because `ruff format` adds trailing commas.
+  Its tests need numpy and matplotlib, which uv downloads, so they are `just beamviz-check`, not part of `just ci`.
 
 Dependency direction: firmware and `align-sim` depend on `align-core`, `align-proto`, `stepper`, `node-logic`,
 `sensor-logic`, and `coordinator-logic`; `node-logic` depends on the first three, `sensor-logic` and
@@ -445,6 +468,8 @@ just sweep --system        # the same through the whole system (bus, nodes, inte
 just bring-up --axis m2v   # one axis's backlash and hysteresis on a machine of known play, with the `BU1` lines
 just sweep-margins         # how much stick-slip, noise, backlash, and step loss the thresholds tolerate
 just ruida-probe --sim     # the Ruida first test against a simulated controller on loopback, with the `RU1` lines
+just beamviz               # the aligner against a ray-traced machine in Python, shown; `--save run.gif`, `--help`
+just beamviz-check         # the ray-traced machine's lint and tests (not in `ci`: uv downloads numpy and matplotlib)
 just deny                  # licenses, advisories, bans, and sources (deny.toml)
 just outdated              # the pinned crates against crates.io
 just doctor                # the tools the recipes need, and what is missing
