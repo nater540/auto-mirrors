@@ -42,7 +42,14 @@ Stop at the end of each milestone and report to the owner (hand-off section 6).
   was turned by hand unpowered came up about 1 degree short of the rest, not yet explained.
   Pulling the rail jumper mid-move ended it as `RailLost`, pulling the permit jumper as `Stopped`, each with its
   steps counted and the record suspect; a move on channel 1 was refused; no coil LED lit during reset or boot.
-  The torque margin test of addendum A.6 waits for the real mount.
+  The torque margin test of addendum A.6 waits for the real mount. First jogs on a real Series E mount (owner,
+  2026-11-18: mirror 2's horizontal screw, TPU cup coupler, a dedicated supply set to 5.10 V): plus pushes the mirror
+  as configured, and pushing in it struggled past about 1000 steps at 200 pps and near 2000 at 100 pps. After such a
+  move, with the coils released, the screw itself turned back slightly (the coupler held). **Not a torque result:**
+  the supply fell to about 3 V while the motor ran (two coils on draw 200 to 370 mA), so the coils had well under
+  their rated current. With the supply's current limit raised it held 5.1 V and the motor no longer struggled; it
+  runs warm during long jogs and draws 0 A with every coil LED off between moves. Still to measure at full voltage:
+  whether the screw turns back after a move, by how much, how repeatably, and how that grows with load.
 - M5 coordinator: started. Host-tested: the state machine of reference 7.3 (`align_core::coordinator`, whose extra
   states await the owner's sign-off), the watch over the nodes, readings, moves, the coordinator's heartbeat and
   inhibit level, and all of it together (`coordinator_logic::orchestrator`). The firmware, on a second Feather
@@ -57,7 +64,8 @@ Stop at the end of each milestone and report to the owner (hand-off section 6).
   (reference 3.4, `align_core::bringup`), each logging `BU1` lines for the owner to paste back.
   The same procedures run on a bench before the test frame exists (owner, 2026-11-18: one motor first, four soon):
   `just bench-rig` drives the node's motor through its USB console and asks the operator where the pointer's dot is
-  on a paper target. Host-tested against a fake node; not run on hardware.
+  on a paper target (`just bench-target` prints the grid). On 2026-11-18 it found the node, moved mirror 2's
+  horizontal screw, and asked for the first reading; no measurement yet, which waits for the owner's green pointer rig.
 - M7 Ruida UDP (optional, read-only): built and host-tested, not run against a controller. `ruida-proto` can build
   only the five memory reads of reference 6.4 and reads the answers; `just ruida-probe --controller <address>` runs
   the first test of reference 6.5 from a computer, logging `RU1` lines. The coordinator does not use it: it has no
