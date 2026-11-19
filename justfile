@@ -247,6 +247,11 @@ _firmware-crate crate:
 ruida-probe *args:
     cargo run --release --quiet -p ruida-probe -- {{ args }}
 
+# The bench rig's paper target, a numbered millimeter grid at exact scale: target/bench-target-{letter,a4}.pdf
+[group('board')]
+bench-target:
+    uv run --project tools/beamviz bench-target --out target
+
 # One axis's backlash or hysteresis on a bench, read by eye off a paper target. TALKS TO HARDWARE: it moves the
 # motor on the node named, after you type `go`. `just bench-rig --motor m1h=<port>:0 --reading-mm 0.25 backlash m1h`
 [group('board')]

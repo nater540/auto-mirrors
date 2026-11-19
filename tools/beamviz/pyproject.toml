@@ -10,6 +10,7 @@ dependencies = [
 
 [project.scripts]
 beamviz = "beamviz.cli:main"
+bench-target = "beamviz.target:main"
 
 [dependency-groups]
 dev = [
