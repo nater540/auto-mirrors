@@ -82,9 +82,10 @@ Stop at the end of each milestone and report to the owner (hand-off section 6).
   only through `just flash`, and only an image whose notice was read in the same session.
 - Never write code that assumes firmware alone prevents motion during firing. Firmware checks are the last layer,
   behind the force-guided relay and the switched motor rail.
-- Never use strapping pins GPIO4, 5, 8, 9, 15 for a safety signal. Every pin lives in one `board.rs` per firmware
-  crate: `firmware/node` and `firmware/sensor` have one, PROVISIONAL for development boards; the coordinator has no
-  pins yet (hand-off open item 7).
+- Never use strapping pins GPIO4, 5, 8, 9, 15 for a safety signal. Every pin lives in one board file per board a
+  firmware crate builds for: `firmware/node` has `src/board/feather.rs` and `src/board/devkitc.rs` (chosen by
+  `src/board.rs`), `firmware/sensor` and `firmware/coordinator` one `src/board.rs` each, all PROVISIONAL for
+  development boards until the real boards exist (hand-off open item 7).
 - Do not expand scope into sensor hardware design or mechanical design.
 
 ## Settled decisions (do not re-propose; build each behind a seam)
@@ -236,8 +237,14 @@ Reference 5.4 and addendum A.8 leave these open; `align-proto` decides them, and
   minute, and says when frames get through again (`align_proto::transmit`): logged once a second, the failures
   buried the bench console the owner types into (2026-11-18).
 - **The Feather has clean header pins for one motor channel only** (GPIO 3, 2, 21, 22 for IN1 to IN4); channel 1 is
-  unpopulated there (`board::CHANNELS`). Two channels on one board wait for the node board. By Espressif's published
-  pinout (not checked on a board), an ESP32-C6-DevKitC-1 has 14 usable pins, and a two-channel node needs 13.
+  unpopulated there (`board::CHANNELS`).
+- **Two channels run on an ESP32-C6-DevKitC-1** (owner's board attached 2026-11-19, MAC 20:6E:F1:17:1D:D0): the
+  `devkitc` feature of `align-node`, flashed as `just flash node-devkitc`, with its own notice
+  (`firmware/node/FLASH_NOTICE-devkitc.txt`). Of its 14 free header pins (Espressif's user guide: GPIO 6, 7, 0, 1,
+  10, 11, 2, 3 on J1 and 23 to 18 on J3) it uses 13: channel 0 on 21, 20, 19, 18, channel 1 on 10, 11, 2, 3, TWAI
+  on 23 and 22, and the permit, rail, and arm pulse on the Feather's 6, 7, and 0. It answers as node 2 (mirror 2,
+  whose horizontal screw has the bench motor), so it can share a bus with the Feather, which is node 1. Not yet
+  flashed: whether a coil turns on through reset, and whether a 32 kHz crystal sits on GPIO 0 and 1, are unchecked.
 - **The bench console prints fixed lines for a program** beside its lines for people (`node_logic::bench_line`):
   `BENCH1,status`, one `BENCH1,channel` a channel, and a `BENCH1,moved` or `BENCH1,refused` at the end of every bench
   move. A program drives the console as a person does; it must never act on a `Debug` print. Bench moves are refused
@@ -480,7 +487,8 @@ One Cargo workspace, edition 2024, Rust 1.96.0 pinned. Dependencies and lints ar
 - `crates/node-logic`: `no_std`. The motor node as a state machine (`node`, behind the `NodeIo` trait), its flash
   record layout (`record`), and the bench console commands (`console`). All host-tested.
 - `firmware/node` (`align-node`): wires `node-logic` to TWAI, the steppers, the arm pulse, the permit and rail
-  inputs, flash, and the USB console. Every pin is in `src/board.rs`, PROVISIONAL for an Adafruit Feather ESP32-C6.
+  inputs, flash, and the USB console. Every pin is in `src/board/feather.rs` (an Adafruit Feather ESP32-C6, one
+  channel, the default) or `src/board/devkitc.rs` (an ESP32-C6-DevKitC-1, two channels, `--features devkitc`).
 - `crates/sensor-logic`: `no_std`. The sensor node as a state machine (`node`, behind `SensorIo`, generic over the
   `ShotMethod` that reads a shot: the buttons by default, the simulated beam in `align-sim`), the five bench
   buttons (`buttons`: debounce, chords, positions), and its console.
@@ -543,6 +551,7 @@ just firmware              # build both images in release mode; never flashes
 just image node            # write the flashable image to target/images/ and print its size; touches no board
 just ports                 # serial ports, the Espressif ones apart from the rest
 just flash node            # print the notice, need it acknowledged, flash, then monitor or check the boot log
+just flash node-devkitc    # the same for the node built for an ESP32-C6-DevKitC-1, two channels, node 2
 just boot-log coordinator  # reset the board and check that its boot log holds the coordinator's whole notice
 just flash sensor          # the sensor image: five buttons instead of a detector; drives no output
 just sim --seed 7          # one simulated alignment, every move and measurement
@@ -599,7 +608,8 @@ with someone at the screw.
   its `espflash_ports.toml` (on this machine, the Espressif USB-Serial-JTAG, 303a:1001), then a prompt, which fails
   without a terminal rather than guessing. The two LG monitor ports on this machine do not get in the way. Do not
   write port selection in the scripts: the boot log check asks espflash which port it chose and reuses it.
-- **`firmware/<crate>/FLASH_NOTICE.txt` states what the image does to motors and I/O.** The image logs it at boot.
+- **`firmware/<crate>/FLASH_NOTICE.txt` states what the image does to motors and I/O** (the DevKitC-1 node's is
+  `firmware/node/FLASH_NOTICE-devkitc.txt`, which the image built with `devkitc` logs). The image logs it at boot.
   Change it in the same commit as any change to what the firmware drives; a stale notice is a safety defect.
 - Do not run `monitor`, `reset`, or `board-info` on a port without knowing what is on it. Other boards are often
   attached to this machine.

@@ -163,23 +163,32 @@ _sim:
 check-no-std:
     cargo build {{ no_std_crates }} --target {{ target }}
 
-# Build both firmware images in release mode (build only, never flashes)
+# Build every firmware image in release mode, the node for both boards (build only, never flashes)
 [group('firmware')]
 firmware:
     cargo build {{ firmware_crates }} --target {{ target }} --release
+    cargo build -p align-node --features devkitc --target {{ target }} --release
 
-# Clippy on the firmware crates, warnings denied
+# Clippy on the firmware crates, the node for both boards, warnings denied
 [group('firmware')]
 firmware-clippy:
     cargo clippy {{ firmware_crates }} --target {{ target }} --release -- -D warnings
+    cargo clippy -p align-node --features devkitc --target {{ target }} --release -- -D warnings
 
-# Write the flashable image of `node`, `sensor`, or `coordinator` to target/images/ and print its size (touches no board)
+# Write the flashable image of `node`, `node-devkitc`, `sensor`, or `coordinator` to target/images/ and print its size
 [group('firmware')]
 image crate: (_firmware-crate crate)
-    cargo build -p align-{{ crate }} --target {{ target }} --release
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ "{{ crate }}" = node-devkitc ]; then
+        cargo build -p align-node --features devkitc --target {{ target }} --release
+        cp {{ release_dir }}/align-node {{ release_dir }}/align-node-devkitc
+    else
+        cargo build -p align-{{ crate }} --target {{ target }} --release
+    fi
     mkdir -p target/images
     espflash save-image --chip {{ chip }} {{ release_dir }}/align-{{ crate }} target/images/align-{{ crate }}.bin
-    @echo "target/images/align-{{ crate }}.bin: $(wc -c < target/images/align-{{ crate }}.bin | tr -d ' ') bytes"
+    echo "target/images/align-{{ crate }}.bin: $(wc -c < target/images/align-{{ crate }}.bin | tr -d ' ') bytes"
 
 # --- board (each of these talks to hardware) --------------------------------
 #
@@ -197,7 +206,7 @@ ports:
 board-info port="":
     espflash board-info --chip {{ chip }} {{ if port == "" { "" } else { "--port " + port } }}
 
-# Flash `node`, `sensor`, or `coordinator` after its notice is acknowledged; without a terminal, check the boot log after
+# Flash `node`, `node-devkitc`, `sensor`, or `coordinator` once its notice is acknowledged; then check the boot log
 [group('board')]
 flash crate port="" secs="15":
     {{ board }} flash {{ crate }} "{{ port }}" {{ secs }}
@@ -227,9 +236,9 @@ reset port="":
 _firmware-crate crate:
     #!/usr/bin/env bash
     case "{{ crate }}" in
-      node | sensor | coordinator) ;;
+      node | node-devkitc | sensor | coordinator) ;;
       *)
-        echo "the firmware crate must be 'node', 'sensor', or 'coordinator' (got '{{ crate }}')" >&2
+        echo "the firmware crate must be 'node', 'node-devkitc', 'sensor', or 'coordinator' (got '{{ crate }}')" >&2
         exit 1
         ;;
     esac

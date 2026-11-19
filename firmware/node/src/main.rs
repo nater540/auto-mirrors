@@ -12,7 +12,8 @@
 //!   between moves, so that no flash write happens while a motor steps (hand-off 3.3).
 //! - `console`: the bench console over USB-Serial-JTAG; replies go to the log.
 //!
-//! `FLASH_NOTICE.txt`, beside this crate's `Cargo.toml`, states what the image does to motors and I/O.
+//! `FLASH_NOTICE.txt` (the Feather) and `FLASH_NOTICE-devkitc.txt` (the DevKitC-1), beside this crate's
+//! `Cargo.toml`, state what each image does to motors and I/O; `src/board.rs` picks the one built.
 //! `just flash` prints it and asks before flashing, and the image logs it at boot.
 //! Change it in the same commit as any change to what this firmware drives.
 #![no_std]
@@ -61,7 +62,7 @@ use static_cell::StaticCell;
 use stepper::{Coils, MoveEnd, Phase, Stepper};
 
 /// What this image does to motors and I/O: the text `just flash` shows before flashing.
-const FLASH_NOTICE: &str = include_str!("../FLASH_NOTICE.txt");
+const FLASH_NOTICE: &str = board::FLASH_NOTICE;
 
 // The app descriptor the ESP-IDF second-stage bootloader requires in every image.
 esp_bootloader_esp_idf::esp_app_desc!();

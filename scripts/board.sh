@@ -16,6 +16,10 @@
 #
 # Without a terminal, a flash ends by capturing the boot log and checking that every line of the notice appears in
 # it and that nothing panicked. That proves the image now running is the one whose notice was acknowledged.
+#
+# <crate> is `node`, `sensor`, or `coordinator`, or `node-devkitc`: the node built for an ESP32-C6-DevKitC-1
+# (`align-node --features devkitc`), whose notice is firmware/node/FLASH_NOTICE-devkitc.txt. Its ELF is copied to
+# align-node-devkitc, so that `boot-log` and `monitor` decode its addresses with the image that was flashed.
 
 set -euo pipefail
 
@@ -35,8 +39,8 @@ die() {
 
 check_crate() {
   case "$1" in
-    node | sensor | coordinator) ;;
-    *) die "the firmware crate must be 'node', 'sensor', or 'coordinator' (got '$1')" ;;
+    node | node-devkitc | sensor | coordinator) ;;
+    *) die "the firmware crate must be 'node', 'node-devkitc', 'sensor', or 'coordinator' (got '$1')" ;;
   esac
 }
 
@@ -45,7 +49,21 @@ sleep_s() {
 }
 
 notice_path() {
-  echo "firmware/$1/FLASH_NOTICE.txt"
+  case "$1" in
+    node-devkitc) echo "firmware/node/FLASH_NOTICE-devkitc.txt" ;;
+    *) echo "firmware/$1/FLASH_NOTICE.txt" ;;
+  esac
+}
+
+# Builds the image of a crate (see the header) and leaves its ELF at $release_dir/align-<crate>.
+build_image() {
+  case "$1" in
+    node-devkitc)
+      cargo build -p align-node --features devkitc --target "$target" --release
+      cp "$release_dir/align-node" "$release_dir/align-node-devkitc"
+      ;;
+    *) cargo build -p "align-$1" --target "$target" --release ;;
+  esac
 }
 
 notice_hash() {
@@ -173,7 +191,7 @@ cmd_flash() {
   check_crate "$crate"
   gate "$crate"
 
-  cargo build -p "align-$crate" --target "$target" --release
+  build_image "$crate"
 
   local elf="$release_dir/align-$crate"
   local args=(flash --chip "$chip" --monitor)

@@ -13,6 +13,11 @@ path = "src/main.rs"
 test = false
 bench = false
 
+[features]
+# Builds for an Espressif ESP32-C6-DevKitC-1 with two motor channels (`src/board/devkitc.rs`) instead of the
+# Adafruit Feather ESP32-C6 with one (`src/board/feather.rs`).
+devkitc = []
+
 [dependencies]
 esp-hal.workspace = true
 esp-rtos.workspace = true
