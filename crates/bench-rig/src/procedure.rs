@@ -151,17 +151,28 @@ mod tests {
   use crate::fake_node::{FakeNode, Machine};
   use crate::motors::{BenchMotors, Motor};
 
-  /// An operator who reads the fake machine's dot to the nearest `resolution_mm`, each time a reading is asked for.
+  /// The most lines an operator types before walking away. The longest procedure here takes about 20 readings. A
+  /// reading parser that rejects everything asks again forever, and on 2026-11-18 such a mutant filled the prompt
+  /// buffer to 12 GB and took the machine down: walking away ends the procedure as `NoReading` instead.
+  const OPERATOR_LINES: u32 = 500;
+
+  /// An operator who reads the fake machine's dot to the nearest `resolution_mm`, each time a reading is asked for,
+  /// up to `lines_left` times.
   struct Operator {
     machine: Machine,
     resolution_mm: f32,
     line: Vec<u8>,
-    at: usize
+    at: usize,
+    lines_left: u32
   }
 
   impl Read for Operator {
     fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
       if self.at == self.line.len() {
+        let Some(left) = self.lines_left.checked_sub(1) else {
+          return Ok(0);
+        };
+        self.lines_left = left;
         let (h_mm, v_mm) = self.machine.dot_mm();
         let round = |mm: f32| (mm / self.resolution_mm).round() * self.resolution_mm;
         self.line = format!("{} {}\n", round(h_mm), round(v_mm)).into_bytes();
@@ -203,7 +214,8 @@ mod tests {
       machine: machine.clone(),
       resolution_mm: 0.1,
       line: Vec::new(),
-      at: 0
+      at: 0,
+      lines_left: OPERATOR_LINES
     };
     let eye = ReadByEye::new(
       BufReader::new(operator),

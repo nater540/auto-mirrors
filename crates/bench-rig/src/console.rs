@@ -27,6 +27,10 @@ pub const STATUS_WAIT: Duration = Duration::from_secs(2);
 /// whose boot takes about a second.
 pub const STATUS_TRIES: u32 = 5;
 
+/// The longest a console reads what was already waiting before a command. A node that never stops printing would
+/// otherwise keep the command from ever going out.
+const DRAIN_MAX: Duration = Duration::from_millis(200);
+
 /// The longest line kept; a longer one is cut there. The node's lines are under 200 characters.
 const LINE_MAX: usize = 1_024;
 
@@ -221,12 +225,13 @@ impl<P: Read + Write> NodeConsole<P> {
 
   /// Reads and logs what is already waiting, so that no answer to an earlier command is taken for the next one's.
   fn drain(&mut self) -> Result<(), ConsoleError> {
-    while self.next_line(Instant::now())?.is_some() {}
+    let deadline = Instant::now() + DRAIN_MAX;
+    while self.next_line(Instant::now())?.is_some() && Instant::now() < deadline {}
     self.pending.clear();
     Ok(())
   }
 
-  /// Reads lines until `pick` accepts one, or `wait` passes.
+  /// Reads lines until `pick` accepts one, or `wait` passes, whether or not other lines keep arriving.
   fn expect<T>(
     &mut self,
     waiting_for: &'static str,
@@ -239,6 +244,9 @@ impl<P: Read + Write> NodeConsole<P> {
         Some(text) => {
           if let Some(found) = BenchLine::parse(&text).and_then(&mut pick) {
             return Ok(found);
+          }
+          if Instant::now() >= deadline {
+            return Err(self.silent(waiting_for, wait));
           }
         }
         None => return Err(self.silent(waiting_for, wait))
@@ -430,5 +438,50 @@ mod tests {
       }
     );
     assert_eq!(machine.received().last().map(String::as_str), Some("stop"));
+  }
+
+  /// A node that prints a line for people on every read and never a fixed line.
+  struct Chatter;
+
+  impl Read for Chatter {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+      let line = b"INFO - chatter\n";
+      let count = buffer.len().min(line.len());
+      buffer[..count].copy_from_slice(&line[..count]);
+      Ok(count)
+    }
+  }
+
+  impl Write for Chatter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+      Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+      Ok(())
+    }
+  }
+
+  fn chatter() -> NodeConsole<Chatter> {
+    // The log is discarded: an endless stream would otherwise fill it.
+    let log: Log = Rc::new(RefCell::new(io::sink()));
+    NodeConsole::new(Chatter, "node-a", log)
+  }
+
+  #[test]
+  fn a_node_that_never_stops_printing_other_lines_is_still_silent_once_the_wait_has_passed() {
+    let mut console = chatter();
+    let started = Instant::now();
+    let answer = console.expect("a fixed line", Duration::from_millis(100), |_| None::<()>);
+    assert!(matches!(answer, Err(ConsoleError::Silent { .. })), "{answer:?}");
+    assert!(started.elapsed() < Duration::from_secs(2), "{:?}", started.elapsed());
+  }
+
+  #[test]
+  fn reading_what_is_waiting_ends_even_while_the_node_keeps_printing() {
+    let mut console = chatter();
+    let started = Instant::now();
+    console.drain().unwrap();
+    assert!(started.elapsed() < Duration::from_secs(2), "{:?}", started.elapsed());
   }
 }
