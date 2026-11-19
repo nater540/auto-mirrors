@@ -64,7 +64,8 @@ impl<A: Actuator, S: BeamSensor> Aligner<A, S> {
   /// search of addendum A.5; [`crate::bringup`] has the procedure and its choices).
   ///
   /// `observe` is given every measurement and every trial as it happens, so that a run cut short still leaves its
-  /// data in the log. The axis ends where it started, approached plus; no other axis moves.
+  /// data in the log. The axis ends where it started, approached plus. After a fault it is brought back there where it
+  /// can be moved. No other axis moves.
   ///
   /// # Errors
   ///
@@ -85,6 +86,23 @@ impl<A: Actuator, S: BeamSensor> Aligner<A, S> {
     self.check_legs(axis, start, [largest.saturating_neg(), largest])?;
 
     let origin = self.approach_afresh(axis).await?;
+    let report = self.backlash_from(origin, observe).await;
+    if report.is_err() {
+      self.return_to(origin).await;
+    }
+    report
+  }
+
+  /// [`Self::measure_backlash`] from its starting position, once every move has been checked.
+  async fn backlash_from(
+    &mut self,
+    origin: Origin,
+    observe: &mut impl FnMut(&Entry)
+  ) -> Result<BacklashReport, AlignFault> {
+    let axis = origin.axis;
+    let bring_up = self.config.bring_up;
+    let poke_steps = self.config.motion.poke_steps;
+    let largest = bring_up.backlash_trials_steps.iter().copied().fold(0, i32::max);
     let repeats = self.repeats(origin, observe).await?;
     // The poke finds which way the axis moves the beam, and how far a step does; it is undone at once.
     self.leg(axis, poke_steps).await?;
@@ -150,7 +168,8 @@ impl<A: Actuator, S: BeamSensor> Aligner<A, S> {
   /// 3.4; [`crate::bringup`] has the procedure and its choices).
   ///
   /// `observe` is given every measurement as it is taken, so that a run cut short still leaves its data in the log.
-  /// The axis ends where it started, approached plus; no other axis moves.
+  /// The axis ends where it started, approached plus. After a fault it is brought back there where it can be moved.
+  /// No other axis moves.
   ///
   /// # Errors
   ///
@@ -176,6 +195,26 @@ impl<A: Actuator, S: BeamSensor> Aligner<A, S> {
     self.check_approach(axis, end, amplitude)?;
 
     let origin = self.approach_afresh(axis).await?;
+    let report = self.hysteresis_from(origin, path, observe).await;
+    if report.is_err() {
+      self.return_to(origin).await;
+    }
+    report
+  }
+
+  /// [`Self::measure_hysteresis`] from its starting position, once every move along `path` has been checked.
+  async fn hysteresis_from(
+    &mut self,
+    origin: Origin,
+    path: &[i32],
+    observe: &mut impl FnMut(&Entry)
+  ) -> Result<HysteresisReport, AlignFault> {
+    let axis = origin.axis;
+    let bring_up = self.config.bring_up;
+    let moves = bring_up.hysteresis_moves_per_half.min(MAX_MOVES_PER_HALF);
+    let amplitude = bring_up
+      .hysteresis_amplitude_pokes
+      .saturating_mul(self.config.motion.poke_steps);
     let repeats = self.repeats(origin, observe).await?;
     // The plus half from its lowest point, then the minus half from its highest, which the halves share: one reading
     // per position, each half `(position, reading)` in the order travelled.
@@ -257,6 +296,20 @@ impl<A: Actuator, S: BeamSensor> Aligner<A, S> {
       axis,
       start_steps: self.axes.get(axis).pos_steps
     })
+  }
+
+  /// After a fault part way through a procedure, brings the axis back to where it started, approached plus, so that
+  /// the next procedure does not start from wherever this one stopped (review of 2026-11-19). As far as it can: the
+  /// procedure's own fault is the one reported, and an axis whose position is lost is not moved.
+  async fn return_to(&mut self, origin: Origin) {
+    let Ok(state) = self.known(origin.axis) else {
+      return;
+    };
+    let delta_steps = origin.start_steps.saturating_sub(state.pos_steps);
+    if delta_steps != 0 || state.last_dir != LastDir::Plus {
+      // Dropped: the fault that ended the procedure says more than one in its clean-up.
+      let _returned = self.approach(origin.axis, delta_steps).await;
+    }
   }
 
   /// The repeats at the starting position.

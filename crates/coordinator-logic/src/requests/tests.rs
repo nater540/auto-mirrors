@@ -209,6 +209,65 @@ fn a_measurement_waits_for_the_last_move_to_settle() {
   );
 }
 
+const MOVE: Request = Request::Move {
+  axis: Axis::M1H,
+  steps: 40
+};
+const REFUSED: Completion = Completion::Move(Err(MoveFault::Refused {
+  code: COORDINATOR_REFUSED
+}));
+
+/// Found by the review of 2026-11-19: `stop` reached only a move pending or in flight, so typed during a
+/// measurement it did nothing, and the procedure's next moves ran.
+#[test]
+fn a_stop_fails_the_request_waiting_to_start_at_once() {
+  let mut control = Loop::idle();
+  control.requests.submit(1_001, MOVE).unwrap();
+  control.run(1_001, 1_010);
+  control.done(1_011, 0, 40);
+  control.requests.submit(1_011, Request::Measure).unwrap();
+  control.run(1_012, 1_050);
+  assert_eq!(
+    control.requests.stop(),
+    Some(Completion::Measure(Err(SensorFault::NoReading))),
+    "the measurement waiting for the settle time"
+  );
+  assert!(!control.requests.busy());
+}
+
+#[test]
+fn after_a_stop_every_request_fails_before_it_starts_until_resumed() {
+  let mut control = Loop::idle();
+  assert_eq!(control.requests.stop(), None, "nothing waiting");
+  assert!(control.requests.stopped());
+  control.requests.submit(1_001, MOVE).unwrap();
+  control.step(1_001);
+  assert_eq!(control.completions, [(1_001, REFUSED)]);
+  assert_eq!(control.orchestrator.state(), State::Idle, "nothing was armed");
+  assert!(!control.bench.relay);
+  control.requests.resume();
+  assert!(!control.requests.stopped());
+  control.requests.submit(1_002, MOVE).unwrap();
+  control.run(1_002, 1_010);
+  control.done(1_011, 0, 40);
+  assert_eq!(control.completions.last(), Some(&(1_011, Completion::Move(Ok(40)))));
+}
+
+#[test]
+fn a_stop_leaves_a_running_request_to_end_by_its_report() {
+  let mut control = Loop::idle();
+  control.requests.submit(1_001, MOVE).unwrap();
+  control.run(1_001, 1_010);
+  assert_eq!(
+    control.requests.stop(),
+    None,
+    "the orchestrator's own stop ends a move in flight"
+  );
+  assert!(control.requests.busy());
+  control.done(1_011, 0, 40);
+  assert_eq!(control.completions, [(1_011, Completion::Move(Ok(40)))]);
+}
+
 #[test]
 fn a_refused_request_completes_at_once_as_the_failure_the_aligner_knows() {
   let mut control = Loop::idle();
@@ -327,9 +386,24 @@ fn where_the_node_agrees_the_aligner_keeps_its_state() {
   let mut current = PerAxis::splat(AxisState::default());
   current.m1_h = known(120, LastDir::Plus);
   current.m1_v = known(-40, LastDir::Minus);
-  let axes = starting_axes(&current, &reported(&link, &WIRING));
+  let axes = starting_axes(&current, &reported(&link, &WIRING), &PerAxis::splat(false));
   assert_eq!(axes.m1_h, known(120, LastDir::Plus));
   assert_eq!(axes.m1_v, known(-40, LastDir::Minus));
+}
+
+/// Found by the review of 2026-11-19: `jog m1h 50` then `jog m1h -50` left the count where the aligner had it, so the
+/// procedure took the axis as approached plus and poked straight after a minus move, its column short by the play.
+#[test]
+fn an_axis_the_console_moved_has_its_last_direction_unknown_even_where_the_count_agrees() {
+  let link = heard(&[(0, 120, false), (1, -40, false)]);
+  let mut current = PerAxis::splat(AxisState::default());
+  current.m1_h = known(120, LastDir::Plus);
+  current.m1_v = known(-40, LastDir::Plus);
+  let mut jogged = PerAxis::splat(false);
+  jogged.m1_h = true;
+  let axes = starting_axes(&current, &reported(&link, &WIRING), &jogged);
+  assert_eq!(axes.m1_h, known(120, LastDir::Unknown), "moved by the console");
+  assert_eq!(axes.m1_v, known(-40, LastDir::Plus), "not moved: kept");
 }
 
 #[test]
@@ -337,7 +411,7 @@ fn where_the_node_disagrees_its_count_is_taken_with_the_direction_unknown() {
   let link = heard(&[(0, 500, false), (1, 0, true)]);
   let mut current = PerAxis::splat(AxisState::default());
   current.m1_h = known(120, LastDir::Plus);
-  let axes = starting_axes(&current, &reported(&link, &WIRING));
+  let axes = starting_axes(&current, &reported(&link, &WIRING), &PerAxis::splat(false));
   assert_eq!(axes.m1_h, known(500, LastDir::Unknown));
   assert!(axes.m1_v.suspect, "the node's own suspect flag");
   assert_eq!(axes.m1_v.pos_steps, 0);
@@ -346,13 +420,17 @@ fn where_the_node_disagrees_its_count_is_taken_with_the_direction_unknown() {
 #[test]
 fn an_axis_whose_node_has_not_reported_is_lost_and_one_that_reports_again_is_found() {
   let link = heard(&[(0, 0, false)]);
-  let axes = starting_axes(&PerAxis::splat(AxisState::default()), &reported(&link, &WIRING));
+  let axes = starting_axes(
+    &PerAxis::splat(AxisState::default()),
+    &reported(&link, &WIRING),
+    &PerAxis::splat(false)
+  );
   assert!(!axes.m1_h.lost);
   assert!(axes.m1_v.lost, "no STATUS for channel 1");
   assert!(axes.m2_h.lost && axes.m2_v.lost, "mirror 2 is not on the bus");
   let mut current = PerAxis::splat(AxisState::default());
   current.m1_h.lost = true;
-  let found = starting_axes(&current, &reported(&link, &WIRING));
+  let found = starting_axes(&current, &reported(&link, &WIRING), &PerAxis::splat(false));
   assert!(!found.m1_h.lost);
   assert!(
     found.m1_h.suspect,

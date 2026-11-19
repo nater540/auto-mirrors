@@ -344,7 +344,7 @@ impl<A: Actuator, S: BeamSensor> Aligner<A, S> {
   /// Measures the Jacobian by poking each axis, and stores it.
   ///
   /// The axes are first brought to the standard direction. Each poke is a plus move, measured,
-  /// and then undone with the overshoot and return.
+  /// and then undone with the overshoot and return, even when its measurement failed.
   ///
   /// # Errors
   ///
@@ -373,8 +373,12 @@ impl<A: Actuator, S: BeamSensor> Aligner<A, S> {
     let mut poked = [Vector4::zeros(); 4];
     for (axis, after) in Axis::ALL.into_iter().zip(poked.iter_mut()) {
       self.approach(axis, poke_steps).await?;
-      *after = self.measure().await?.vector;
-      self.approach(axis, -poke_steps).await?;
+      // The poke is taken back out whether or not its measurement worked: left in, every later procedure starts
+      // from it (review of 2026-11-19). A failed measurement is the fault reported, before a failed return.
+      let measured = self.measure().await;
+      let returned = self.approach(axis, -poke_steps).await;
+      *after = measured?.vector;
+      returned?;
     }
     let poke = solver::steps_to_vector([poke_steps; 4]).x;
     let jacobian = calibration::jacobian_from_pokes(&baseline, &poked, poke);

@@ -329,7 +329,12 @@ The alignment procedure on the coordinator (`coordinator_logic::requests`, the f
   as `MoveFault::Refused` with code 0 (`COORDINATOR_REFUSED`, which no node sends), a measurement as NoReading.
 - **The procedure starts from the nodes' STATUS** (`requests::starting_axes`): the aligner keeps its own state of an
   axis where the node's count agrees, takes the node's count with the last direction unknown where it differs, and
-  holds an axis lost while its node has not reported it.
+  holds an axis lost while its node has not reported it. An axis the console jogged since the last procedure has its
+  last direction unknown whatever its count: jogs that sum to zero leave the count but not the direction the play
+  was taken up in, and a poke straight after a minus jog measured a column short by the play (review of 2026-11-19).
+- **`stop` ends a running procedure** (`Requests::stop`): the request waiting to start fails at once and every later
+  one before it starts, so the procedure faults at its next move or measurement; a move in flight gets STOP, and a
+  measurement in progress ends with its job. Before, `stop` reached only a move pending or in flight.
 - **Any fault of the procedure faults the coordinator**, cleared by hand: reference 7.3 lists a stall and three
   invalid shots, and stopping on the others too means someone looks before the next run.
 - **The whole-system simulation asks through the same `Requests`**, so its tests and `just sweep --system` cover
@@ -346,6 +351,10 @@ The alignment procedure on the coordinator (`coordinator_logic::requests`, the f
 
 `crates/align-core/src/bringup.rs` opens with the full list; the ones that shape its use:
 
+- **A procedure that fails part way brings the axis back** (review of 2026-11-19): `Aligner::calibrate` takes a poke
+  back out even when its measurement failed, and the bring-up measurements approach the axis back to its start after
+  any fault, as far as it can be moved (a stopped procedure's return is refused). Left poked, every later procedure
+  failed at its first measurement.
 - **Both measurements are methods of the aligner** (`Aligner::measure_backlash`, `Aligner::measure_hysteresis`), on
   the same traits, so the coordinator runs them over the bus and the simulator against its model. Each moves one
   axis, checks every move against the soft limits before the first, and leaves the axis where it started,

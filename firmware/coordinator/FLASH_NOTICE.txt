@@ -3,14 +3,16 @@ align-coordinator: interlock, moves, measurement, alignment, bring-up (M5, M6), 
 Motors:      moved only by the console's `jog`, `calibrate`, `align`, `poke`, `backlash`, and `hysteresis` (the last
              five run one move at a time, the axes started from the nodes' STATUS). `backlash` and `hysteresis` move
              one axis only, every move checked against the soft limits first, staying within 128 steps below and 90
-             above where the axis started, and ending there. Every move goes through the
-             state machine of reference 7.3: in Idle with the node present, after 500 ms without a fire, the relay
-             is energized; once its feedback reads the laser loop open, in a later millisecond than the energize,
-             INHIBIT 0 goes out and then one MOVE_REL with `finish_plus` clear. When the node answers (or not, after
-             3 tries), INHIBIT 1 goes out and the relay is released; an answer of a soft limit or a lost rail then
-             faults. Every other INHIBIT says inhibited.
+             above where the axis started, and ending there. A poke, and a `backlash` or `hysteresis` that fails
+             part way, moves the axis back to where it started, unless `stop` ended the procedure.
+             Every move goes through the state machine of reference 7.3: in Idle with the node present, after
+             500 ms without a fire, the relay is energized; once its feedback reads the laser loop open, in a later
+             millisecond than the energize, INHIBIT 0 goes out and then one MOVE_REL with `finish_plus` clear. When
+             the node answers (or not, after 3 tries), INHIBIT 1 goes out and the relay is released; an answer of a
+             soft limit or a lost rail then faults. Every other INHIBIT says inhibited.
              While a procedure runs, the console's `jog` and `measure` are refused; a procedure starts only in
-             Idle with no move or measurement asked for or running.
+             Idle with no move or measurement asked for or running. `stop` during a procedure stops its move in
+             flight and refuses its every later move, and faults the coordinator until `clear`.
              A node that hears this heartbeat refuses console moves (bench moves need a silent bus).
              On every node that appears or restarts it sets each axis's soft limits (-4800 to 4800 steps: the
              configured -4000 to 4000 widened by 10% of the travel) and direction sign (forward) by CONFIG.

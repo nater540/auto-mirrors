@@ -885,6 +885,106 @@ fn as_many_rejections_in_a_row_as_invalid_shots_allowed_are_a_reading_fault() {
   assert_eq!(machine.measure_runs(), [3]);
 }
 
+// --- a fault part way through a procedure ----------------------------------------------------------------------
+
+/// Rejections for measurements `from` to `from + 2`: the third in a row is a reading fault.
+fn rejected_from(from: usize) -> Vec<Option<ReadingFault>> {
+  let mut rejections = vec![None; from];
+  rejections.extend([Some(ReadingFault::Overlap); 3]);
+  rejections
+}
+
+/// Where the machine's node counts an axis, and the direction of the last move of it.
+fn left_at(machine: &Machine, axis: Axis) -> (i32, Option<bool>) {
+  let script = machine.0.borrow();
+  let last_plus = script.log.iter().rev().find_map(|event| match event {
+    Event::Move(moved, delta_steps) if *moved == axis => Some(*delta_steps > 0),
+    _ => None
+  });
+  (script.commanded[axis.index()], last_plus)
+}
+
+/// Found by the review of 2026-11-19: the poke stayed in, so every later procedure failed at its first measurement
+/// until someone moved the screw back by hand.
+#[test]
+fn a_calibration_whose_measurement_after_a_poke_fails_takes_the_poke_back_out() {
+  let machine = Machine::new([0.0; 4]).with(|script| script.rejections = rejected_from(1));
+  let mut aligner = on(&machine, &quiet());
+  assert_eq!(
+    run(aligner.calibrate()),
+    Err(AlignFault::Reading(ReadingFault::Overlap))
+  );
+  assert_eq!(
+    left_at(&machine, Axis::M1H),
+    (0, Some(true)),
+    "back where it started, approached plus"
+  );
+  assert_eq!(aligner.axes().get(Axis::M1H).pos_steps, 0);
+}
+
+#[test]
+fn a_backlash_measurement_that_fails_after_its_poke_brings_the_axis_back() {
+  // The approach afresh, three repeats, the poke, then its measurement fails.
+  let machine = Machine::new([0.0; 4]).with(|script| script.rejections = rejected_from(3));
+  let mut aligner = on(&machine, &quiet());
+  assert_eq!(
+    run(aligner.measure_backlash(Axis::M2H, &mut |_| {})),
+    Err(AlignFault::Reading(ReadingFault::Overlap))
+  );
+  assert_eq!(left_at(&machine, Axis::M2H), (0, Some(true)));
+}
+
+#[test]
+fn a_hysteresis_cycle_that_fails_at_its_lowest_point_brings_the_axis_back() {
+  let machine = Machine::new([0.0; 4]).with(|script| script.rejections = rejected_from(3));
+  let mut aligner = on(&machine, &quiet());
+  assert_eq!(
+    run(aligner.measure_hysteresis(Axis::M2V, &mut |_| {})),
+    Err(AlignFault::Reading(ReadingFault::Overlap))
+  );
+  assert_eq!(left_at(&machine, Axis::M2V), (0, Some(true)));
+}
+
+#[test]
+fn a_cycle_that_fails_at_its_start_position_on_the_way_down_takes_up_the_play_again() {
+  // Three repeats, nine readings up from -90 to 90, then down: the fourth reading down is at 0, reached moving minus.
+  // The count is the start's, but the play is taken up minus, so the return still runs the approach.
+  let machine = Machine::new([0.0; 4]).with(|script| script.rejections = rejected_from(15));
+  let mut aligner = on(&machine, &quiet());
+  assert!(run(aligner.measure_hysteresis(Axis::M1H, &mut |_| {})).is_err());
+  let mut pos_steps = 0;
+  let mut measured = 0;
+  let mut at_fault = None;
+  for event in machine.log() {
+    match event {
+      Event::Move(Axis::M1H, delta_steps) => pos_steps += delta_steps,
+      Event::Measure => {
+        if measured == 15 {
+          at_fault = Some(pos_steps);
+        }
+        measured += 1;
+      }
+      Event::Move(..) => {}
+    }
+  }
+  assert_eq!(at_fault, Some(0), "the failing reading was taken at the start position");
+  assert_eq!(left_at(&machine, Axis::M1H), (0, Some(true)), "approached plus again");
+}
+
+#[test]
+fn a_procedure_that_fails_before_leaving_its_start_moves_nothing_more() {
+  // The repeats fail: the axis is where the approach afresh left it, at the start, and only that approach ran.
+  let machine = Machine::new([0.0; 4]).with(|script| script.rejections = rejected_from(0));
+  let mut aligner = on(&machine, &quiet());
+  assert!(run(aligner.measure_backlash(Axis::M1V, &mut |_| {})).is_err());
+  let moves = machine
+    .log()
+    .iter()
+    .filter(|event| matches!(event, Event::Move(..)))
+    .count();
+  assert_eq!(moves, 2, "the overshoot and its return, nothing after the fault");
+}
+
 // --- confirming a success --------------------------------------------------------------------------------------
 
 #[test]

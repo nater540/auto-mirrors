@@ -14,9 +14,14 @@
 //!   `SensorFault::NoReading`. So does one still waiting at the limit, as when the coordinator is faulted.
 //! - **A started request always ends in a report**: the orchestrator ends a move on the node's answer, a refusal, or
 //!   none after its tries, and a measurement on every way out of the job.
+//! - **The console's `stop` ends the procedure** ([`Requests::stop`], review of 2026-11-19): the request waiting to
+//!   start fails at once, and every later one fails before it starts until [`Requests::resume`], which the firmware
+//!   calls once the procedure has ended. A running move is stopped by the orchestrator's STOP; a running measurement
+//!   ends with its job, which the Ruida runs to its end.
 //!
 //! [`starting_axes`] gives the procedure the nodes' counts before it runs: the aligner's own state of an axis where
-//! the node's count agrees, the node's where it does not, and lost where the node has not reported.
+//! the node's count agrees, the node's where it does not, and lost where the node has not reported. An axis the
+//! console moved since the last procedure has its last direction unknown, whatever its count.
 
 use align_core::aligner::AxisState;
 use align_core::approach::LastDir;
@@ -76,7 +81,9 @@ pub struct Requests {
   queued: Option<(Request, u64)>,
   running: Option<Running>,
   /// No measurement starts before this time: the last move's end plus the settle time.
-  settled_ms: u64
+  settled_ms: u64,
+  /// The operator stopped the procedure: requests fail before they start.
+  stopped: bool
 }
 
 impl Requests {
@@ -88,8 +95,26 @@ impl Requests {
       wait_limit_ms: wait_limit_ms as u64,
       queued: None,
       running: None,
-      settled_ms: 0
+      settled_ms: 0,
+      stopped: false
     }
+  }
+
+  /// Stops the procedure: the request waiting to start fails at once, its completion returned, and every later one
+  /// fails before it starts until [`Self::resume`]. A running request ends by its report.
+  pub fn stop(&mut self) -> Option<Completion> {
+    self.stopped = true;
+    self.queued.take().map(|(request, _)| failure(request))
+  }
+
+  /// Takes requests again, once the stopped procedure has ended.
+  pub const fn resume(&mut self) {
+    self.stopped = false;
+  }
+
+  /// Whether the procedure was stopped and has not been resumed.
+  pub const fn stopped(&self) -> bool {
+    self.stopped
   }
 
   /// Whether a request is waiting or running.
@@ -119,6 +144,10 @@ impl Requests {
     io: &mut impl CoordinatorIo
   ) -> Option<Completion> {
     let (request, submitted_ms) = self.queued?;
+    if self.stopped {
+      self.queued = None;
+      return Some(failure(request));
+    }
     let can_start =
       orchestrator.state() == State::Idle && (matches!(request, Request::Move { .. }) || now_ms >= self.settled_ms);
     if !can_start {
@@ -197,14 +226,20 @@ pub fn reported(link: &Link, wiring: &PerAxis<Wire>) -> PerAxis<Option<Reported>
   }
 }
 
-/// What the procedure starts from on each axis, given what it knew (`current`) and what the nodes last reported.
+/// What the procedure starts from on each axis, given what it knew (`current`), what the nodes last reported, and
+/// which axes the console moved since the last procedure (`jogged`).
 ///
 /// - **The node's count agrees:** the aligner's state is kept, its last direction with it, and the node's suspect
-///   flag added.
+///   flag added. Where the console moved the axis, the last direction is unknown: jogs that sum to zero leave the
+///   count where it was, but not the direction the gear play was last taken up in (review of 2026-11-19).
 /// - **It differs**, or the aligner had lost the axis: the node's count is taken, as `Aligner::restore_position`
 ///   takes it, with the last direction unknown so that the next move takes up the backlash in full.
 /// - **The node is not present, or has not reported the channel:** the axis is lost and does not move.
-pub fn starting_axes(current: &PerAxis<AxisState>, reported: &PerAxis<Option<Reported>>) -> PerAxis<AxisState> {
+pub fn starting_axes(
+  current: &PerAxis<AxisState>,
+  reported: &PerAxis<Option<Reported>>,
+  jogged: &PerAxis<bool>
+) -> PerAxis<AxisState> {
   let mut axes = *current;
   for axis in Axis::ALL {
     let state = axes.get_mut(axis);
@@ -220,6 +255,9 @@ pub fn starting_axes(current: &PerAxis<AxisState>, reported: &PerAxis<Option<Rep
           };
         } else {
           state.suspect |= node.suspect;
+          if jogged.get(axis) {
+            state.last_dir = LastDir::Unknown;
+          }
         }
       }
     }

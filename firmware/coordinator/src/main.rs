@@ -193,7 +193,9 @@ enum ProcedureKind {
 #[derive(Clone, Copy, Debug)]
 struct Procedure {
   kind: ProcedureKind,
-  reported: PerAxis<Option<Reported>>
+  reported: PerAxis<Option<Reported>>,
+  /// The axes the console's `jog` moved since the last procedure: their last direction is unknown.
+  jogged: PerAxis<bool>
 }
 
 fn now_ms() -> u64 {
@@ -562,6 +564,7 @@ async fn control(
   let mut bus_was_off = false;
   let mut requests = Requests::new(Config::default().motion.settle_ms, REQUEST_WAIT_MS);
   let mut reports = PassReports::new();
+  let mut jogged = PerAxis::splat(false);
   loop {
     watchdog.feed();
     let now = now_ms();
@@ -583,11 +586,23 @@ async fn control(
       while let Ok(envelope) = FRAMES_IN.try_receive() {
         orchestrator.on_frame(now, envelope, &mut io);
       }
+      // A stopped procedure has ended: take requests again. Checked before the commands, so that one handed over
+      // below is not stopped by the last one's `stop`.
+      if requests.stopped() && !PROCEDURE_RUNNING.load(Ordering::Acquire) {
+        requests.resume();
+      }
       while let Ok(command) = COMMANDS.try_receive() {
+        let procedure_running = PROCEDURE_RUNNING.load(Ordering::Acquire);
         let quiet = orchestrator.quiet() && !requests.busy();
-        match console::admit(command, PROCEDURE_RUNNING.load(Ordering::Acquire), quiet) {
-          Ok(()) => execute(now, command, inputs, &mut orchestrator, &mut io),
+        match console::admit(command, procedure_running, quiet) {
+          Ok(()) => execute(now, command, inputs, &mut orchestrator, &mut io, &mut jogged),
           Err(held) => warn!("{command:?}: {held}")
+        }
+        if command == Command::Stop && procedure_running {
+          warn!("stop: the procedure ends at its next move or measurement, a running measurement with its job");
+          if let Some(completion) = requests.stop() {
+            COMPLETION.signal(completion);
+          }
         }
       }
       if !requests.busy()
@@ -673,8 +688,8 @@ async fn procedure(mut records: Option<Records>, restored: Option<Calibration>) 
     aligner = aligner.with_calibration(calibration);
   }
   loop {
-    let Procedure { kind, reported } = PROCEDURES.receive().await;
-    let axes = starting_axes(aligner.axes(), &reported);
+    let Procedure { kind, reported, jogged } = PROCEDURES.receive().await;
+    let axes = starting_axes(aligner.axes(), &reported, &jogged);
     aligner = aligner.with_axes(axes);
     let calibration_before = aligner.calibration().copied();
     let aligned = match run_procedure(&mut aligner, kind, config.motion.poke_steps).await {
@@ -732,8 +747,11 @@ async fn run_procedure(
       let mut sensor = BusRig;
       let before = sensor.measure().await.map_err(AlignFault::Sensor)?;
       aligner.approach(axis, poke_steps).await?;
-      let after = sensor.measure().await.map_err(AlignFault::Sensor)?;
-      aligner.approach(axis, poke_steps.saturating_neg()).await?;
+      // Taken back out whether or not the measurement worked, as `Aligner::calibrate` does (review of 2026-11-19).
+      let after = sensor.measure().await.map_err(AlignFault::Sensor);
+      let returned = aligner.approach(axis, poke_steps.saturating_neg()).await;
+      let after = after?;
+      returned?;
       #[expect(clippy::cast_precision_loss, reason = "a poke is a few thousand steps at most")]
       let column = (after.measurement() - before.measurement()) / poke_steps as f32;
       info!(
@@ -812,7 +830,14 @@ async fn logger() {
   }
 }
 
-fn execute(now: u64, command: Command, inputs: Inputs, orchestrator: &mut Orchestrator, io: &mut Firmware<'_>) {
+fn execute(
+  now: u64,
+  command: Command,
+  inputs: Inputs,
+  orchestrator: &mut Orchestrator,
+  io: &mut Firmware<'_>,
+  jogged: &mut PerAxis<bool>
+) {
   match command {
     Command::Help => {
       for line in console::HELP.lines() {
@@ -820,35 +845,37 @@ fn execute(now: u64, command: Command, inputs: Inputs, orchestrator: &mut Orches
       }
     }
     Command::Status => status(inputs, orchestrator),
-    Command::Jog { axis, steps } => {
-      if let Err(error) = orchestrator.request_move(now, axis, steps, io) {
-        warn!("{axis:?}: {error}");
-      }
-    }
+    Command::Jog { axis, steps } => match orchestrator.request_move(now, axis, steps, io) {
+      // Marked as soon as it is asked for: a move the node then refuses only costs the next procedure an overshoot.
+      Ok(()) => *jogged.get_mut(axis) = true,
+      Err(error) => warn!("{axis:?}: {error}")
+    },
     Command::Stop => orchestrator.stop(io),
     Command::Measure => {
       if let Err(error) = orchestrator.request_measurement(now, io) {
         warn!("measure: {error}");
       }
     }
-    Command::Calibrate => start_procedure(ProcedureKind::Calibrate, orchestrator),
-    Command::Align => start_procedure(ProcedureKind::Align, orchestrator),
-    Command::Poke { axis } => start_procedure(ProcedureKind::Poke(axis), orchestrator),
-    Command::Backlash { axis } => start_procedure(ProcedureKind::Backlash(axis), orchestrator),
-    Command::Hysteresis { axis } => start_procedure(ProcedureKind::Hysteresis(axis), orchestrator),
+    Command::Calibrate => start_procedure(ProcedureKind::Calibrate, orchestrator, jogged),
+    Command::Align => start_procedure(ProcedureKind::Align, orchestrator, jogged),
+    Command::Poke { axis } => start_procedure(ProcedureKind::Poke(axis), orchestrator, jogged),
+    Command::Backlash { axis } => start_procedure(ProcedureKind::Backlash(axis), orchestrator, jogged),
+    Command::Hysteresis { axis } => start_procedure(ProcedureKind::Hysteresis(axis), orchestrator, jogged),
     Command::Clear => orchestrator.clear_fault(now, io)
   }
 }
 
 /// Hands a procedure to the `procedure` task with what the nodes last reported of each axis.
 /// `console::admit` has checked that none runs and the coordinator is quiet.
-fn start_procedure(kind: ProcedureKind, orchestrator: &Orchestrator) {
+fn start_procedure(kind: ProcedureKind, orchestrator: &Orchestrator, jogged: &mut PerAxis<bool>) {
   let procedure = Procedure {
     kind,
-    reported: reported(orchestrator.link(), &WIRING)
+    reported: reported(orchestrator.link(), &WIRING),
+    jogged: *jogged
   };
   if PROCEDURES.try_send(procedure).is_ok() {
     PROCEDURE_RUNNING.store(true, Ordering::Release);
+    *jogged = PerAxis::splat(false);
   } else {
     warn!("{kind:?}: a procedure is already waiting to start");
   }
