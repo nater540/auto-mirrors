@@ -20,8 +20,10 @@
 //! - Soft limits are enforced on every waypoint of the standard approach, suspect or not.
 //! - A coordinator heartbeat counts only when it carries this node's protocol version. A mismatch is reported once
 //!   (FAULT 0x34) and moves are refused until the versions match.
-//! - A coordinator that goes silent or restarts (its uptime disagreeing with the local clock) is forgotten: the
-//!   node inhibits and forgets the moves it sent, so that a restarted coordinator's first move is a new move.
+//! - A coordinator that goes silent is no longer heard: the node stops a bus move and inhibits. It still answers the
+//!   moves that coordinator sent, so a resend after the silence gets the move's answer and never runs it twice.
+//! - A coordinator that restarts (its uptime disagreeing with the local clock, judged against its last heartbeat even
+//!   across a silence) is forgotten as well: the node forgets its moves, so that its first move is a new move.
 //! - The record carries the direction sign its position is in; a different sign converts it. The record is
 //!   written marked suspect before every move, so a reset mid-move restores a position known not to be trusted.
 //!   A failed write refuses moves until a write succeeds.
@@ -201,6 +203,13 @@ struct Running {
   stop_requested: bool
 }
 
+/// A coordinator heartbeat: the uptime it carried, and when it came by the local clock.
+#[derive(Clone, Copy, Debug)]
+struct CoordinatorBeat {
+  uptime_ms: u32,
+  seen_ms: u64
+}
+
 /// The node.
 #[derive(Clone, Debug)]
 #[expect(
@@ -223,9 +232,10 @@ pub struct Node {
   estop_latched: bool,
   /// The last flash write failed: moves are refused until one succeeds, so the record cannot fall behind.
   persist_failed: bool,
+  /// When the coordinator's last heartbeat came, while it is heard; `None` once it has gone silent.
   last_heartbeat_ms: Option<u64>,
-  /// The coordinator's uptime in its last heartbeat, to tell a reboot from the passing of time.
-  coordinator_uptime_ms: Option<u32>,
+  /// The coordinator's last heartbeat, kept across a silence, to tell a restart from the passing of time.
+  last_beat: Option<CoordinatorBeat>,
   tracker: MoveRelTracker,
   running: Option<Running>,
   next_heartbeat_ms: u64,
@@ -260,7 +270,7 @@ impl Node {
       estop_latched: false,
       persist_failed: false,
       last_heartbeat_ms: None,
-      coordinator_uptime_ms: None,
+      last_beat: None,
       tracker: MoveRelTracker::new(),
       running: None,
       next_heartbeat_ms: 0,
@@ -380,7 +390,8 @@ impl Node {
       self.request_stop(io);
     }
     if self.last_heartbeat_ms.is_some() && !self.heartbeat_fresh(now_ms) {
-      self.forget_coordinator();
+      self.inhibited = true;
+      self.last_heartbeat_ms = None;
     }
     if now_ms >= self.next_heartbeat_ms {
       self.next_heartbeat_ms = now_ms.saturating_add(u64::from(self.setup.timing.heartbeat_period_ms));
@@ -787,13 +798,11 @@ impl Node {
     }
   }
 
-  /// The coordinator went silent or restarted: inhibit, and forget the moves it sent, so that its first move after
-  /// a restart is a new move and not answered from the last one.
+  /// The coordinator restarted: inhibit, and forget the moves it sent, so that its first move is a new move and not
+  /// answered from the last one.
   fn forget_coordinator(&mut self) {
     self.inhibited = true;
     self.tracker = MoveRelTracker::new();
-    self.last_heartbeat_ms = None;
-    self.coordinator_uptime_ms = None;
   }
 
   /// The firmware request for logical legs, or `None` when the move exceeds the step or time cap (addendum A.5).
@@ -861,16 +870,19 @@ impl Node {
     }
     // A restart is an uptime that disagrees with the local clock by more than the heartbeat timeout; comparing with
     // wrapping arithmetic keeps the 49.7-day wrap of the u32 uptime from looking like one.
-    if let (Some(previous), Some(seen_ms)) = (self.coordinator_uptime_ms, self.last_heartbeat_ms) {
-      let remote = i64::from(uptime_ms.wrapping_sub(previous));
-      let local = i64::try_from(now_ms.saturating_sub(seen_ms)).unwrap_or(i64::MAX);
+    if let Some(last) = self.last_beat {
+      let remote = i64::from(uptime_ms.wrapping_sub(last.uptime_ms));
+      let local = i64::try_from(now_ms.saturating_sub(last.seen_ms)).unwrap_or(i64::MAX);
       if remote.abs_diff(local) > u64::from(self.setup.timing.heartbeat_timeout_ms) {
         self.forget_coordinator();
         self.request_stop(io);
       }
     }
     self.last_heartbeat_ms = Some(now_ms);
-    self.coordinator_uptime_ms = Some(uptime_ms);
+    self.last_beat = Some(CoordinatorBeat {
+      uptime_ms,
+      seen_ms: now_ms
+    });
   }
 
   fn heartbeat_fresh(&self, now_ms: u64) -> bool {

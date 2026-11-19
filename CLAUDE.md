@@ -222,8 +222,10 @@ Reference 5.4 and addendum A.8 leave these open; `align-proto` decides them, and
   count from), in bench mode with no coordinator heard; nothing moves.
 - **After the 2026-11-15 nemesis review:** a move's coils are released by a guard held for the move, so a timed
   out or dropped move cannot leave them on, and the stepper counts its steps so a cut-off move still reports them.
-  The record carries its direction sign (format 2) and is written suspect before every move. A silent or restarted
-  coordinator is forgotten (inhibited, moves forgotten). An ESTOP latches until INHIBIT 0; bench moves need no
+  The record carries its direction sign (format 2) and is written suspect before every move. A silent coordinator
+  inhibits the node; a restarted one (its uptime judged against its last heartbeat, even across a silence) also has
+  its moves forgotten. Silence alone keeps them, so a resend after it gets the move's answer: forgetting them
+  there ran a stopped move again in full (review of 2026-11-19). An ESTOP latches until INHIBIT 0; bench moves need no
   coordinator on the bus. The TIMG1 watchdog resets the node after 1 s without feeding, so a panic cannot hold a coil.
 - **On the development boards, TWAI runs through an SN65HVD230 transceiver** in normal mode, TX on GPIO 23 (MI)
   and RX on GPIO 1 (A0), on the node and the coordinator alike. A frame then needs a second node to acknowledge it:

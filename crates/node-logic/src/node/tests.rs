@@ -123,6 +123,15 @@ fn heartbeat_version(proto_version: u8) -> Envelope {
   })
 }
 
+fn heartbeat_at_uptime(uptime_ms: u32) -> Envelope {
+  from_coordinator(Message::Heartbeat {
+    uptime_ms,
+    state: 1,
+    fw_version: 1,
+    proto_version: PROTOCOL_VERSION
+  })
+}
+
 fn allow() -> Envelope {
   from_coordinator(Message::Inhibit {
     inhibited: false,
@@ -1213,6 +1222,51 @@ fn a_lost_coordinator_is_forgotten_so_its_first_move_after_returning_is_new_and_
   node.on_frame(10_030, allow(), &mut io);
   node.on_frame(10_040, move_rel(0, 0, 45, false), &mut io);
   assert_eq!(io.starts().len(), 1, "the poke runs");
+}
+
+#[test]
+fn a_move_stopped_by_a_silent_coordinator_is_answered_and_its_resend_does_not_run_again() {
+  // Found by the review of 2026-11-19: the silence forgot the move as it stopped it, so no MOVE_DONE went out and
+  // the coordinator's resend of the same move ran in full, 160 steps for a command of 100.
+  let (mut node, mut io) = ready();
+  node.on_frame(100, heartbeat_at_uptime(100), &mut io);
+  node.on_frame(110, move_rel(5, 0, 100, false), &mut io);
+  node.tick(401, &mut io);
+  assert!(io.events.contains(&Io::Stop), "the silence stops the move");
+  node.on_move_outcome(
+    402,
+    MoveOutcome::Finished {
+      end: MoveEnd::Stopped,
+      steps_issued: 60,
+      phase: Phase::ZERO
+    },
+    &mut io
+  );
+  let answer = io.dones();
+  assert_eq!(answer.len(), 1, "the stopped move is answered");
+  assert_eq!((answer[0].result, answer[0].pos_steps), (MoveResult::Stopped, 60));
+  io.take();
+  // The same coordinator comes back (its uptime kept pace with the local clock) and resends the move.
+  node.on_frame(600, heartbeat_at_uptime(600), &mut io);
+  node.on_frame(605, allow(), &mut io);
+  node.on_frame(610, move_rel(5, 0, 100, false), &mut io);
+  assert!(io.starts().is_empty(), "the resend must not run again");
+  assert_eq!(io.dones(), answer, "it gets the same answer");
+  assert_eq!(node.axis(ch(0)).unwrap().record.pos_steps, 60);
+}
+
+#[test]
+fn a_finished_move_whose_answer_was_lost_in_a_silence_is_answered_again_and_not_run_again() {
+  let (mut node, mut io) = ready();
+  node.on_frame(0, move_rel(7, 0, 100, false), &mut io);
+  node.on_move_outcome(200, done(100), &mut io);
+  let answer = io.dones();
+  node.tick(1_000, &mut io);
+  io.take();
+  node.on_frame(1_200, heartbeat_at_uptime(1_200), &mut io);
+  node.on_frame(1_210, move_rel(7, 0, 100, false), &mut io);
+  assert!(io.starts().is_empty());
+  assert_eq!(io.dones(), answer);
 }
 
 #[test]
