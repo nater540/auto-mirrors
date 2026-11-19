@@ -12,8 +12,8 @@ Motors:      moved only by the console's `jog`, `calibrate`, `align`, `poke`, `b
              While a procedure runs, the console's `jog` and `measure` are refused; a procedure starts only in
              Idle with no move or measurement asked for or running.
              A node that hears this heartbeat refuses console moves (bench moves need a silent bus).
-             On every node that appears or restarts it sets each axis's soft limits (-4400 to 4400 steps) and
-             direction sign (forward) by CONFIG.
+             On every node that appears or restarts it sets each axis's soft limits (-4800 to 4800 steps: the
+             configured -4000 to 4000 widened by 10% of the travel) and direction sign (forward) by CONFIG.
 Interlock:   GPIO 22 (Feather MO) drives the relay, high to energize; low at boot, at reset, and in every state but
              arming and moving. GPIO 21 (SCK) reads its feedback, pulled down, high when the laser loop is open.
              A fault (fire or job while armed, feedback disagreeing, a node's pin fault, lost rail or move timeout,
