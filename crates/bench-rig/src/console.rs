@@ -5,6 +5,8 @@
 //!   before a command goes out, so that an old move's end cannot answer a new one.
 //! - **Nothing but `status` is sent until a `BENCH1,status` line has come back** ([`NodeConsole::status`]): that line
 //!   is what proves a node of this firmware is on the port, not the coordinator, the sensor, or another board.
+//! - **Terminal escapes are removed before a line is read or logged.** The node's logger colors every line, so a
+//!   fixed line otherwise ends in a color reset and its last field does not parse (the bench, 2026-11-18).
 //! - **A move that does not end in time is stopped**: any key stops a bench move, so `stop` goes out, and the end it
 //!   then reports is still read. A move with no end at all is [`ConsoleError::Silent`], and the motor's count is not
 //!   known.
@@ -259,7 +261,7 @@ impl<P: Read + Write> NodeConsole<P> {
     loop {
       if let Some(end) = self.pending.iter().position(|byte| *byte == b'\n') {
         let bytes: Vec<u8> = self.pending.drain(..=end).collect();
-        let text = String::from_utf8_lossy(&bytes).trim_end().to_owned();
+        let text = String::from_utf8_lossy(&without_escapes(&bytes)).trim_end().to_owned();
         self.note("<", &text);
         return Ok(Some(text));
       }
@@ -306,6 +308,30 @@ impl<P: Read + Write> NodeConsole<P> {
       waited_ms: waited.as_millis()
     }
   }
+}
+
+/// `bytes` without terminal escape sequences: a control sequence (escape, `[`, parameters, and a final byte from `@`
+/// to `~`) goes whole, and any other escape character alone. A sequence cut off by the line's end goes to the end.
+fn without_escapes(bytes: &[u8]) -> Vec<u8> {
+  const ESCAPE: u8 = 0x1b;
+  let mut kept = Vec::with_capacity(bytes.len());
+  let mut rest = bytes.iter().copied();
+  while let Some(byte) = rest.next() {
+    if byte != ESCAPE {
+      kept.push(byte);
+      continue;
+    }
+    let mut after = rest.clone();
+    if after.next() == Some(b'[') {
+      rest = after;
+      for byte in rest.by_ref() {
+        if (0x40..=0x7e).contains(&byte) {
+          break;
+        }
+      }
+    }
+  }
+  kept
 }
 
 #[cfg(test)]
@@ -438,6 +464,22 @@ mod tests {
       }
     );
     assert_eq!(machine.received().last().map(String::as_str), Some("stop"));
+  }
+
+  #[test]
+  fn terminal_colors_are_removed_and_the_text_kept() {
+    assert_eq!(
+      without_escapes(b"\x1b[32mINFO - BENCH1,status,idle,1,1\x1b[0m\n"),
+      b"INFO - BENCH1,status,idle,1,1\n"
+    );
+    assert_eq!(without_escapes(b"a\x1b[1;31mb\x1b[0m"), b"ab");
+  }
+
+  #[test]
+  fn a_lone_escape_goes_and_a_cut_off_sequence_goes_to_the_end() {
+    assert_eq!(without_escapes(b"a\x1bb"), b"ab");
+    assert_eq!(without_escapes(b"ab\x1b[1;3"), b"ab");
+    assert_eq!(without_escapes(b"plain, 1,2"), b"plain, 1,2");
   }
 
   /// A node that prints a line for people on every read and never a fixed line.

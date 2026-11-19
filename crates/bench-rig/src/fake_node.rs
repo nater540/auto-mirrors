@@ -1,6 +1,6 @@
 //! A node's bench console for the tests, on a thread behind a port of channels: it parses commands with the node's
 //! own parser (`node_logic::console`), answers with the node's own fixed lines (`node_logic::bench_line`) behind a
-//! logger's prefix, and moves one motor on channel 0, whose screw follows it through a play. The dot on the target
+//! logger's prefix and colors as esp-println writes them ([`logged`]), and moves one motor on channel 0, whose screw follows it through a play. The dot on the target
 //! follows the screw.
 
 use std::io::{self, ErrorKind, Read, Write};
@@ -79,7 +79,7 @@ impl Machine {
       suspect: false
     };
     if let Some(to_host) = &self.state().to_host {
-      let _ = to_host.send(format!("INFO - {line}\n").into_bytes());
+      let _ = to_host.send(logged(&line.to_string()));
     }
   }
 
@@ -178,6 +178,12 @@ impl State {
   }
 }
 
+/// A line as the node's logger writes it: esp-println's default `colors` feature wraps every line in a terminal
+/// color and a reset, so the fixed lines never end at the line's end (found on the bench, 2026-11-18).
+pub fn logged(text: &str) -> Vec<u8> {
+  format!("\u{1b}[32mINFO - {text}\u{1b}[0m\n").into_bytes()
+}
+
 /// The host's end of the fake console.
 pub struct Port {
   to_node: Sender<Vec<u8>>,
@@ -236,7 +242,7 @@ impl FakeNode {
           line.clear();
           let answers = machine.state().answer(&text);
           for answer in answers {
-            if to_host.send(format!("INFO - {answer}\n").into_bytes()).is_err() {
+            if to_host.send(logged(&answer)).is_err() {
               return;
             }
           }

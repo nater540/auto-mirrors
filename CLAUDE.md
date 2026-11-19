@@ -229,6 +229,8 @@ Reference 5.4 and addendum A.8 leave these open; `align-proto` decides them, and
   `BENCH1,status`, one `BENCH1,channel` a channel, and a `BENCH1,moved` or `BENCH1,refused` at the end of every bench
   move. A program drives the console as a person does; it must never act on a `Debug` print. Bench moves are refused
   while the node hears a coordinator, so the bench rig needs the coordinator off its bus.
+  esp-println colors every line (`ESC[32m` ... `ESC[0m`), so a program removes terminal escapes before parsing. The
+  bench rig's fake node writes them too: a fake without them hid that the rig could read no real node (2026-11-18).
 
 ## What the coordinator settled (M5)
 
