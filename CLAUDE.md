@@ -307,7 +307,9 @@ The review of the orchestrator on 2026-11-17 (four defects, each with the test t
 - **ESTOP is repeated with every heartbeat while faulted**, and a node that refuses a move as NOT_CONFIGURED is sent
   its CONFIG again: a frame dropped from a full queue is otherwise never resent.
 - **The coordinator's control loop logs nothing of what the orchestrator reports** (a `logger` task does), and fire
-  sense latches its edges by interrupt, so neither a burst of log lines nor a short dot can hide a fire.
+  sense latches each change of level by interrupt, so neither a burst of log lines nor a short dot can hide a fire.
+  It waits for the level opposite to the one it read, never for an edge: esp-hal clears a pending interrupt before
+  a wait listens, so an edge between the read and the wait was lost and the level stuck (review of 2026-11-19).
 - **A job outlives a lost node** (`align_core::coordinator`, review of 2026-11-19): a node lost during a measurement
   inhibits, and the coordinator keeps watching the Ruida's job, refusing every move and job until its Status line
   falls after rising, and faulting on its timeouts as the job's own states do. Forgetting it let the relay energize

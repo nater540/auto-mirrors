@@ -15,7 +15,7 @@
 //! - `control`: every millisecond, samples the inputs and hands them, the frames received, and the console's
 //!   commands to the orchestrator, which owns the relay and FootSW outputs. Feeds the watchdog. It does not log what
 //!   the orchestrator reports: a burst of lines over USB could hold it for milliseconds and miss a dot.
-//! - `fire_sense`: keeps the fire input's level and latches each of its edges from the pin's interrupt, so that a
+//! - `fire_sense`: keeps the fire input's level and latches each change of it from the pin's interrupt, so that a
 //!   dot shorter than a millisecond, or one during a late loop, still reaches the next sample.
 //! - Console commands are admitted by `coordinator_logic::console::admit`: a `jog` or a `measure` waits while a
 //!   procedure runs, and a procedure starts only when the coordinator is quiet.
@@ -783,9 +783,19 @@ async fn run_procedure(
 
 #[embassy_executor::task]
 async fn fire_sense(mut fire: Input<'static>) {
+  // Waits for the level opposite to the one read, not for an edge: esp-hal's `wait_for` clears a pending interrupt
+  // before it listens (esp-hal 1.2.2, gpio/asynch.rs), so an edge between the read and the wait was lost and the
+  // level stuck wrong until the next edge (review of 2026-11-19). A level wait completes at once if the level
+  // already changed. Only a dot that starts and ends within the few microseconds between the read and the wait can
+  // still be missed; `control` sees a whole one in the next millisecond's sample.
   loop {
-    FIRE_ACTIVE.store(fire.is_low(), Ordering::Release);
-    fire.wait_for_any_edge().await;
+    let active = fire.is_low();
+    FIRE_ACTIVE.store(active, Ordering::Release);
+    if active {
+      fire.wait_for_high().await;
+    } else {
+      fire.wait_for_low().await;
+    }
     FIRE_EDGE.store(true, Ordering::Release);
   }
 }

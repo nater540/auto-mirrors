@@ -26,7 +26,7 @@ Ruida I/O:   GPIO 3 (A4) drives FootSW's optocoupler, high = active: high for up
              and the sensor node present. On the machine this starts the Ruida's job, which fires the laser. It goes
              low again as soon as the job stops waiting to start, and is low at boot, at reset, and otherwise; no
              move is armed while it is high. GPIO 2 (A5) reads Status, pulled up, low = job running; GPIO 7 reads
-             fire sense, pulled up, low = firing, and latches its edges by interrupt. Both polarities UNVERIFIED
+             fire sense, pulled up, low = firing, and latches each change of it by interrupt. Both polarities UNVERIFIED
              (hand-off open item 9). Each burst of fire is a SHOT to every node.
 Bus:         TWAI through an SN65HVD230 transceiver: TX on GPIO 23 (MI) to CTX, RX on GPIO 1 (A0) from CRX.
              250 kbit/s, normal mode. A heartbeat and the inhibit level every 100 ms, the inhibit at once on change.
