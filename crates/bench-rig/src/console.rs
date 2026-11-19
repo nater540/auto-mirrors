@@ -482,6 +482,133 @@ mod tests {
     assert_eq!(without_escapes(b"plain, 1,2"), b"plain, 1,2");
   }
 
+  #[test]
+  fn another_channel_s_end_or_refusal_does_not_answer_a_jog() {
+    let machine = Machine::default();
+    let (mut console, _) = console(&machine);
+    console.status(0).unwrap();
+    console.bench(true).unwrap();
+    machine.report_another_channel_first();
+    assert_eq!(
+      console.jog(0, 5, STATUS_WAIT).unwrap(),
+      Jog::Moved {
+        end: BenchEnd::Done,
+        pos_steps: 5,
+        suspect: false
+      }
+    );
+  }
+
+  /// One read of a scripted port.
+  enum Step {
+    Bytes(Vec<u8>),
+    /// A read that times out, as a quiet serial port does.
+    Quiet,
+    Fail(ErrorKind)
+  }
+
+  /// A port that answers each read with its next step, then times out on every read after the last.
+  struct Script {
+    steps: std::collections::VecDeque<Step>,
+    reads: u32
+  }
+
+  impl Read for Script {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+      self.reads += 1;
+      match self.steps.pop_front() {
+        Some(Step::Bytes(mut bytes)) => {
+          let count = buffer.len().min(bytes.len());
+          buffer[..count].copy_from_slice(&bytes[..count]);
+          let rest = bytes.split_off(count);
+          if !rest.is_empty() {
+            self.steps.push_front(Step::Bytes(rest));
+          }
+          Ok(count)
+        }
+        Some(Step::Fail(kind)) => Err(kind.into()),
+        Some(Step::Quiet) | None => Err(ErrorKind::TimedOut.into())
+      }
+    }
+  }
+
+  impl Write for Script {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+      Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+      Ok(())
+    }
+  }
+
+  fn scripted(steps: Vec<Step>) -> NodeConsole<Script> {
+    let log: Log = Rc::new(RefCell::new(io::sink()));
+    let port = Script {
+      steps: steps.into(),
+      reads: 0
+    };
+    NodeConsole::new(port, "node-a", log)
+  }
+
+  fn soon() -> Instant {
+    Instant::now() + Duration::from_secs(5)
+  }
+
+  #[test]
+  fn a_line_split_across_reads_is_read_whole() {
+    let mut console = scripted(vec![
+      Step::Bytes(b"INFO - BENCH1,sta".to_vec()),
+      Step::Bytes(b"tus,idle,1,1\n".to_vec()),
+    ]);
+    assert_eq!(
+      console.next_line(soon()).unwrap().as_deref(),
+      Some("INFO - BENCH1,status,idle,1,1")
+    );
+  }
+
+  #[test]
+  fn a_line_is_cut_only_once_more_than_the_limit_has_come_without_its_end() {
+    let mut console = scripted(vec![Step::Bytes(vec![b'x'; LINE_MAX]), Step::Bytes(b"y\n".to_vec())]);
+    let whole = format!("{}y", "x".repeat(LINE_MAX));
+    assert_eq!(console.next_line(soon()).unwrap(), Some(whole));
+
+    let mut console = scripted(vec![
+      Step::Bytes(vec![b'x'; 3 * LINE_MAX]),
+      Step::Bytes(b"\nINFO - next\n".to_vec()),
+    ]);
+    assert_eq!(console.next_line(soon()).unwrap(), Some("x".repeat(LINE_MAX)));
+    let mut later = Vec::new();
+    while let Some(line) = console.next_line(Instant::now()).unwrap() {
+      later.push(line);
+    }
+    assert_eq!(later.last().map(String::as_str), Some("INFO - next"), "{later:?}");
+  }
+
+  #[test]
+  fn a_failing_port_is_an_error_not_a_wait() {
+    let mut console = scripted(vec![Step::Fail(ErrorKind::BrokenPipe)]);
+    assert!(matches!(console.next_line(soon()), Err(ConsoleError::Io { .. })));
+  }
+
+  #[test]
+  fn a_line_after_quiet_reads_within_the_wait_is_still_read() {
+    let mut console = scripted(vec![Step::Quiet, Step::Quiet, Step::Bytes(b"INFO - late\n".to_vec())]);
+    assert_eq!(console.next_line(soon()).unwrap().as_deref(), Some("INFO - late"));
+  }
+
+  #[test]
+  fn reading_what_is_waiting_takes_every_waiting_line_and_stops_at_the_first_quiet_read() {
+    let mut console = scripted(vec![
+      Step::Bytes(b"INFO - one\n".to_vec()),
+      Step::Bytes(b"INFO - two\n".to_vec()),
+      Step::Bytes(b"INFO - three\n".to_vec()),
+    ]);
+    console.drain().unwrap();
+    assert!(console.port.steps.is_empty(), "lines were left waiting");
+    assert_eq!(console.port.reads, 4, "three lines and one quiet read");
+  }
+
   /// A node that prints a line for people on every read and never a fixed line.
   struct Chatter;
 

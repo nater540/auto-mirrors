@@ -32,6 +32,8 @@ struct State {
   ignore_status: u32,
   hold_moves: bool,
   held: Option<i32>,
+  /// Whether a move's answer is preceded by an end and a refusal for another channel.
+  other_channel_first: bool,
   received: Vec<String>,
   to_host: Option<Sender<Vec<u8>>>
 }
@@ -68,6 +70,11 @@ impl Machine {
   /// Runs no move to its end until a `stop` arrives; the stopped move has run half its steps.
   pub fn hold_moves_until_stopped(&self) {
     self.state().hold_moves = true;
+  }
+
+  /// Precedes the answer to every move with an end and a refusal on channel 1, as a node with two channels might.
+  pub fn report_another_channel_first(&self) {
+    self.state().other_channel_first = true;
   }
 
   /// Sends a move's end now, as if an earlier move had just ended.
@@ -159,7 +166,23 @@ impl State {
           }
           None => {
             self.run(steps);
-            vec![self.moved(BenchEnd::Done)]
+            let mut lines = Vec::new();
+            if self.other_channel_first {
+              let other = 1;
+              let moved = BenchLine::Moved {
+                channel: other,
+                end: BenchEnd::Done,
+                pos_steps: 999,
+                suspect: false
+              };
+              let refused = BenchLine::Refused {
+                channel: other,
+                reason: BenchRefused::ChannelUnavailable { channel: other }
+              };
+              lines.extend([moved.to_string(), refused.to_string()]);
+            }
+            lines.push(self.moved(BenchEnd::Done));
+            lines
           }
         }
       }

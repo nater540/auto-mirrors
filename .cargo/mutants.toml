@@ -72,10 +72,14 @@ test_package = [
 #
 # `Aligner::leg` returns before it sets the last direction when `steps == 0`, so `steps > 0` and `steps >= 0` agree
 # on every value that reaches that line.
+#
+# `NodeConsole::drain` stops at `Instant::now() < deadline`; `<=` differs only when the clock reads the deadline to
+# the nanosecond, which no test or bench can arrange or observe.
 exclude_re = [
   "replace \\| with \\^ in compose_id",
   "replace \\| with \\^ in decode_u35",
   "replace \\| with \\^ in decode_i35",
   "replace > with >= in Stepper<P>::run",
-  "replace > with >= in Aligner<A, S>::leg"
+  "replace > with >= in Aligner<A, S>::leg",
+  "replace < with <= in NodeConsole<P>::drain"
 ]

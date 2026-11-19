@@ -209,7 +209,7 @@ mod tests {
       console: 0,
       channel: 0
     };
-    let motors = BenchMotors::new(vec![console], vec![motor], &motion);
+    let mut motors = BenchMotors::new(vec![console], vec![motor], &motion);
     let operator = Operator {
       machine: machine.clone(),
       resolution_mm: 0.1,
@@ -225,7 +225,7 @@ mod tests {
       &config(&settings).sensor
     );
     let mut out = Vec::new();
-    let report = run(motors, eye, &settings, &status, &mut out);
+    let report = run(&mut motors, eye, &settings, &status, &mut out);
     (report, String::from_utf8_lossy(&out).into_owned(), machine)
   }
 
@@ -332,7 +332,7 @@ mod tests {
       console: 0,
       channel: 0
     };
-    let motors = BenchMotors::new(vec![console], vec![motor], &config(&settings).motion);
+    let mut motors = BenchMotors::new(vec![console], vec![motor], &config(&settings).motion);
     let eye = ReadByEye::new(
       std::io::Cursor::new(b"0 0\nq\n".to_vec()),
       Vec::new(),
@@ -340,7 +340,7 @@ mod tests {
       100.0,
       &config(&settings).sensor
     );
-    let report = run(motors, eye, &settings, &status, &mut Vec::new());
+    let report = run(&mut motors, eye, &settings, &status, &mut Vec::new());
     assert_eq!(report, Err(AlignFault::Sensor(align_core::rig::SensorFault::NoReading)));
   }
 }

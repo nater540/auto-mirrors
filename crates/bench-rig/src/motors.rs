@@ -64,11 +64,6 @@ impl<P: Read + Write> BenchMotors<P> {
     Some((self.consoles.get_mut(motor.console)?, motor.channel))
   }
 
-  /// Every console, as the command line gave them.
-  pub fn consoles_mut(&mut self) -> &mut [NodeConsole<P>] {
-    &mut self.consoles
-  }
-
   fn wait_for(&self, steps: i32) -> Duration {
     self
       .step_period
@@ -114,13 +109,8 @@ impl<P: Read + Write> BenchMotors<P> {
   }
 }
 
-impl<P: Read + Write> Actuator for BenchMotors<P> {
-  async fn move_rel(&mut self, axis: Axis, delta_steps: i32) -> Result<i32, MoveFault> {
-    self.jog(axis, delta_steps)
-  }
-}
-
-/// Lent to the aligner, so that the consoles and the last problem are still there after the procedure.
+/// Lent to the aligner, so that the consoles and the last problem are still there after the procedure. This is the
+/// only form: the tests move through it as `main` does.
 impl<P: Read + Write> Actuator for &mut BenchMotors<P> {
   async fn move_rel(&mut self, axis: Axis, delta_steps: i32) -> Result<i32, MoveFault> {
     self.jog(axis, delta_steps)
@@ -159,7 +149,7 @@ mod tests {
     let machine = Machine::default();
     machine.set_count(0, 100);
     let mut motors = motors(&machine, true);
-    assert_eq!(block_on(motors.move_rel(Axis::M1H, -30)), Ok(70));
+    assert_eq!(block_on((&mut motors).move_rel(Axis::M1H, -30)), Ok(70));
     assert_eq!(motors.last_problem(), None);
   }
 
@@ -168,16 +158,18 @@ mod tests {
     let machine = Machine::default();
     let mut motors = motors(&machine, false);
     assert_eq!(
-      block_on(motors.move_rel(Axis::M1H, 10)),
+      block_on((&mut motors).move_rel(Axis::M1H, 10)),
       Err(MoveFault::Refused { code: BENCH_REFUSED })
     );
     assert!(
       motors
         .last_problem()
-        .is_some_and(|problem| problem.contains("not in bench mode"))
+        .is_some_and(|problem| problem.contains("node-a channel 0") && problem.contains("not in bench mode")),
+      "{:?}",
+      motors.last_problem()
     );
     assert_eq!(
-      block_on(motors.move_rel(Axis::M2V, 10)),
+      block_on((&mut motors).move_rel(Axis::M2V, 10)),
       Err(MoveFault::Refused { code: BENCH_REFUSED })
     );
     assert!(motors.last_problem().is_some_and(|problem| problem.contains("M2V")));
@@ -197,7 +189,7 @@ mod tests {
     motors.step_period = Duration::ZERO;
     // The wait is the margin alone; the fake holds the move until the stop that follows it.
     assert_eq!(
-      block_on(motors.move_rel(Axis::M1H, 40)),
+      block_on((&mut motors).move_rel(Axis::M1H, 40)),
       Err(MoveFault::Stopped { pos_steps: 20 })
     );
     assert!(motors.last_problem().is_some_and(|problem| problem.contains("stopped")));

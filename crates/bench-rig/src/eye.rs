@@ -197,6 +197,14 @@ mod tests {
   }
 
   #[test]
+  fn only_usable_readings_are_counted() {
+    let mut eye = eye("1 2\nabc\n3 4\n");
+    block_on(eye.measure()).unwrap();
+    block_on(eye.measure()).unwrap();
+    assert_eq!(eye.taken(), 2);
+  }
+
+  #[test]
   fn q_or_the_end_of_the_input_stops_with_no_reading() {
     assert_eq!(block_on(eye("q\n").measure()), Err(SensorFault::NoReading));
     assert_eq!(block_on(eye("").measure()), Err(SensorFault::NoReading));
