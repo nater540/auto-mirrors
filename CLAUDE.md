@@ -532,6 +532,11 @@ states the boundary; it is excluded in `.cargo/mutants.toml` only if it cannot c
 **A timeout is not a catch.** On 2026-11-17 a run at `-j 4` timed out 254 mutants at the 20 s default, most before
 their first test binary printed a line, though the whole suite takes 8 s. The bring-up's mutants, run again at
 `-j 2` with `--timeout 120`, had no timeouts and 22 survivors. Run timed-out mutants again that way (`--re` picks them).
+**A mutant can fill memory before its timeout.** On 2026-11-18 two bench-rig mutants looped forever appending to a
+buffer, reached 17 GB together, and took the owner's login session down. Both mutants recipes run under
+`scripts/rss-guard.sh`, which kills any process under them past 4 GB (`MUTANTS_RSS_LIMIT_MB`): macOS enforces no
+`ulimit -v`. A killed test counts as caught, so read `target/mutants-rss-guard.log`. A test double that answers
+forever (a simulated operator, a node) gets a budget, so a runaway fails the test instead.
 Before handing a branch over, run `just check-commits <base>`: every commit must pass, not only the last.
 After changing the protocol, a node's logic, or the orchestrator, `cargo test -p align-sim --test system` is the
 test that holds the devices to each other; a unit test that encodes the same mistake on both sides cannot.

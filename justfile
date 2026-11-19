@@ -32,6 +32,12 @@ sim_bin := "target/release/align-sim"
 # regression files written into the copied tree.
 mutants_env := "PROPTEST_RNG_SEED=1 PROPTEST_DISABLE_FAILURE_PERSISTENCE=1"
 
+# A mutation run kills any process under it past this resident size: macOS enforces no memory limit, and a mutant
+# that loops while appending to a buffer filled 24 GB on 2026-11-18 (scripts/rss-guard.sh). Override with
+# `MUTANTS_RSS_LIMIT_MB=8192 just mutants`.
+mutants_rss_limit_mb := env("MUTANTS_RSS_LIMIT_MB", "4096")
+mutants_guard := "scripts/rss-guard.sh " + mutants_rss_limit_mb + " target/mutants-rss-guard.log"
+
 alias lint := clippy
 
 [private]
@@ -312,14 +318,14 @@ doctor:
 # Mutation testing of the alignment logic, the files in .cargo/mutants.toml: `just mutants -j 2 --timeout 120`
 [group('quality')]
 mutants *flags:
-    {{ mutants_env }} cargo mutants --output target {{ flags }}
+    {{ mutants_env }} {{ mutants_guard }} cargo mutants --output target {{ flags }}
 
-# Only the mutants in what changed since `base`: `just mutants-diff` (uncommitted), `just mutants-diff main`
+# Only the mutants in what changed since `base`: `just mutants-diff` (uncommitted), `just mutants-diff main -j 2`
 [group('quality')]
-mutants-diff base="HEAD":
+mutants-diff base="HEAD" *flags:
     mkdir -p target
     git diff --no-ext-diff {{ base }} > target/mutants.diff
-    {{ mutants_env }} cargo mutants --output target --in-diff target/mutants.diff
+    {{ mutants_env }} {{ mutants_guard }} cargo mutants --output target --in-diff target/mutants.diff {{ flags }}
 
 # Format, clippy, host tests, and the no_std build at every commit after `base`, each by that commit's own justfile
 [group('quality')]
