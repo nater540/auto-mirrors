@@ -24,6 +24,7 @@ mod board;
 use core::cell::RefCell;
 
 use align_core::config::Config;
+use align_proto::transmit::{TransmitNote, TransmitWatch};
 use align_proto::{Envelope, Message, NodeId};
 use embassy_executor::Spawner;
 use embassy_futures::select::{Either, select};
@@ -208,6 +209,8 @@ async fn clock() {
 #[embassy_executor::task]
 async fn can(mut twai: Twai<'static, Async>) {
   let mut rejected = RateLimited::new();
+  // Alone on the bus (no coordinator powered), every reading fails to send.
+  let mut unsent = TransmitWatch::new();
   loop {
     if twai.is_bus_off() {
       // Reference 5.3: wait 100 ms, then recover once, and wait for the recovery (128 runs of 11 recessive bits)
@@ -247,11 +250,20 @@ async fn can(mut twai: Twai<'static, Async>) {
           info!("SENSOR {reading:?}");
         }
         match envelope.encode::<EspTwaiFrame>() {
-          Ok(frame) => match with_timeout(Duration::from_millis(20), twai.transmit_async(&frame)).await {
-            Ok(Ok(())) => {}
-            Ok(Err(error)) => warn!("CAN transmit failed: {error:?}"),
-            Err(_) => warn!("CAN transmit timed out")
-          },
+          Ok(frame) => {
+            // `Err(TimeoutError)` when the 20 ms ran out, `Ok(Err(..))` when esp-hal gave up on the frame.
+            let result = with_timeout(Duration::from_millis(20), twai.transmit_async(&frame)).await;
+            let note = if matches!(result, Ok(Ok(()))) {
+              unsent.sent()
+            } else {
+              unsent.failed(now_ms())
+            };
+            match note {
+              Some(note @ TransmitNote::Recovered { .. }) => info!("{note}"),
+              Some(note) => warn!("{note}: {result:?}, transmit errors {}", twai.transmit_error_count()),
+              None => {}
+            }
+          }
           Err(error) => error!("encoding {:?} failed: {error}", envelope.message)
         }
       }

@@ -29,6 +29,7 @@ use core::cell::{Cell, RefCell};
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use align_core::config::Config;
+use align_proto::transmit::{TransmitNote, TransmitWatch};
 use align_proto::{Channel, Envelope};
 use embassy_embedded_hal::adapter::BlockingAsync;
 use embassy_executor::Spawner;
@@ -402,7 +403,7 @@ async fn arm_pulse(mut arm: Output<'static>) {
 async fn can(mut twai: Twai<'static, Async>) {
   let mut rejected = RateLimited::new();
   // Alone on the bus (no coordinator powered), every frame fails: ten heartbeats a second.
-  let mut unsent = RateLimited::new();
+  let mut unsent = TransmitWatch::new();
   loop {
     if twai.is_bus_off() {
       // Reference 5.3: brake all, wait 100 ms, recover once, and wait for the recovery to finish rather than
@@ -442,13 +443,15 @@ async fn can(mut twai: Twai<'static, Async>) {
         Ok(frame) => {
           // `Err(TimeoutError)` when the 20 ms ran out, `Ok(Err(..))` when esp-hal gave up on the frame.
           let result = with_timeout(Duration::from_millis(20), twai.transmit_async(&frame)).await;
-          if !matches!(result, Ok(Ok(())))
-            && let Some(held_back) = unsent.admit(now_ms())
-          {
-            warn!(
-              "CAN transmit failed: {result:?}, transmit errors {} ({held_back} more held back)",
-              twai.transmit_error_count()
-            );
+          let note = if matches!(result, Ok(Ok(()))) {
+            unsent.sent()
+          } else {
+            unsent.failed(now_ms())
+          };
+          match note {
+            Some(note @ TransmitNote::Recovered { .. }) => info!("{note}"),
+            Some(note) => warn!("{note}: {result:?}, transmit errors {}", twai.transmit_error_count()),
+            None => {}
           }
         }
         Err(error) => error!("encoding {:?} failed: {error}", envelope.message)

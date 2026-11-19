@@ -49,6 +49,7 @@ use align_core::calibration::Calibration;
 use align_core::config::Config;
 use align_core::measurement::Shots;
 use align_core::rig::{Actuator, BeamSensor, MoveFault, SensorFault};
+use align_proto::transmit::{TransmitNote, TransmitWatch};
 use align_proto::{Envelope, Message, NodeId, PROTOCOL_VERSION};
 use coordinator_logic::console::{self, Command};
 use coordinator_logic::nodes::{Change, WATCHED};
@@ -836,7 +837,7 @@ fn start_procedure(kind: ProcedureKind, orchestrator: &Orchestrator) {
 async fn can(mut twai: Twai<'static, Async>) {
   let mut rejected = RateLimited::new();
   // Alone on the bus (no node powered), every frame fails: twenty a second.
-  let mut unsent = RateLimited::new();
+  let mut unsent = TransmitWatch::new();
   loop {
     TX_ERRORS.store(twai.transmit_error_count(), Ordering::Release);
     RX_ERRORS.store(twai.receive_error_count(), Ordering::Release);
@@ -875,13 +876,15 @@ async fn can(mut twai: Twai<'static, Async>) {
         Ok(frame) => {
           // `Err(TimeoutError)` when the 20 ms ran out, `Ok(Err(..))` when esp-hal gave up on the frame.
           let result = with_timeout(Duration::from_millis(20), twai.transmit_async(&frame)).await;
-          if !matches!(result, Ok(Ok(())))
-            && let Some(held_back) = unsent.admit(now_ms())
-          {
-            warn!(
-              "CAN transmit failed: {result:?}, transmit errors {} ({held_back} more held back)",
-              twai.transmit_error_count()
-            );
+          let note = if matches!(result, Ok(Ok(()))) {
+            unsent.sent()
+          } else {
+            unsent.failed(now_ms())
+          };
+          match note {
+            Some(note @ TransmitNote::Recovered { .. }) => info!("{note}"),
+            Some(note) => warn!("{note}: {result:?}, transmit errors {}", twai.transmit_error_count()),
+            None => {}
           }
         }
         Err(error) => error!("encoding {:?} failed: {error}", envelope.message)

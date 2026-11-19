@@ -7,6 +7,7 @@
 //! - [`message`]: the ten messages and their encoding and decoding, through [`Envelope`].
 //! - [`dedup`]: the node-side check that runs a resent MOVE_REL only once.
 //! - [`sensor`]: the sensor node's field types (SHOT, SENSOR, SENSOR_CMD) and [`PROTOCOL_VERSION`].
+//! - [`transmit`]: what a board tells its operator about frames the bus did not take.
 //!
 //! The crate is `no_std` without `alloc` and knows no HAL. Frames are the `embedded-can` [`embedded_can::Frame`]
 //! trait, which the esp-hal TWAI frame implements, so the firmware passes its frames in and gets them back.
@@ -18,6 +19,7 @@ pub mod message;
 pub mod sensor;
 #[cfg(test)]
 mod test_frame;
+pub mod transmit;
 
 pub use dedup::{MoveDecision, MoveRefused, MoveRelTracker};
 pub use frame::{Channel, Class, NodeId};

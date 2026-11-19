@@ -219,7 +219,9 @@ Reference 5.4 and addendum A.8 leave these open; `align-proto` decides them, and
   coordinator on the bus. The TIMG1 watchdog resets the node after 1 s without feeding, so a panic cannot hold a coil.
 - **On the development boards, TWAI runs through an SN65HVD230 transceiver** in normal mode, TX on GPIO 23 (MI)
   and RX on GPIO 1 (A0), on the node and the coordinator alike. A frame then needs a second node to acknowledge it:
-  a board alone on the bus logs its failed sends once a second, and esp-hal aborts each one at error passive.
+  esp-hal aborts each send of a board alone on the bus at error passive. Every firmware says so once, reminds each
+  minute, and says when frames get through again (`align_proto::transmit`): logged once a second, the failures
+  buried the bench console the owner types into (2026-11-18).
 - **The Feather has clean header pins for one motor channel only** (GPIO 3, 2, 21, 22 for IN1 to IN4); channel 1 is
   unpopulated there (`board::CHANNELS`). Two channels on one board wait for the node board. By Espressif's published
   pinout (not checked on a board), an ESP32-C6-DevKitC-1 has 14 usable pins, and a two-channel node needs 13.
