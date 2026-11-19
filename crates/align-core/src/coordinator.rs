@@ -25,7 +25,9 @@
 //! - The relay's feedback is watched all the time, not only when entering Moving. The loop reading open while the
 //!   relay is released (after its release time), or closed while it is energized and confirmed, is a fault: a
 //!   welded contact, a dropped relay, or a wiring fault.
-//! - A lost node puts the coordinator back in Inhibited, releasing the relay.
+//! - A lost node puts the coordinator back in Inhibited, releasing the relay. A job it was running goes on at the
+//!   Ruida, so the coordinator keeps watching it (review of 2026-11-19): no move or measurement starts until its
+//!   Status line falls after rising, and its timeouts still fault as they would have in the job's own states.
 //! - Time that goes backward is a fault: every timeout here would otherwise stop.
 //!
 //! What the review of 2026-11-15 settled:
@@ -266,7 +268,20 @@ pub struct Coordinator {
   /// Every reading of the running job arrived before it ended.
   readings_complete: bool,
   next_seq: u8,
-  last_now_ms: u64
+  last_now_ms: u64,
+  /// A job left without its end when a node was lost during it.
+  left_job: Option<LeftJob>
+}
+
+/// A job the coordinator left before it ended (a node was lost during it). The Ruida may still be running it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct LeftJob {
+  /// When the job was started.
+  started_ms: u64,
+  /// Whether the Status line has reported the job running.
+  job_seen: bool,
+  /// Whether the job has fired.
+  fired: bool
 }
 
 impl Coordinator {
@@ -284,7 +299,8 @@ impl Coordinator {
       fires_in_job: 0,
       readings_complete: false,
       next_seq: 0,
-      last_now_ms: 0
+      last_now_ms: 0,
+      left_job: None
     }
   }
 
@@ -318,8 +334,25 @@ impl Coordinator {
       self.fault(now_ms, reason, &mut actions);
       return actions;
     }
+    if let Some(reason) = self.watch_left_job(now_ms, event) {
+      self.fault(now_ms, reason, &mut actions);
+      return actions;
+    }
     match event {
       Event::NodeLost if !matches!(self.state, State::Fault(_) | State::Inhibited) => {
+        self.left_job = match self.state {
+          State::WaitingForFire { since_ms, job_seen } => Some(LeftJob {
+            started_ms: since_ms,
+            job_seen,
+            fired: false
+          }),
+          State::Measuring { job_seen } => Some(LeftJob {
+            started_ms: now_ms,
+            job_seen,
+            fired: true
+          }),
+          _ => None
+        };
         self.inhibit(now_ms, &mut actions);
         return actions;
       }
@@ -373,6 +406,39 @@ impl Coordinator {
     None
   }
 
+  /// Follows a job left when a node was lost: its end, or the fault its own states would have raised on a Tick
+  /// (no fire within the fire timeout of the start, or no end within it of the last fire).
+  fn watch_left_job(&mut self, now_ms: u64, event: Event) -> Option<FaultReason> {
+    let left = self.left_job.as_mut()?;
+    match event {
+      Event::JobRunning(true) => left.job_seen = true,
+      Event::JobRunning(false) if left.job_seen => {
+        self.left_job = None;
+        return None;
+      }
+      Event::Fire => left.fired = true,
+      _ => {}
+    }
+    if event != Event::Tick {
+      return None;
+    }
+    let since_ms = if left.fired {
+      self.last_fire_ms.unwrap_or(now_ms)
+    } else {
+      left.started_ms
+    };
+    if elapsed(now_ms, since_ms) < self.timing.fire_wait_timeout_ms {
+      return None;
+    }
+    Some(if !left.fired {
+      FaultReason::NoFire
+    } else if left.job_seen {
+      FaultReason::JobDidNotEnd
+    } else {
+      FaultReason::StatusNeverHigh
+    })
+  }
+
   fn step(&mut self, now_ms: u64, event: Event, actions: &mut Actions) {
     let handled = match self.state {
       State::Inhibited | State::Idle | State::Fault(_) => self.step_rest(now_ms, event, actions),
@@ -388,10 +454,10 @@ impl Coordinator {
     }
   }
 
-  /// Whether a job may start or the relay may be armed:
-  /// the loop reads closed, the Status line reads low, and no burst is in progress.
+  /// Whether a job may start or the relay may be armed: the loop reads closed, the Status line reads low, no burst is
+  /// in progress, and no job left by a lost node is still running.
   fn ready_to_start(&self) -> bool {
-    self.loop_open == Some(false) && self.job_running == Some(false) && !self.firing
+    self.loop_open == Some(false) && self.job_running == Some(false) && !self.firing && self.left_job.is_none()
   }
 
   /// `Inhibited`, `Idle`, and `Fault`. Returns whether the event was handled.
@@ -428,7 +494,10 @@ impl Coordinator {
           actions.outcome = Some(Outcome::Refused);
         }
       }
-      (State::Inhibited | State::Idle, Event::Fire) => actions.outcome = Some(Outcome::UnexpectedFire),
+      // The dots of a job left by a lost node are expected.
+      (State::Inhibited | State::Idle, Event::Fire) if self.left_job.is_none() => {
+        actions.outcome = Some(Outcome::UnexpectedFire);
+      }
       (State::Fault(_), Event::ClearFault) => {
         self.state = State::Inhibited;
         actions.outcome = Some(Outcome::Inhibited);
@@ -600,6 +669,8 @@ impl Coordinator {
   }
 
   fn fault(&mut self, now_ms: u64, reason: FaultReason, actions: &mut Actions) {
+    // Cleared by hand, after someone has looked: as after a fault in the job's own states.
+    self.left_job = None;
     self.release(now_ms, actions);
     actions.allow_motion = Some(false);
     actions.estop = true;

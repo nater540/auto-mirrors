@@ -341,6 +341,119 @@ fn a_lost_node_inhibits_and_releases_the_relay_which_must_then_close() {
   assert_eq!(actions.outcome, Some(Outcome::Faulted(FaultReason::RelayDidNotClose)));
 }
 
+/// Found by the review of 2026-11-19: a node lost during a job made the coordinator forget the job, and the next
+/// passed self-test let the relay energize while the Ruida still fired its dots.
+#[test]
+fn a_node_lost_during_a_job_does_not_let_a_move_arm_until_the_job_ends() {
+  let mut coordinator = idle();
+  coordinator.handle(10, Event::StartMeasurement);
+  fire(&mut coordinator, 100);
+  assert_eq!(
+    coordinator.handle(130, Event::NodeLost).outcome,
+    Some(Outcome::Inhibited)
+  );
+  coordinator.handle(140, Event::SelfTest { passed: true });
+  let actions = coordinator.handle(150, Event::StartMove);
+  assert_eq!(actions.outcome, Some(Outcome::Refused), "the job is still running");
+  assert_eq!(actions.relay, None);
+  assert_eq!(coordinator.handle(700, Event::Tick).relay, None);
+  assert_eq!(
+    coordinator.handle(710, Event::StartMeasurement).outcome,
+    Some(Outcome::Refused),
+    "nor a new job"
+  );
+  // The rest of the job: the Status line rises, two more dots, the line falls.
+  coordinator.handle(800, Event::JobRunning(true));
+  for at in [1_100, 2_100] {
+    assert_eq!(
+      fire(&mut coordinator, at).outcome,
+      None,
+      "the job's own dots are expected"
+    );
+  }
+  coordinator.handle(2_500, Event::JobRunning(false));
+  let actions = coordinator.handle(2_120 + QUIET, Event::StartMove);
+  assert_eq!(actions.relay, Some(Relay::Energize), "the job has ended");
+}
+
+#[test]
+fn a_job_left_by_a_lost_node_still_faults_if_its_status_line_never_rises() {
+  let mut coordinator = idle();
+  coordinator.handle(10, Event::StartMeasurement);
+  fire(&mut coordinator, 100);
+  coordinator.handle(130, Event::NodeLost);
+  coordinator.handle(140, Event::SelfTest { passed: true });
+  let last = 120 + u64::from(TIMING.fire_wait_timeout_ms);
+  assert_eq!(coordinator.handle(last - 1, Event::Tick).outcome, None);
+  assert_eq!(
+    coordinator.handle(last, Event::Tick).outcome,
+    Some(Outcome::Faulted(FaultReason::StatusNeverHigh))
+  );
+}
+
+#[test]
+fn a_job_left_by_a_lost_node_before_its_first_fire_still_faults_if_it_never_fires() {
+  let mut coordinator = idle();
+  coordinator.handle(10, Event::StartMeasurement);
+  coordinator.handle(110, Event::NodeLost);
+  let last = 10 + u64::from(TIMING.fire_wait_timeout_ms);
+  assert_eq!(coordinator.handle(last - 1, Event::Tick).outcome, None);
+  assert_eq!(
+    coordinator.handle(last, Event::Tick).outcome,
+    Some(Outcome::Faulted(FaultReason::NoFire))
+  );
+}
+
+#[test]
+fn a_job_left_before_its_first_fire_that_then_fires_times_out_from_the_fire_not_the_start() {
+  let mut coordinator = idle();
+  coordinator.handle(10, Event::StartMeasurement);
+  coordinator.handle(110, Event::NodeLost);
+  fire(&mut coordinator, 20_000);
+  assert_eq!(
+    coordinator
+      .handle(10 + u64::from(TIMING.fire_wait_timeout_ms), Event::Tick)
+      .outcome,
+    None,
+    "it fired: not NoFire"
+  );
+  let last = 20_020 + u64::from(TIMING.fire_wait_timeout_ms);
+  assert_eq!(coordinator.handle(last - 1, Event::Tick).outcome, None);
+  assert_eq!(
+    coordinator.handle(last, Event::Tick).outcome,
+    Some(Outcome::Faulted(FaultReason::StatusNeverHigh))
+  );
+}
+
+#[test]
+fn a_status_low_read_before_the_line_rose_does_not_end_a_left_job() {
+  let mut coordinator = idle();
+  coordinator.handle(10, Event::StartMeasurement);
+  coordinator.handle(110, Event::NodeLost);
+  coordinator.handle(120, Event::SelfTest { passed: true });
+  coordinator.handle(130, Event::JobRunning(false));
+  assert_eq!(
+    coordinator.handle(140, Event::StartMove).outcome,
+    Some(Outcome::Refused),
+    "a low before a high is stale"
+  );
+}
+
+#[test]
+fn a_job_left_by_a_lost_node_that_keeps_running_faults_after_its_last_fire() {
+  let mut coordinator = idle();
+  coordinator.handle(10, Event::StartMeasurement);
+  coordinator.handle(50, Event::JobRunning(true));
+  fire(&mut coordinator, 100);
+  coordinator.handle(130, Event::NodeLost);
+  let last = 120 + u64::from(TIMING.fire_wait_timeout_ms);
+  assert_eq!(coordinator.handle(last - 1, Event::Tick).outcome, None);
+  assert_eq!(
+    coordinator.handle(last, Event::Tick).outcome,
+    Some(Outcome::Faulted(FaultReason::JobDidNotEnd))
+  );
+}
+
 #[test]
 fn a_procedure_fault_stops_everything_until_cleared_and_then_needs_a_self_test() {
   let mut coordinator = idle();
@@ -733,6 +846,9 @@ proptest! {
     let mut feedback: Option<bool> = None;
     let mut open_since_energize = false;
     let mut motion_allowed = false;
+    // A job started and not yet ended by a Status low after a high, nor by a fault; and whether its line rose.
+    let mut job_open = false;
+    let mut job_high = false;
     for input in inputs {
       let event = match input {
         Input::Wait(ms) => {
@@ -755,8 +871,21 @@ proptest! {
         }
         _ => {}
       }
+      if actions.start_job {
+        job_open = true;
+        job_high = false;
+      }
+      match event {
+        Event::JobRunning(true) if job_open => job_high = true,
+        Event::JobRunning(false) if job_high => job_open = false,
+        _ => {}
+      }
+      if matches!(coordinator.state(), State::Fault(_)) {
+        job_open = false;
+      }
       match actions.relay {
         Some(Relay::Energize) => {
+          prop_assert!(!job_open, "energized while a job that was started has not ended");
           prop_assert!(!firing, "energized during a burst");
           prop_assert_eq!(job_running, Some(false), "energized without the Status line read low");
           prop_assert!(last_fire.is_none_or(|fire| now - fire >= QUIET), "energized within the quiet time");

@@ -14,9 +14,11 @@ Motors:      moved only by the console's `jog`, `calibrate`, `align`, `poke`, `b
              direction sign (forward) by CONFIG.
 Interlock:   GPIO 22 (Feather MO) drives the relay, high to energize; low at boot, at reset, and in every state but
              arming and moving. GPIO 21 (SCK) reads its feedback, pulled down, high when the laser loop is open.
-             A fault (fire or job while armed, feedback disagreeing, a lost node, a node's pin fault, lost rail or
-             move timeout, a soft limit, CAN bus-off) releases the relay at once and sends ESTOP, again with every
-             heartbeat until the console's `clear`. Losing the node of a move inhibits too.
+             A fault (fire or job while armed, feedback disagreeing, a node's pin fault, lost rail or move timeout,
+             a soft limit, CAN bus-off) releases the relay at once and sends ESTOP, again with every heartbeat until
+             the console's `clear`. Losing an expected node, or the node of a move, releases the relay and sends
+             INHIBIT 1, without ESTOP; a job it interrupts is still watched, and no move or job starts until that
+             job's Status line falls after rising (or its timeout faults).
 Ruida I/O:   GPIO 3 (A4) drives FootSW's optocoupler, high = active: high for up to 200 ms only for a measurement
              (`measure`, or one the procedure takes 200 ms after its last move) in Idle, with the relay released
              and the sensor node present. On the machine this starts the Ruida's job, which fires the laser. It goes

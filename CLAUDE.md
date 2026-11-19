@@ -308,6 +308,10 @@ The review of the orchestrator on 2026-11-17 (four defects, each with the test t
   its CONFIG again: a frame dropped from a full queue is otherwise never resent.
 - **The coordinator's control loop logs nothing of what the orchestrator reports** (a `logger` task does), and fire
   sense latches its edges by interrupt, so neither a burst of log lines nor a short dot can hide a fire.
+- **A job outlives a lost node** (`align_core::coordinator`, review of 2026-11-19): a node lost during a measurement
+  inhibits, and the coordinator keeps watching the Ruida's job, refusing every move and job until its Status line
+  falls after rising, and faulting on its timeouts as the job's own states do. Forgetting it let the relay energize
+  while the job still fired.
 - Left as they are: a node loss found by the tick inhibits 1 ms after the beacon; a `stop` during the quiet time still
   energizes the relay later and disarms at once, with nothing moved.
 

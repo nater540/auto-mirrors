@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 05e79cf67ecb3dcefb2bcd32a0ca3ffeb0f6e6b600d413d6806fc65f5040cfa1 # shrinks to inputs = [Event(RelayFeedback { loop_open: false }), Event(JobRunning(false)), Event(SelfTest { passed: true }), Event(StartMeasurement), Event(NodeLost), Event(SelfTest { passed: true }), Event(StartMove)]
