@@ -500,7 +500,8 @@ async fn write_record(records: &mut Records, channel: Channel, record: AxisRecor
   if let Err(error) = &result {
     error!("writing the record of channel {} failed: {error:?}", channel.get());
   }
-  with_node(|node, io| node.on_persisted(channel, result.is_ok(), io));
+  let now = now_ms();
+  with_node(|node, io| node.on_persisted(now, channel, result.is_ok(), io));
 }
 
 /// Runs the legs of one move under its timeout. The rail must come up first: the arm pulse starts with the move.

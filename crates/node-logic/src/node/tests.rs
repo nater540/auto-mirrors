@@ -682,9 +682,9 @@ fn a_stopped_move_keeps_its_count_and_is_not_suspect() {
 #[test]
 fn a_confirmed_write_marks_the_record_persisted_and_a_failed_one_is_reported() {
   let (mut node, mut io) = ready();
-  node.on_persisted(ch(0), true, &mut io);
+  node.on_persisted(0, ch(0), true, &mut io);
   assert!(node.axis(ch(0)).unwrap().persisted);
-  node.on_persisted(ch(1), false, &mut io);
+  node.on_persisted(0, ch(1), false, &mut io);
   assert_eq!(io.faults(), [FaultCode::PERSIST_FAILED]);
   let detail = io.events.iter().find_map(|event| match event {
     Io::Sent(Message::Fault { detail, .. }) => Some(*detail),
@@ -888,7 +888,7 @@ fn a_bench_zero_makes_the_position_zero_and_trusted_and_writes_it() {
   let axis = node.axis(ch(0)).unwrap();
   assert_eq!(axis.record, zeroed);
   assert!(!axis.persisted, "not written until the flash says so");
-  node.on_persisted(ch(0), true, &mut io);
+  node.on_persisted(0, ch(0), true, &mut io);
   assert!(node.axis(ch(0)).unwrap().persisted);
 }
 
@@ -1394,13 +1394,104 @@ fn the_record_is_written_suspect_before_every_move_starts() {
 #[test]
 fn a_failed_record_write_refuses_moves_until_a_write_succeeds() {
   let (mut node, mut io) = ready();
-  node.on_persisted(ch(0), false, &mut io);
+  node.on_persisted(0, ch(0), false, &mut io);
   io.take();
   node.on_frame(0, move_rel(1, 0, 25, false), &mut io);
   assert_eq!(io.faults(), [FaultCode::PERSIST_FAILED]);
-  node.on_persisted(ch(0), true, &mut io);
+  node.on_persisted(0, ch(0), true, &mut io);
   node.on_frame(0, move_rel(1, 0, 25, false), &mut io);
   assert_eq!(io.starts().len(), 1);
+}
+
+#[test]
+fn a_failed_write_of_the_record_before_a_move_stops_the_move_before_its_first_step() {
+  // Found by the review of 2026-11-19: the move ran anyway, so a reset during it restored the old position as
+  // trusted, which is what the write before the move exists to prevent.
+  let (mut node, mut io) = ready();
+  node.on_frame(0, move_rel(1, 0, 25, false), &mut io);
+  io.take();
+  node.on_persisted(5, ch(0), false, &mut io);
+  assert!(io.events.contains(&Io::Stop), "the move is stopped");
+  assert!(!node.armed(5), "and disarmed");
+  assert_eq!(io.faults(), [FaultCode::PERSIST_FAILED]);
+}
+
+#[test]
+fn the_write_before_a_move_does_not_mark_the_record_persisted() {
+  let (mut node, mut io) = ready();
+  node.on_frame(0, move_rel(1, 0, 25, false), &mut io);
+  node.on_persisted(5, ch(0), true, &mut io);
+  assert!(
+    !node.axis(ch(0)).unwrap().persisted,
+    "what landed is the suspect copy, not the record"
+  );
+  node.on_move_outcome(100, done(25), &mut io);
+  node.on_persisted(105, ch(0), true, &mut io);
+  assert!(node.axis(ch(0)).unwrap().persisted);
+}
+
+#[test]
+fn a_failed_write_is_retried_between_moves_and_moves_run_again_once_it_lands() {
+  // Found by the review of 2026-11-19: nothing wrote the record again, so one failed write refused every move
+  // until a reset, which then restored the stale record.
+  let (mut node, mut io) = ready();
+  node.on_frame(0, move_rel(1, 0, 25, false), &mut io);
+  node.on_move_outcome(100, done(25), &mut io);
+  node.on_persisted(110, ch(0), false, &mut io);
+  io.take();
+  node.tick(110 + PERSIST_RETRY_MS - 1, &mut io);
+  assert!(persisted(&io).is_empty(), "not retried at once");
+  node.tick(110 + PERSIST_RETRY_MS, &mut io);
+  assert_eq!(
+    persisted(&io),
+    [node.axis(ch(0)).unwrap().record],
+    "the record is written again"
+  );
+  io.take();
+  node.on_persisted(1_200, ch(0), false, &mut io);
+  node.tick(1_200 + PERSIST_RETRY_MS, &mut io);
+  assert_eq!(persisted(&io).len(), 1, "and again while it keeps failing");
+  node.on_persisted(2_300, ch(0), true, &mut io);
+  // The ticks above outlasted the coordinator's heartbeat, so it allows motion again, as it does when it returns.
+  node.on_frame(2_300, heartbeat_at_uptime(2_300), &mut io);
+  node.on_frame(2_305, allow(), &mut io);
+  io.take();
+  node.on_frame(2_310, move_rel(2, 0, 25, false), &mut io);
+  assert_eq!(io.starts().len(), 1, "moves run once it lands");
+}
+
+#[test]
+fn a_write_that_lands_on_one_channel_does_not_clear_a_failure_on_another() {
+  let (mut node, mut io) = ready();
+  node.on_persisted(0, ch(1), false, &mut io);
+  node.on_persisted(1, ch(0), true, &mut io);
+  io.take();
+  node.on_frame(2, move_rel(1, 0, 25, false), &mut io);
+  assert_eq!(io.faults(), [FaultCode::PERSIST_FAILED]);
+}
+
+#[test]
+fn a_failed_write_is_not_retried_while_a_move_runs() {
+  let (mut node, mut io) = ready();
+  node.on_frame(0, move_rel(1, 0, 25, false), &mut io);
+  node.on_persisted(5, ch(0), false, &mut io);
+  io.take();
+  node.tick(5 + PERSIST_RETRY_MS, &mut io);
+  assert!(persisted(&io).is_empty(), "records are written only between moves");
+  node.on_move_outcome(
+    5 + PERSIST_RETRY_MS,
+    MoveOutcome::Finished {
+      end: MoveEnd::Stopped,
+      steps_issued: 0,
+      phase: Phase::ZERO
+    },
+    &mut io
+  );
+  assert_eq!(
+    persisted(&io).len(),
+    1,
+    "the move's end writes the record, which is the retry"
+  );
 }
 
 #[test]

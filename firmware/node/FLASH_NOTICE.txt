@@ -17,7 +17,10 @@ Bus:         TWAI through an SN65HVD230 transceiver: TX on GPIO 23 (Feather MI) 
 Other I/O:   none. Every other GPIO stays in its reset state, among them the Feather's RGB LED and I2C power
              (GPIO 20), its I2C pins (18, 19), and its LED (15).
 Flash:       writes a 9-byte position record per channel to the `nvs` partition before every move (marked
-             suspect), after it, and on the console's `zero` (bench mode, no coordinator heard; nothing moves).
+             suspect), after it, when a CONFIG changes the channel's direction sign (the position converted), and
+             on the console's `zero` (bench mode, no coordinator heard; nothing moves). A failed write stops a move
+             that has not stepped yet and refuses moves until it lands; it is written again every second while no
+             move runs.
              If that partition holds data it cannot read (for example ESP-IDF NVS from an earlier image), it
              ERASES the partition and writes every channel at position zero, marked suspect.
 Watchdog:    the TIMG1 watchdog resets the chip if not fed for 1 s; a reset leaves every output low.

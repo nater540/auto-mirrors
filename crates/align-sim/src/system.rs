@@ -649,7 +649,7 @@ impl System {
     let mut sent = core::mem::take(&mut outbox.sent);
     for channel in core::mem::take(&mut outbox.persisted) {
       let mut acknowledged = NodeOutbox::default();
-      motor.node.on_persisted(channel, true, &mut acknowledged);
+      motor.node.on_persisted(now, channel, true, &mut acknowledged);
       sent.append(&mut acknowledged.sent);
     }
     if outbox.stop

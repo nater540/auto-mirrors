@@ -214,6 +214,9 @@ Reference 5.4 and addendum A.8 leave these open; `align-proto` decides them, and
 - **The arm pulse runs only while a move runs**, in software, so that a hung CPU drops the rail.
 - **Records are written only between moves**, by the task that runs the moves, so no flash write happens while a
   motor steps. They live on the `nvs` partition; unreadable contents are erased at boot, every channel then suspect.
+  A failed write stops a move that has not stepped yet, refuses moves until the channel's record lands, and is
+  written again every second while no move runs; the write before a move does not mark the record persisted
+  (review of 2026-11-19: the move ran anyway, and one failure refused every move until a reset).
 - **Refusals are FAULT frames** with codes 0x20 to 0x2D (`align_proto::FaultCode`), the detail being the move's
   sequence number or the config key.
 - **The bench console** (`just monitor node`, then `help`) drives motors only in bench mode with the permit present.

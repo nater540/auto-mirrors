@@ -26,7 +26,9 @@
 //!   across a silence) is forgotten as well: the node forgets its moves, so that its first move is a new move.
 //! - The record carries the direction sign its position is in; a different sign converts it. The record is
 //!   written marked suspect before every move, so a reset mid-move restores a position known not to be trusted.
-//!   A failed write refuses moves until a write succeeds.
+//!   A failed write stops a move that has not stepped yet and refuses moves until the channel's record lands; the
+//!   node writes it again every `PERSIST_RETRY_MS` while no move runs. A write before a move does not count as the
+//!   record persisted: what landed is its suspect copy.
 //! - An ESTOP latches until an INHIBIT 0, and bench moves run only while no coordinator is heard.
 
 use align_core::approach::{self, LastDir, SoftLimits};
@@ -41,6 +43,10 @@ use crate::record::AxisRecord;
 
 /// The most stepper channels a node board has (addendum A.7: three, two populated).
 pub const MAX_CHANNELS: usize = 3;
+
+/// How long after a failed flash write the node writes the record again, while no move runs. A write that keeps
+/// failing is tried this often; one that lands lets moves run again.
+pub const PERSIST_RETRY_MS: u64 = 1_000;
 
 /// What the node needs to know about itself.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -214,7 +220,7 @@ struct CoordinatorBeat {
 #[derive(Clone, Debug)]
 #[expect(
   clippy::struct_excessive_bools,
-  reason = "independent inputs and latches (restored, inhibited, permit, rail, bench, estop, persist), not one state"
+  reason = "independent inputs and latches (restored, inhibited, permit, rail, bench, estop), not one state"
 )]
 pub struct Node {
   setup: NodeSetup,
@@ -230,8 +236,10 @@ pub struct Node {
   protocol_mismatch: bool,
   /// An ESTOP was received; cleared only by an INHIBIT 0. Blocks bench moves too.
   estop_latched: bool,
-  /// The last flash write failed: moves are refused until one succeeds, so the record cannot fall behind.
-  persist_failed: bool,
+  /// The channel's last flash write failed: moves are refused until it lands, so the record cannot fall behind.
+  write_failed: [bool; MAX_CHANNELS],
+  /// When the records whose write failed are written again, if no move runs then.
+  next_write_retry_ms: u64,
   /// When the coordinator's last heartbeat came, while it is heard; `None` once it has gone silent.
   last_heartbeat_ms: Option<u64>,
   /// The coordinator's last heartbeat, kept across a silence, to tell a restart from the passing of time.
@@ -268,7 +276,8 @@ impl Node {
       bench: false,
       protocol_mismatch: false,
       estop_latched: false,
-      persist_failed: false,
+      write_failed: [false; MAX_CHANNELS],
+      next_write_retry_ms: 0,
       last_heartbeat_ms: None,
       last_beat: None,
       tracker: MoveRelTracker::new(),
@@ -413,6 +422,14 @@ impl Node {
         self.send_status(now_ms, channel, io);
       }
     }
+    if self.persist_failed() && self.running.is_none() && now_ms >= self.next_write_retry_ms {
+      self.next_write_retry_ms = now_ms.saturating_add(PERSIST_RETRY_MS);
+      for (channel, axis) in self.channels().zip(self.axes) {
+        if self.write_failed.get(usize::from(channel.get())) == Some(&true) {
+          io.persist(channel, axis.record);
+        }
+      }
+    }
   }
 
   /// Takes the outcome of the running move: updates the position, answers the coordinator, and persists.
@@ -483,13 +500,25 @@ impl Node {
   }
 
   /// Takes the result of a flash write.
-  pub fn on_persisted(&mut self, channel: Channel, ok: bool, io: &mut impl NodeIo) {
-    self.persist_failed = !ok;
+  ///
+  /// A failure stops a move that has not stepped yet (records are written only before and after a move), and the
+  /// record is written again `PERSIST_RETRY_MS` later. The write before a move lands the suspect copy, so it does not
+  /// mark the record persisted.
+  pub fn on_persisted(&mut self, now_ms: u64, channel: Channel, ok: bool, io: &mut impl NodeIo) {
+    let index = usize::from(channel.get());
+    if let Some(failed) = self.write_failed.get_mut(index) {
+      *failed = !ok;
+    }
+    let moving_here = self.running.is_some_and(|running| running.channel == channel);
     if ok {
-      if let Some(axis) = self.axes.get_mut(usize::from(channel.get())) {
+      if let Some(axis) = self.axes.get_mut(index)
+        && !moving_here
+      {
         axis.persisted = true;
       }
     } else {
+      self.next_write_retry_ms = now_ms.saturating_add(PERSIST_RETRY_MS);
+      self.request_stop(io);
       self.send(
         io,
         Message::Fault {
@@ -548,7 +577,7 @@ impl Node {
     if self.last_heartbeat_ms.is_some() {
       return Err(BenchRefused::CoordinatorPresent);
     }
-    if self.persist_failed {
+    if self.persist_failed() {
       return Err(BenchRefused::PersistFailed);
     }
     if !self.permit {
@@ -644,7 +673,7 @@ impl Node {
       (self.running.is_some(), FaultCode::BUSY),
       (self.inhibited, FaultCode::INHIBITED),
       (self.protocol_mismatch, FaultCode::PROTOCOL_MISMATCH),
-      (self.persist_failed, FaultCode::PERSIST_FAILED),
+      (self.persist_failed(), FaultCode::PERSIST_FAILED),
       (!self.heartbeat_fresh(now_ms), FaultCode::NO_HEARTBEAT),
       (!self.permit, FaultCode::NO_PERMIT),
       (!self.is_populated(move_rel.channel), FaultCode::CHANNEL_UNAVAILABLE)
@@ -883,6 +912,11 @@ impl Node {
       uptime_ms,
       seen_ms: now_ms
     });
+  }
+
+  /// Whether a channel's last flash write failed and has not landed since.
+  fn persist_failed(&self) -> bool {
+    self.write_failed.contains(&true)
   }
 
   fn heartbeat_fresh(&self, now_ms: u64) -> bool {
