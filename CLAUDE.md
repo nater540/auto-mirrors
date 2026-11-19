@@ -312,6 +312,10 @@ The review of the orchestrator on 2026-11-17 (four defects, each with the test t
   inhibits, and the coordinator keeps watching the Ruida's job, refusing every move and job until its Status line
   falls after rising, and faulting on its timeouts as the job's own states do. Forgetting it let the relay energize
   while the job still fired.
+- **The console waits for a procedure** (`coordinator_logic::console::admit`): `jog` and `measure` are refused while
+  one runs, and a procedure starts only when the orchestrator is quiet (Idle, no move or measurement asked for or
+  running). The firmware marks a procedure running as it hands it over. A jog between a poke and its measurement
+  went into the calibration, which was then stored.
 - Left as they are: a node loss found by the tick inhibits 1 ms after the beacon; a `stop` during the quiet time still
   energizes the relay later and disarms at once, with nothing moved.
 

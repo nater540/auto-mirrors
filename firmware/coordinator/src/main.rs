@@ -17,6 +17,8 @@
 //!   the orchestrator reports: a burst of lines over USB could hold it for milliseconds and miss a dot.
 //! - `fire_sense`: keeps the fire input's level and latches each of its edges from the pin's interrupt, so that a
 //!   dot shorter than a millisecond, or one during a late loop, still reaches the next sample.
+//! - Console commands are admitted by `coordinator_logic::console::admit`: a `jog` or a `measure` waits while a
+//!   procedure runs, and a procedure starts only when the coordinator is quiet.
 //! - `logger`: logs what the orchestrator reports, from a queue.
 //! - `procedure`: runs the aligner (`align_core::aligner::Aligner`) and the bring-up measurements. Its moves and
 //!   measurements go to `control` as requests (`coordinator_logic::requests`) and come back as completions; a fault of
@@ -128,6 +130,8 @@ static COMPLETION: Signal<Raw, Completion> = Signal::new();
 static PROCEDURES: Queue<Raw, Procedure, 1> = Queue::new();
 /// The procedure ended in a fault: `control` faults the coordinator.
 static PROCEDURE_FAULT: Signal<Raw, ()> = Signal::new();
+/// A procedure has been handed to the `procedure` task and has not ended. Set by `control` as it hands one over, so
+/// that no console `jog` or `measure` gets in before the task takes it; cleared by the task.
 static PROCEDURE_RUNNING: AtomicBool = AtomicBool::new(false);
 
 type Flash = BlockingAsync<FlashStorage<'static>>;
@@ -580,7 +584,11 @@ async fn control(
         orchestrator.on_frame(now, envelope, &mut io);
       }
       while let Ok(command) = COMMANDS.try_receive() {
-        execute(now, command, inputs, &mut orchestrator, &mut io);
+        let quiet = orchestrator.quiet() && !requests.busy();
+        match console::admit(command, PROCEDURE_RUNNING.load(Ordering::Acquire), quiet) {
+          Ok(()) => execute(now, command, inputs, &mut orchestrator, &mut io),
+          Err(held) => warn!("{command:?}: {held}")
+        }
       }
       if !requests.busy()
         && let Ok(request) = REQUESTS.try_receive()
@@ -651,7 +659,12 @@ async fn procedure(mut records: Option<Records>, restored: Option<Calibration>) 
     Ok(aligner) => aligner,
     Err(fault) => {
       error!("the alignment procedure refuses its configuration: {fault}");
-      return;
+      // Each procedure handed over is refused and its mark cleared, or the console's jogs would be held forever.
+      loop {
+        let Procedure { kind, .. } = PROCEDURES.receive().await;
+        error!("{kind:?}: the alignment procedure refused its configuration at boot");
+        PROCEDURE_RUNNING.store(false, Ordering::Release);
+      }
     }
   };
   // The aligner checks a restored calibration as it does any: its conditioning, and its direction signs against
@@ -661,7 +674,6 @@ async fn procedure(mut records: Option<Records>, restored: Option<Calibration>) 
   }
   loop {
     let Procedure { kind, reported } = PROCEDURES.receive().await;
-    PROCEDURE_RUNNING.store(true, Ordering::Release);
     let axes = starting_axes(aligner.axes(), &reported);
     aligner = aligner.with_axes(axes);
     let calibration_before = aligner.calibration().copied();
@@ -819,16 +831,15 @@ fn execute(now: u64, command: Command, inputs: Inputs, orchestrator: &mut Orches
 }
 
 /// Hands a procedure to the `procedure` task with what the nodes last reported of each axis.
+/// `console::admit` has checked that none runs and the coordinator is quiet.
 fn start_procedure(kind: ProcedureKind, orchestrator: &Orchestrator) {
-  if PROCEDURE_RUNNING.load(Ordering::Acquire) {
-    warn!("{kind:?}: a procedure is running");
-    return;
-  }
   let procedure = Procedure {
     kind,
     reported: reported(orchestrator.link(), &WIRING)
   };
-  if PROCEDURES.try_send(procedure).is_err() {
+  if PROCEDURES.try_send(procedure).is_ok() {
+    PROCEDURE_RUNNING.store(true, Ordering::Release);
+  } else {
     warn!("{kind:?}: a procedure is already waiting to start");
   }
 }

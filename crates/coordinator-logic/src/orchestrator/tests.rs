@@ -355,6 +355,30 @@ fn a_move_arms_the_relay_lifts_the_inhibit_sends_the_move_and_disarms_when_it_is
   assert_eq!(bench.inhibits().last(), Some(&true));
 }
 
+/// What the console needs before handing over a procedure (review of 2026-11-19): a procedure started while a jog
+/// was arming read the node's count from before the move.
+#[test]
+fn it_is_quiet_only_in_idle_with_no_move_or_measurement_asked_for() {
+  let (mut orchestrator, mut bench) = idle();
+  assert!(orchestrator.quiet());
+  orchestrator.request_move(1_001, Axis::M1H, 100, &mut bench).unwrap();
+  assert!(!orchestrator.quiet(), "a move is arming");
+  run(&mut orchestrator, &mut bench, 1_002, 1_599);
+  assert!(!orchestrator.quiet(), "a move is in flight");
+  orchestrator.on_frame(1_600, move_done(0, MoveResult::Done, 100), &mut bench);
+  orchestrator.tick(1_601, follow(&bench), &mut bench);
+  assert_eq!(orchestrator.state(), State::Idle);
+  assert!(orchestrator.quiet(), "the move has ended");
+}
+
+#[test]
+fn it_is_not_quiet_while_a_measurement_runs_or_while_inhibited() {
+  let (mut orchestrator, mut bench) = idle_with_sensor();
+  orchestrator.request_measurement(1_000, &mut bench).unwrap();
+  assert!(!orchestrator.quiet());
+  assert!(!Orchestrator::new(setup()).quiet(), "inhibited after boot");
+}
+
 #[test]
 fn a_move_the_node_refuses_at_its_soft_limit_disarms_and_faults_until_cleared() {
   let (mut orchestrator, mut bench) = idle();

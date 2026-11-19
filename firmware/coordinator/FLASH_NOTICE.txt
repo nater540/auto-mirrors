@@ -9,6 +9,8 @@ Motors:      moved only by the console's `jog`, `calibrate`, `align`, `poke`, `b
              INHIBIT 0 goes out and then one MOVE_REL with `finish_plus` clear. When the node answers (or not, after
              3 tries), INHIBIT 1 goes out and the relay is released; an answer of a soft limit or a lost rail then
              faults. Every other INHIBIT says inhibited.
+             While a procedure runs, the console's `jog` and `measure` are refused; a procedure starts only in
+             Idle with no move or measurement asked for or running.
              A node that hears this heartbeat refuses console moves (bench moves need a silent bus).
              On every node that appears or restarts it sets each axis's soft limits (-4400 to 4400 steps) and
              direction sign (forward) by CONFIG.

@@ -309,6 +309,16 @@ impl Orchestrator {
     self.machine.state()
   }
 
+  /// Whether nothing is going on: Idle, with no move asked for or in flight, no measurement running, and FootSW let
+  /// go. A procedure starts only then, so that it reads the nodes' counts after the last move, not during it.
+  pub fn quiet(&self) -> bool {
+    self.state() == State::Idle
+      && self.pending.is_none()
+      && self.in_flight.is_none()
+      && !self.measuring
+      && self.footsw_until_ms.is_none()
+  }
+
   /// Whether the nodes may move.
   pub const fn motion_allowed(&self) -> bool {
     self.machine.motion_allowed()

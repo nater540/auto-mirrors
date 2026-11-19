@@ -117,6 +117,54 @@ pub fn parse(line: &str) -> Result<Command, ParseError> {
   Ok(command)
 }
 
+/// Why a command is not run now.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum Held {
+  /// A procedure is running, or has been handed over to start.
+  #[error("a procedure is running; `stop` or wait for it to end")]
+  ProcedureRunning,
+  /// The coordinator is not Idle, or a move or a measurement is asked for or running.
+  #[error("a move or a measurement is running, or the coordinator is not idle; try again when it ends")]
+  NotQuiet
+}
+
+/// Whether `command` may run now (review of 2026-11-19). `procedure_running`: a procedure runs or has been handed
+/// over to start. `quiet`: [`crate::orchestrator::Orchestrator::quiet`].
+///
+/// A `jog` or a `measure` is held while a procedure runs: a jog between a poke and its measurement goes into the
+/// calibration, and a measurement's end would be taken as the procedure's. A procedure starts only when none runs and
+/// the coordinator is quiet, so that it starts from the nodes' counts after the last move. `help`, `status`, `stop`,
+/// and `clear` always run.
+///
+/// # Errors
+///
+/// The [`Held`] that says why the command waits.
+pub const fn admit(command: Command, procedure_running: bool, quiet: bool) -> Result<(), Held> {
+  match command {
+    Command::Help | Command::Status | Command::Stop | Command::Clear => Ok(()),
+    Command::Jog { .. } | Command::Measure => {
+      if procedure_running {
+        Err(Held::ProcedureRunning)
+      } else {
+        Ok(())
+      }
+    }
+    Command::Calibrate
+    | Command::Align
+    | Command::Poke { .. }
+    | Command::Backlash { .. }
+    | Command::Hysteresis { .. } => {
+      if procedure_running {
+        Err(Held::ProcedureRunning)
+      } else if !quiet {
+        Err(Held::NotQuiet)
+      } else {
+        Ok(())
+      }
+    }
+  }
+}
+
 /// An axis by its name (`Axis::name`; case does not matter).
 fn axis(word: &str) -> Option<Axis> {
   Axis::ALL
@@ -189,6 +237,76 @@ mod tests {
     assert_eq!(parse("align now"), Err(ParseError::BadArguments));
     assert_eq!(parse("backlash"), Err(ParseError::BadArguments));
     assert_eq!(parse("hysteresis m1h 8"), Err(ParseError::BadArguments));
+  }
+
+  const EVERY_COMMAND: [Command; 11] = [
+    Command::Help,
+    Command::Status,
+    Command::Jog {
+      axis: Axis::M1H,
+      steps: 10
+    },
+    Command::Stop,
+    Command::Measure,
+    Command::Calibrate,
+    Command::Align,
+    Command::Poke { axis: Axis::M1H },
+    Command::Backlash { axis: Axis::M1H },
+    Command::Hysteresis { axis: Axis::M1H },
+    Command::Clear
+  ];
+
+  fn starts_procedure(command: Command) -> bool {
+    matches!(
+      command,
+      Command::Calibrate
+        | Command::Align
+        | Command::Poke { .. }
+        | Command::Backlash { .. }
+        | Command::Hysteresis { .. }
+    )
+  }
+
+  /// Found by the review of 2026-11-19: a `jog` between a poke and its measurement went into the calibration, and
+  /// a console `measure`'s end could be handed to the procedure.
+  #[test]
+  fn a_jog_or_a_measurement_is_held_while_a_procedure_runs() {
+    for command in [
+      Command::Jog {
+        axis: Axis::M2H,
+        steps: 30
+      },
+      Command::Measure
+    ] {
+      assert_eq!(admit(command, true, true), Err(Held::ProcedureRunning), "{command:?}");
+      assert_eq!(admit(command, false, true), Ok(()), "{command:?}");
+    }
+  }
+
+  #[test]
+  fn a_procedure_starts_only_when_none_runs_and_the_coordinator_is_quiet() {
+    for command in EVERY_COMMAND.into_iter().filter(|command| starts_procedure(*command)) {
+      assert_eq!(admit(command, true, true), Err(Held::ProcedureRunning), "{command:?}");
+      assert_eq!(admit(command, false, false), Err(Held::NotQuiet), "{command:?}");
+      assert_eq!(admit(command, false, true), Ok(()), "{command:?}");
+    }
+  }
+
+  #[test]
+  fn help_status_stop_and_clear_are_never_held() {
+    for command in [Command::Help, Command::Status, Command::Stop, Command::Clear] {
+      for (procedure_running, quiet) in [(true, false), (true, true), (false, false)] {
+        assert_eq!(admit(command, procedure_running, quiet), Ok(()), "{command:?}");
+      }
+    }
+  }
+
+  #[test]
+  fn a_held_command_says_why() {
+    extern crate std;
+    use std::string::ToString;
+    assert!(Held::ProcedureRunning.to_string().contains("procedure"));
+    assert!(Held::NotQuiet.to_string().contains("move or a measurement"));
   }
 
   #[test]
